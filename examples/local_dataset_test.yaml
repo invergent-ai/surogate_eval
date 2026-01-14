@@ -1,0 +1,26 @@
+project:
+  name: local-dataset-test
+  version: 1.0.0
+
+targets:
+  - name: openrouter-gpt35
+    type: llm
+    provider: openai
+    model: openai/gpt-3.5-turbo
+    base_url: https://openrouter.ai/api/v1
+    api_key: ${OPENROUTER_API_KEY}
+
+    infrastructure:
+      backend: local
+      workers: 2
+
+    evaluations:
+      - name: romanian-benchmark-local
+        benchmarks:
+          - name: gsm8k
+            num_fewshot: 3
+            limit: 5
+            dataset_path: ./datasets/ro_gsm8k
+            backend_params:
+              max_tokens: 512
+              temperature: 0.0

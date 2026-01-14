@@ -1,0 +1,65 @@
+[project]
+name = "surogate-eval"
+version = "0.1.0"
+authors = [{ name = "The Invergent Team" }]
+license = { text = "AGPL-3.0" }
+readme = "README.md"
+description = "Evaluation core for the surogate LLMOps framework"
+requires-python = ">=3.12"
+
+dependencies = [
+    "evalscope==1.4.1",
+    "torch>=2.5.0",
+    "transformers>=4.48.0",
+    "huggingface-hub>=0.28.0",
+    "datasets>=3.2.0",
+    "pydantic>=2.10.0",
+    "tqdm>=4.67.0",
+    "colorama>=0.4.6",
+    "numpy>=2.0.0",
+    "pandas>=2.2.0",
+    "polars>=1.20.0",
+    "pyyaml>=6.0.2",
+]
+
+[project.scripts]
+surogate-eval = "surogate_eval.cli.main:cli_main"
+
+[project.optional-dependencies]
+vision = ["ms-vlmeval>=0.0.19"]
+rag = ["ragas>=0.2.0", "llama-index>=0.12.0"]
+security = [
+    "deepteam==1.0.5",
+    "deepeval==3.7.9",
+    "json_repair>=0.30.0",
+    "math_verify>=0.5.2",
+    "unique-namer>=1.3.0",
+    "dacite>=1.8.0",
+]
+inference = [
+    "vllm>=0.6.6",
+    "sglang[all]>=0.3.6",
+    "flash-attn>=2.7.0",
+]
+dev = [
+    "pytest>=8.0.0",
+    "ruff>=0.9.0",
+    "black>=24.0.0",
+]
+all = [
+    "surogate-eval[dev,security,vision,rag,inference]",
+]
+
+[build-system]
+requires = ["setuptools>=75.0"]
+build-backend = "setuptools.build_meta"
+
+[tool.setuptools.packages.find]
+include = ["surogate_eval*"]
+
+[tool.uv]
+managed = true
+
+[tool.ruff]
+line-length = 100
+target-version = "py312"

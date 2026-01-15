@@ -845,9 +845,17 @@ class SurogateEval(SurogateCommand):
             results_dir = Path("eval_results")
             results_dir.mkdir(exist_ok=True)
 
-            # Generate filename with timestamp
+            # Generate filename with job ID if available, otherwise use timestamp
+            job_id = os.environ.get('EVAL_JOB_ID') or os.environ.get('TASK_RUN_ID')
             timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
-            filename = f"eval_{timestamp}.json"
+
+            if job_id:
+                filename = f"eval_{job_id}.json"
+                report_filename = f"report_{job_id}.md"
+            else:
+                filename = f"eval_{timestamp}.json"
+                report_filename = f"report_{timestamp}.md"
+
             filepath = results_dir / filename
 
             # Save JSON results with custom encoder
@@ -859,7 +867,7 @@ class SurogateEval(SurogateCommand):
             logger.separator(char="═")
 
             # Create summary report
-            self._create_summary_report(serializable_results, results_dir, timestamp)
+            self._create_summary_report(serializable_results, results_dir, job_id or timestamp)
 
         except Exception as e:
             logger.error(f"Failed to save consolidated results: {e}")

@@ -24,7 +24,7 @@ class BenchmarkConfig:
     # Task-specific configuration
     tasks: Optional[List[str]] = None
     subset: Optional[Union[str, List[str]]] = None  # NEW: Subsets
-
+    dataset_hub: Optional[str] = None
     # Additional parameters
     backend_params: Dict[str, Any] = field(default_factory=dict)
 
@@ -106,7 +106,6 @@ class BaseBenchmark(ABC):
             return True
 
         # Check if target type matches requirements
-        from surogate.eval.targets.base import TargetType
         target_type_str = target.target_type.value if hasattr(target.target_type, 'value') else str(target.target_type)
 
         return target_type_str in self.REQUIRED_TARGET_TYPES

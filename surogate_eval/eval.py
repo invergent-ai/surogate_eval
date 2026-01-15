@@ -520,6 +520,7 @@ class SurogateEval(SurogateCommand):
                 use_cache=bench_config.get('use_cache', True),
                 cache_dir=bench_config.get('cache_dir'),
                 backend_params=bench_config.get('backend_params', {}),
+                dataset_hub=bench_config.get('dataset_hub'),  # ADD THIS
             )
 
             # Create benchmark instance

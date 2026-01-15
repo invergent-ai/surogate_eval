@@ -17,12 +17,12 @@ targets:
     evaluations:
       - name: romanian-benchmark-test
         benchmarks:
-          # Romanian GSM8K from HuggingFace
           - name: gsm8k
             num_fewshot: 3
             limit: 5
             dataset_hub: huggingface
-            dataset_path: OpenLLM-Ro/ro_gsm8k
+            path: OpenLLM-Ro/ro_gsm8k
+            subset: default  # ADD THIS
             backend_params:
               max_tokens: 512
               temperature: 0.0

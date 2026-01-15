@@ -55,42 +55,20 @@ if __name__ == '__main__':
             sys.exit(1)
 
         compare_results(str(filepath1), str(filepath2))
-
-
-
     else:
-
         from surogate_eval.eval import SurogateEval
-
         from surogate_eval.config.loader import load_config
-
         from surogate_eval.config.eval_config import EvalConfig
-
         from surogate_eval.utils.dict import DictDefault
-
         if not args.config:
             logger.error("--config is required when running evaluation")
-
             sys.exit(1)
-
         logger.info(f"Running evaluation with config {args.config}")
-
-        # 1. load config via official loader
-
         config = load_config(EvalConfig, args.config)
-
-        # 2. pass ALL cli args (framework expects this)
-
         command_args = DictDefault(vars(args))
-
-        # 3. run command with explicit contract
-
         SurogateEval(
-
             config=config,
-
             args=command_args,
-
         ).run()
 
 

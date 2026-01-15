@@ -199,17 +199,33 @@ class EvalScopeBackend:
             if model_args:
                 task_cfg_dict['model_args'] = model_args
 
-        # Custom dataset support - local path or HuggingFace
-        dataset_path = config.get('dataset_path') or config.get('custom_dataset')
+        # After setting dataset_hub, also override dataset_id for local datasets
+        dataset_path = config.get('dataset_path') or config.get('path') or config.get('custom_dataset')
+        # For custom datasets, override the dataset_id in dataset_args
         if dataset_path:
-            task_cfg_dict['dataset_dir'] = dataset_path
-            logger.info(f"Using custom dataset path: {dataset_path}")
+            if not task_cfg_dict.get('dataset_args'):
+                task_cfg_dict['dataset_args'] = {}
+            if dataset_name not in task_cfg_dict['dataset_args']:
+                task_cfg_dict['dataset_args'][dataset_name] = {}
 
-        # Dataset hub selection (modelscope, huggingface, local)
-        dataset_hub = config.get('dataset_hub')
+            # Point dataset_id to the custom path (local or HF repo)
+            task_cfg_dict['dataset_args'][dataset_name]['dataset_id'] = dataset_path
+            logger.info(f"Set custom dataset_id to: {dataset_path}")
+
+        dataset_hub = config.get('dataset_hub') or config.get('hub')
         if dataset_hub:
             task_cfg_dict['dataset_hub'] = dataset_hub
-            logger.info(f"Using dataset hub: {dataset_hub}")
+
+        # For local datasets, override the dataset_id in dataset_args
+        if dataset_hub == 'local' and dataset_path:
+            if not task_cfg_dict.get('dataset_args'):
+                task_cfg_dict['dataset_args'] = {}
+            if dataset_name not in task_cfg_dict['dataset_args']:
+                task_cfg_dict['dataset_args'][dataset_name] = {}
+
+            # Point dataset_id to the local path
+            task_cfg_dict['dataset_args'][dataset_name]['dataset_id'] = dataset_path
+            logger.info(f"Set local dataset_id to: {dataset_path}")
 
         # Add limit if specified
         if 'limit' in config and config['limit']:

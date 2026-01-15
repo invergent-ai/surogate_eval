@@ -47,6 +47,7 @@ class GenericBenchmark(BaseBenchmark):
             'limit': self.config.limit,
             'subset': self.config.subset,
             'path': self.config.path,  # Custom dataset path
+            'dataset_hub': self.config.dataset_hub,
             'batch_size': self.config.backend_params.get('batch_size', 1),
             'backend_params': self.config.backend_params,
         }

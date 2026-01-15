@@ -1,6 +1,7 @@
 # surogate/eval/benchmarks/backends/evalscope_backend.py
 """EvalScope backend for benchmark evaluation."""
 import tempfile
+import time
 from typing import Dict, Any, List
 from pathlib import Path
 
@@ -17,13 +18,15 @@ except ImportError:
     TaskConfig = None
     EvalType = None
 
-
-
 logger = get_logger()
 
 
 class EvalScopeBackend:
     """Backend using EvalScope (formerly llmuses) for benchmark evaluation."""
+
+    # Default retry configuration
+    DEFAULT_MAX_RETRIES = 3
+    DEFAULT_RETRY_DELAY = 5  # seconds
 
     # Map our benchmark names to EvalScope dataset names
     BENCHMARK_MAP = {
@@ -88,6 +91,16 @@ class EvalScopeBackend:
         'real_world_qa': 'real_world_qa',
     }
 
+    # Errors that indicate dataset download issues (retryable)
+    RETRYABLE_ERRORS = [
+        "An error occurred while generating the dataset",
+        "Couldn't find file at",
+        "Connection reset by peer",
+        "Connection timed out",
+        "Read timed out",
+        "获取数据集文件列表失败",  # ModelScope Chinese error
+    ]
+
     def __init__(self):
         """Initialize EvalScope backend."""
         if not EVALSCOPE_AVAILABLE:
@@ -97,6 +110,36 @@ class EvalScopeBackend:
             )
         logger.debug("Initialized EvalScope benchmark backend")
 
+    def _is_retryable_error(self, error: Exception) -> bool:
+        """Check if the error is retryable (e.g., dataset download issues)."""
+        error_str = str(error)
+        return any(retryable in error_str for retryable in self.RETRYABLE_ERRORS)
+
+    def _clear_dataset_cache(self, dataset_name: str):
+        """Clear cached dataset files to force re-download."""
+        import shutil
+
+        cache_dirs = [
+            Path.home() / '.cache' / 'modelscope' / 'hub' / 'datasets',
+            Path.home() / '.cache' / 'huggingface' / 'datasets',
+            Path('/root/.cache/modelscope/hub/datasets'),
+            Path('/root/.cache/huggingface/datasets'),
+        ]
+
+        for cache_dir in cache_dirs:
+            if cache_dir.exists():
+                # Look for dataset-specific cache directories
+                for item in cache_dir.iterdir():
+                    if dataset_name.lower() in item.name.lower():
+                        try:
+                            if item.is_dir():
+                                shutil.rmtree(item)
+                            else:
+                                item.unlink()
+                            logger.debug(f"Cleared cache: {item}")
+                        except Exception as e:
+                            logger.debug(f"Failed to clear cache {item}: {e}")
+
     def evaluate(
             self,
             target: BaseTarget,
@@ -104,7 +147,7 @@ class EvalScopeBackend:
             config: Dict[str, Any]
     ) -> Dict[str, Any]:
         """
-        Evaluate target using EvalScope benchmark.
+        Evaluate target using EvalScope benchmark with retry logic.
 
         Args:
             target: Target to evaluate
@@ -124,42 +167,66 @@ class EvalScopeBackend:
                 f"Supported: {list(self.BENCHMARK_MAP.keys())}"
             )
 
-        # Prepare EvalScope task config
-        task_config = self._prepare_task_config(target, evalscope_dataset, config)
+        # Get retry configuration
+        max_retries = config.get('max_retries', self.DEFAULT_MAX_RETRIES)
+        retry_delay = config.get('retry_delay', self.DEFAULT_RETRY_DELAY)
 
-        # Run evaluation
-        try:
-            logger.info(f"Running EvalScope task for dataset: {evalscope_dataset}")
+        last_error = None
+        for attempt in range(1, max_retries + 1):
+            try:
+                # Prepare EvalScope task config
+                task_config = self._prepare_task_config(target, evalscope_dataset, config)
 
-            # Run the task
-            results = run_task(task_cfg=task_config)
+                logger.info(f"Running EvalScope task for dataset: {evalscope_dataset}")
 
-            # EvalScope saves results to work_dir/reports/{model_id}/{dataset}.json
-            # Read the results from that file
-            import json
-            work_dir = task_config.work_dir
-            model_id = task_config.model_id
-            results_file = Path(work_dir) / 'reports' / model_id / f'{evalscope_dataset}.json'
+                # Run the task
+                results = run_task(task_cfg=task_config)
 
-            if results_file.exists():
-                with open(results_file, 'r') as f:
-                    results = json.load(f)
-                logger.debug(f"Loaded results from: {results_file}")
-            else:
-                logger.warning(f"Results file not found: {results_file}")
-                results = {}
+                # EvalScope saves results to work_dir/reports/{model_id}/{dataset}.json
+                import json
+                work_dir = task_config.work_dir
+                model_id = task_config.model_id
+                results_file = Path(work_dir) / 'reports' / model_id / f'{evalscope_dataset}.json'
 
-            # Parse results
-            parsed_results = self._parse_results(results, benchmark_name)
+                if results_file.exists():
+                    with open(results_file, 'r') as f:
+                        results = json.load(f)
+                    logger.debug(f"Loaded results from: {results_file}")
+                else:
+                    logger.warning(f"Results file not found: {results_file}")
+                    results = {}
 
-            logger.success(f"EvalScope evaluation completed for: {benchmark_name}")
-            return parsed_results
+                # Parse results
+                parsed_results = self._parse_results(results, benchmark_name)
 
-        except Exception as e:
-            logger.error(f"EvalScope evaluation failed: {e}")
-            import traceback
-            logger.debug(traceback.format_exc())
-            raise
+                logger.success(f"EvalScope evaluation completed for: {benchmark_name}")
+                return parsed_results
+
+            except Exception as e:
+                last_error = e
+
+                if self._is_retryable_error(e) and attempt < max_retries:
+                    logger.warning(
+                        f"Attempt {attempt}/{max_retries} failed with retryable error: {e}. "
+                        f"Retrying in {retry_delay} seconds..."
+                    )
+
+                    # Clear cache before retry to force fresh download
+                    self._clear_dataset_cache(evalscope_dataset)
+
+                    time.sleep(retry_delay)
+                    # Exponential backoff
+                    retry_delay = min(retry_delay * 2, 60)
+                else:
+                    # Non-retryable error or max retries reached
+                    logger.error(f"EvalScope evaluation failed: {e}")
+                    import traceback
+                    logger.debug(traceback.format_exc())
+                    raise
+
+        # If we get here, all retries failed
+        logger.error(f"All {max_retries} attempts failed for benchmark: {benchmark_name}")
+        raise last_error
 
     def _prepare_task_config(
             self,

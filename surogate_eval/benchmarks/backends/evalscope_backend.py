@@ -5,8 +5,21 @@ import time
 from typing import Dict, Any, List
 from pathlib import Path
 
+import requests
+_original_request = requests.Session.request
+def _patched_request(self, method, url, **kwargs):
+    if 'headers' not in kwargs:
+        kwargs['headers'] = {}
+    if 'User-Agent' not in kwargs['headers'] and 'user-agent' not in kwargs['headers']:
+        kwargs['headers']['User-Agent'] = 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36'
+    return _original_request(self, method, url, **kwargs)
+requests.Session.request = _patched_request
+
+
 from surogate_eval.targets import BaseTarget
 from surogate_eval.utils.logger import get_logger
+
+
 
 try:
     from evalscope import run_task, TaskConfig

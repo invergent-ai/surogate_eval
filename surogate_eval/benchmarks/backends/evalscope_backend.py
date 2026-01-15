@@ -2,159 +2,24 @@
 """EvalScope backend for benchmark evaluation."""
 import tempfile
 import time
-import random
 from typing import Dict, Any, List
 from pathlib import Path
 
-# =============================================================================
-# Patch User-Agent globally for ModelScope compatibility
-# This fixes issues with ModelScope blocking default User-Agents from certain IPs
-# =============================================================================
-
-# Try to use fake-useragent, fallback to static list
-try:
-    from fake_useragent import UserAgent
-    _ua = UserAgent()
-    _USE_FAKE_UA = True
-except ImportError:
-    _USE_FAKE_UA = False
-    _ua = None
-
-# Fallback User-Agent list if fake-useragent is not installed
-_FALLBACK_USER_AGENTS = [
-    'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
-    'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/119.0.0.0 Safari/537.36',
-    'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
-    'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/17.1 Safari/605.1.15',
-    'Mozilla/5.0 (Windows NT 10.0; Win64; x64; rv:121.0) Gecko/20100101 Firefox/121.0',
-    'Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
-    'Mozilla/5.0 (X11; Ubuntu; Linux x86_64; rv:121.0) Gecko/20100101 Firefox/121.0',
-    'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36 Edg/120.0.0.0',
-]
-
-
-def _get_random_user_agent() -> str:
-    """Get a random User-Agent string."""
-    if _USE_FAKE_UA:
-        try:
-            return _ua.random
-        except Exception:
-            pass
-    return random.choice(_FALLBACK_USER_AGENTS)
-
-
-# Patch requests at multiple levels
 import requests
-
-# Patch Session.request (catches most session-based requests)
-_original_session_request = requests.Session.request
-
-
-def _patched_session_request(self, method, url, **kwargs):
+_original_request = requests.Session.request
+def _patched_request(self, method, url, **kwargs):
     if 'headers' not in kwargs:
         kwargs['headers'] = {}
     if 'User-Agent' not in kwargs['headers'] and 'user-agent' not in kwargs['headers']:
-        kwargs['headers']['User-Agent'] = _get_random_user_agent()
-    return _original_session_request(self, method, url, **kwargs)
+        kwargs['headers']['User-Agent'] = 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36'
+    return _original_request(self, method, url, **kwargs)
+requests.Session.request = _patched_request
 
-
-requests.Session.request = _patched_session_request
-
-# Patch requests.get/post/head/put/delete/patch directly (for non-session calls)
-_original_get = requests.get
-_original_post = requests.post
-_original_head = requests.head
-_original_put = requests.put
-_original_delete = requests.delete
-_original_patch = requests.patch
-
-
-def _patched_get(url, **kwargs):
-    if 'headers' not in kwargs:
-        kwargs['headers'] = {}
-    if 'User-Agent' not in kwargs['headers'] and 'user-agent' not in kwargs['headers']:
-        kwargs['headers']['User-Agent'] = _get_random_user_agent()
-    return _original_get(url, **kwargs)
-
-
-def _patched_post(url, **kwargs):
-    if 'headers' not in kwargs:
-        kwargs['headers'] = {}
-    if 'User-Agent' not in kwargs['headers'] and 'user-agent' not in kwargs['headers']:
-        kwargs['headers']['User-Agent'] = _get_random_user_agent()
-    return _original_post(url, **kwargs)
-
-
-def _patched_head(url, **kwargs):
-    if 'headers' not in kwargs:
-        kwargs['headers'] = {}
-    if 'User-Agent' not in kwargs['headers'] and 'user-agent' not in kwargs['headers']:
-        kwargs['headers']['User-Agent'] = _get_random_user_agent()
-    return _original_head(url, **kwargs)
-
-
-def _patched_put(url, **kwargs):
-    if 'headers' not in kwargs:
-        kwargs['headers'] = {}
-    if 'User-Agent' not in kwargs['headers'] and 'user-agent' not in kwargs['headers']:
-        kwargs['headers']['User-Agent'] = _get_random_user_agent()
-    return _original_put(url, **kwargs)
-
-
-def _patched_delete(url, **kwargs):
-    if 'headers' not in kwargs:
-        kwargs['headers'] = {}
-    if 'User-Agent' not in kwargs['headers'] and 'user-agent' not in kwargs['headers']:
-        kwargs['headers']['User-Agent'] = _get_random_user_agent()
-    return _original_delete(url, **kwargs)
-
-
-def _patched_patch(url, **kwargs):
-    if 'headers' not in kwargs:
-        kwargs['headers'] = {}
-    if 'User-Agent' not in kwargs['headers'] and 'user-agent' not in kwargs['headers']:
-        kwargs['headers']['User-Agent'] = _get_random_user_agent()
-    return _original_patch(url, **kwargs)
-
-
-requests.get = _patched_get
-requests.post = _patched_post
-requests.head = _patched_head
-requests.put = _patched_put
-requests.delete = _patched_delete
-requests.patch = _patched_patch
-
-# Patch urllib for lower-level requests (used by some libraries)
-import urllib.request
-
-_original_urlopen = urllib.request.urlopen
-
-
-def _patched_urlopen(url, data=None, timeout=None, **kwargs):
-    if isinstance(url, str):
-        req = urllib.request.Request(url, data=data)
-        req.add_header('User-Agent', _get_random_user_agent())
-        return _original_urlopen(req, timeout=timeout)
-    elif isinstance(url, urllib.request.Request):
-        if not url.has_header('User-Agent') and not url.has_header('User-agent'):
-            url.add_header('User-Agent', _get_random_user_agent())
-        return _original_urlopen(url, data=data, timeout=timeout)
-    return _original_urlopen(url, data=data, timeout=timeout, **kwargs)
-
-
-urllib.request.urlopen = _patched_urlopen
-
-# Set default opener with User-Agent
-_opener = urllib.request.build_opener()
-_opener.addheaders = [('User-Agent', _get_random_user_agent())]
-urllib.request.install_opener(_opener)
-
-# =============================================================================
-# End User-Agent patch
-# =============================================================================
 
 from surogate_eval.targets import BaseTarget
 from surogate_eval.utils.logger import get_logger
+
+
 
 try:
     from evalscope import run_task, TaskConfig
@@ -269,44 +134,24 @@ class EvalScopeBackend:
 
         cache_dirs = [
             Path.home() / '.cache' / 'modelscope' / 'hub' / 'datasets',
-            Path.home() / '.cache' / 'modelscope' / 'hub' / 'datasets' / 'downloads',
-            Path('/root/.cache/modelscope/hub/datasets'),
-            Path('/root/.cache/modelscope/hub/datasets/downloads'),
             Path.home() / '.cache' / 'huggingface' / 'datasets',
+            Path('/root/.cache/modelscope/hub/datasets'),
             Path('/root/.cache/huggingface/datasets'),
         ]
 
         for cache_dir in cache_dirs:
-            if not cache_dir.exists():
-                continue
-
-            try:
-                # For downloads dir, clear everything (hash-based filenames)
-                if 'downloads' in str(cache_dir):
-                    for item in cache_dir.iterdir():
+            if cache_dir.exists():
+                # Look for dataset-specific cache directories
+                for item in cache_dir.iterdir():
+                    if dataset_name.lower() in item.name.lower():
                         try:
                             if item.is_dir():
                                 shutil.rmtree(item)
                             else:
                                 item.unlink()
-                            logger.debug(f"Cleared download cache: {item}")
+                            logger.debug(f"Cleared cache: {item}")
                         except Exception as e:
-                            logger.debug(f"Failed to clear {item}: {e}")
-                else:
-                    # For dataset dirs, look for dataset name or cais/mmlu pattern
-                    for item in cache_dir.iterdir():
-                        item_name = item.name.lower()
-                        if dataset_name.lower() in item_name or 'cais' in item_name:
-                            try:
-                                if item.is_dir():
-                                    shutil.rmtree(item)
-                                else:
-                                    item.unlink()
-                                logger.debug(f"Cleared cache: {item}")
-                            except Exception as e:
-                                logger.debug(f"Failed to clear cache {item}: {e}")
-            except Exception as e:
-                logger.debug(f"Failed to process cache dir {cache_dir}: {e}")
+                            logger.debug(f"Failed to clear cache {item}: {e}")
 
     def evaluate(
             self,
@@ -342,13 +187,8 @@ class EvalScopeBackend:
         last_error = None
         for attempt in range(1, max_retries + 1):
             try:
-                # Force redownload on retry attempts
-                retry_config = config.copy()
-                if attempt > 1:
-                    retry_config['force_redownload'] = True
-
                 # Prepare EvalScope task config
-                task_config = self._prepare_task_config(target, evalscope_dataset, retry_config)
+                task_config = self._prepare_task_config(target, evalscope_dataset, config)
 
                 logger.info(f"Running EvalScope task for dataset: {evalscope_dataset}")
 
@@ -439,18 +279,19 @@ class EvalScopeBackend:
             if model_args:
                 task_cfg_dict['model_args'] = model_args
 
-        # Dataset path for custom datasets
+        # After setting dataset_hub, also override dataset_id for local datasets
         dataset_path = config.get('dataset_path') or config.get('path') or config.get('custom_dataset')
+        # For custom datasets, override the dataset_id in dataset_args
         if dataset_path:
             if not task_cfg_dict.get('dataset_args'):
                 task_cfg_dict['dataset_args'] = {}
             if dataset_name not in task_cfg_dict['dataset_args']:
                 task_cfg_dict['dataset_args'][dataset_name] = {}
 
+            # Point dataset_id to the custom path (local or HF repo)
             task_cfg_dict['dataset_args'][dataset_name]['dataset_id'] = dataset_path
             logger.info(f"Set custom dataset_id to: {dataset_path}")
 
-        # Dataset hub configuration
         dataset_hub = config.get('dataset_hub') or config.get('hub')
         if dataset_hub:
             task_cfg_dict['dataset_hub'] = dataset_hub
@@ -462,17 +303,9 @@ class EvalScopeBackend:
             if dataset_name not in task_cfg_dict['dataset_args']:
                 task_cfg_dict['dataset_args'][dataset_name] = {}
 
+            # Point dataset_id to the local path
             task_cfg_dict['dataset_args'][dataset_name]['dataset_id'] = dataset_path
             logger.info(f"Set local dataset_id to: {dataset_path}")
-
-        # Force redownload if specified (usually on retry)
-        if config.get('force_redownload'):
-            if not task_cfg_dict.get('dataset_args'):
-                task_cfg_dict['dataset_args'] = {}
-            if dataset_name not in task_cfg_dict['dataset_args']:
-                task_cfg_dict['dataset_args'][dataset_name] = {}
-            task_cfg_dict['dataset_args'][dataset_name]['force_redownload'] = True
-            logger.info("Forcing dataset redownload")
 
         # Add limit if specified
         if 'limit' in config and config['limit']:
@@ -564,6 +397,12 @@ class EvalScopeBackend:
         Returns:
             Parsed results dictionary
         """
+        # EvalScope JSON format:
+        # {
+        #   "score": 0.2222,
+        #   "metrics": [{"name": "mean_acc", "score": 0.2222, "num": 9, "categories": [...]}]
+        # }
+
         task_results = {}
         overall_score = results.get('score', 0.0)
 

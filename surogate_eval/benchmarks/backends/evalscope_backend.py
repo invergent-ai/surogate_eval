@@ -288,8 +288,8 @@ class EvalScopeBackend:
             if dataset_name not in task_cfg_dict['dataset_args']:
                 task_cfg_dict['dataset_args'][dataset_name] = {}
 
-            # Point dataset_id to the custom path (local or HF repo)
             task_cfg_dict['dataset_args'][dataset_name]['dataset_id'] = dataset_path
+            task_cfg_dict['dataset_args'][dataset_name]['default_subset'] = 'default'  # <-- ADD THIS
             logger.info(f"Set custom dataset_id to: {dataset_path}")
 
         dataset_hub = config.get('dataset_hub') or config.get('hub')

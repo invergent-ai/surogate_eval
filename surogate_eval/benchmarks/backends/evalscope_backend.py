@@ -66,13 +66,13 @@ class EvalScopeBackend:
         'tau2_bench': 'tau2_bench',
         'longbench': 'longbench',
         'longbench_write': 'longbench_write',
-        'toolbench': 'toolbench',
+        'toolbench': 'tool_bench',
 
         # Mathematical benchmarks
-        'math': 'math',
-        'aime': 'aime_2024',
-        'aime_2024': 'aime_2024',
-        'aime_2025': 'aime_2025',
+        'math': 'competition_math',
+        'aime': 'aime24',
+        'aime_2024': 'aime24',
+        'aime_2025': 'aime25',
 
         # Multilingual
         'super_gpqa': 'super_gpqa',
@@ -85,8 +85,15 @@ class EvalScopeBackend:
         'drop': 'drop',
         'boolq': 'boolq',
         'lambada': 'lambada',
-        'logiqa': 'logiqa',
-        'mathqa': 'mathqa',
+        'logiqa': 'logi_qa',
+        'mathqa': 'math_qa',
+        'triviaqa': 'trivia_qa',
+        'commonsenseqa': 'commonsense_qa',
+        'piqa': 'piqa',
+        'siqa': 'siqa',
+        'race': 'race',
+        'sciq': 'sciq',
+        'pubmedqa': 'pubmedqa',
 
         # Multimodal/Vision benchmarks
         'mmmu': 'mmmu',

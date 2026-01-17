@@ -28,6 +28,9 @@ EVALSCOPE_BENCHMARKS = [
     'mmmu', 'mmmu_pro', 'mathvista', 'math_vista', 'chartqa', 'docvqa',
     'infovqa', 'ai2d', 'seed_bench', 'mm_bench', 'mm_star', 'pope',
     'real_world_qa',
+
+    # QA benchmarks (NEW)
+    'triviaqa', 'commonsenseqa', 'piqa', 'siqa', 'race', 'sciq', 'pubmedqa',
 ]
 
 # Register all benchmarks using generic class

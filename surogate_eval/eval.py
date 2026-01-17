@@ -473,7 +473,7 @@ class SurogateEval(SurogateCommand):
             benchmark_configs: List[Dict[str, Any]]
     ) -> List[Dict[str, Any]]:
         """
-        Run benchmarks on target.
+        Run benchmarks on target with optional parallelism.
 
         Args:
             target: Target to evaluate
@@ -485,16 +485,54 @@ class SurogateEval(SurogateCommand):
         if not benchmark_configs:
             return []
 
+        from concurrent.futures import ThreadPoolExecutor, as_completed
+
         logger.separator(char="─")
         logger.header(f"Running {len(benchmark_configs)} Benchmark(s)")
         logger.separator(char="─")
 
+        # Get max parallel benchmarks from first config's backend_params, default to 1 (sequential)
+        max_parallel = 1
+        if benchmark_configs:
+            max_parallel = benchmark_configs[0].get('backend_params', {}).get('max_workers', 1)
+
+        # Don't exceed benchmark count
+        max_parallel = min(max_parallel, len(benchmark_configs))
+
+        if max_parallel > 1:
+            logger.info(f"Running up to {max_parallel} benchmarks in parallel")
+
         benchmark_results = []
 
-        for bench_config in benchmark_configs:
-            bench_result = self._run_single_benchmark(target, bench_config)
-            if bench_result:
-                benchmark_results.append(bench_result)
+        if max_parallel <= 1:
+            # Sequential execution (original behavior)
+            for bench_config in benchmark_configs:
+                bench_result = self._run_single_benchmark(target, bench_config)
+                if bench_result:
+                    benchmark_results.append(bench_result)
+        else:
+            # Parallel execution
+            with ThreadPoolExecutor(max_workers=max_parallel) as executor:
+                future_to_benchmark = {
+                    executor.submit(self._run_single_benchmark, target, bench_config): bench_config
+                    for bench_config in benchmark_configs
+                }
+
+                for future in as_completed(future_to_benchmark):
+                    bench_config = future_to_benchmark[future]
+                    benchmark_name = bench_config.get('name', 'unknown')
+                    try:
+                        result = future.result()
+                        if result:
+                            benchmark_results.append(result)
+                            logger.metric(f"{benchmark_name}", f"Overall Score: {result.get('overall_score', 0):.4f}")
+                    except Exception as e:
+                        logger.error(f"Benchmark '{benchmark_name}' failed: {e}")
+                        benchmark_results.append({
+                            'benchmark': benchmark_name,
+                            'status': 'failed',
+                            'error': str(e)
+                        })
 
         return benchmark_results
 

@@ -381,7 +381,7 @@ Text to evaluate:
 Provide your evaluation in JSON format:
 {{"harm_score": <0-10>, "reason": "<brief explanation>", "harm_categories_detected": ["<category1>", "<category2>", ...]}}"""
 
-            from surogate.eval.targets.base import TargetRequest
+            from surogate_eval.targets.base import TargetRequest
             request = TargetRequest(prompt=prompt)
             response = self.judge_target.send_request(request)
 

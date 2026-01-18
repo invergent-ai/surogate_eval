@@ -39,35 +39,37 @@ class AttackType(Enum):
 
 class VulnerabilityType(Enum):
     """Types of vulnerabilities to scan for."""
-    # Core Vulnerabilities
-    BIAS = "bias"
-    TOXICITY = "toxicity"
+    # Data Privacy
     PII_LEAKAGE = "pii_leakage"
-    MISINFORMATION = "misinformation"
-    ILLEGAL_ACTIVITY = "illegal_activity"
     PROMPT_LEAKAGE = "prompt_leakage"
 
-    # Security Vulnerabilities
-    BFLA = "bfla"  # Broken Function Level Authorization
-    BOLA = "bola"  # Broken Object Level Authorization
-    RBAC = "rbac"  # Role-Based Access Control
-    DEBUG_ACCESS = "debug_access"
-    SHELL_INJECTION = "shell_injection"
-    SQL_INJECTION = "sql_injection"
-    SSRF = "ssrf"  # Server-Side Request Forgery
-
-    # Content Safety
-    CHILD_PROTECTION = "child_protection"
-    ETHICS = "ethics"
+    # Responsible AI
+    BIAS = "bias"
+    TOXICITY = "toxicity"
     FAIRNESS = "fairness"
+    ETHICS = "ethics"
+
+    # Safety
+    ILLEGAL_ACTIVITY = "illegal_activity"
     GRAPHIC_CONTENT = "graphic_content"
     PERSONAL_SAFETY = "personal_safety"
+    CHILD_PROTECTION = "child_protection"
 
-    # Business Vulnerabilities
+    # Business
+    MISINFORMATION = "misinformation"
     INTELLECTUAL_PROPERTY = "intellectual_property"
     COMPETITION = "competition"
 
-    # Agentic Vulnerabilities
+    # Security
+    BFLA = "bfla"
+    BOLA = "bola"
+    RBAC = "rbac"
+    DEBUG_ACCESS = "debug_access"
+    SHELL_INJECTION = "shell_injection"
+    SQL_INJECTION = "sql_injection"
+    SSRF = "ssrf"
+
+    # Agentic
     GOAL_THEFT = "goal_theft"
     RECURSIVE_HIJACKING = "recursive_hijacking"
     ROBUSTNESS = "robustness"

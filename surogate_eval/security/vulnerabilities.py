@@ -23,113 +23,130 @@ class VulnerabilityDefinition:
 class VulnerabilityScanner:
     """Comprehensive vulnerability scanner with extensive vulnerability definitions."""
 
-    # Comprehensive vulnerability subtypes mapping
+    # Comprehensive vulnerability subtypes mapping - ALIGNED WITH DEEPTEAM
     VULNERABILITY_SUBTYPES = {
-        # Core Vulnerabilities
-        VulnerabilityType.BIAS: [
-            "race", "gender", "religion", "nationality", "age",
-            "disability", "sexual_orientation", "political"
-        ],
-
-        VulnerabilityType.TOXICITY: [
-            "profanity", "insults", "threats", "identity_attack",
-            "sexually_explicit", "flirtation", "hate_speech"
-        ],
-
+        # =========================================================================
+        # DATA PRIVACY
+        # =========================================================================
         VulnerabilityType.PII_LEAKAGE: [
-            "direct disclosure", "session leak", "implicit leakage",
-            "email", "phone", "ssn", "credit_card", "address"
-        ],
-
-        VulnerabilityType.MISINFORMATION: [
-            "factual errors", "conspiracy theories", "health_misinformation",
-            "political_misinformation", "scientific_misinformation"
-        ],
-
-        VulnerabilityType.ILLEGAL_ACTIVITY: [
-            "drug_manufacturing", "terrorism", "human_trafficking",
-            "fraud", "money_laundering", "cybercrime"
+            "api_and_database_access", "direct_disclosure",
+            "session_leak", "social_manipulation"
         ],
 
         VulnerabilityType.PROMPT_LEAKAGE: [
-            "secrets and credentials", "instructions", "system_prompt",
-            "hidden_instructions", "configuration"
+            "secrets_and_credentials", "instructions",
+            "guard_exposure", "permissions_and_roles"
         ],
 
-        # Security Vulnerabilities
-        VulnerabilityType.BFLA: [
-            "function_level_bypass", "api_abuse", "admin_functions"
+        # =========================================================================
+        # RESPONSIBLE AI
+        # =========================================================================
+        VulnerabilityType.BIAS: [
+            "religion", "politics", "gender", "race"
         ],
 
-        VulnerabilityType.BOLA: [
-            "object_level_bypass", "idor", "resource_access"
-        ],
-
-        VulnerabilityType.RBAC: [
-            "role_bypass", "permission_escalation", "privilege_abuse"
-        ],
-
-        VulnerabilityType.DEBUG_ACCESS: [
-            "debug_mode", "debug_endpoints", "stack_traces"
-        ],
-
-        VulnerabilityType.SHELL_INJECTION: [
-            "command_injection", "os_command", "bash_injection"
-        ],
-
-        VulnerabilityType.SQL_INJECTION: [
-            "sql_query_manipulation", "blind_sql", "union_based"
-        ],
-
-        VulnerabilityType.SSRF: [
-            "internal_service_access", "cloud_metadata", "port_scanning"
-        ],
-
-        # Content Safety
-        VulnerabilityType.CHILD_PROTECTION: [
-            "child_harm", "minor_exploitation", "grooming"
-        ],
-
-        VulnerabilityType.ETHICS: [
-            "ethical_violation", "moral_dilemma", "value_alignment"
+        VulnerabilityType.TOXICITY: [
+            "profanity", "insults", "threats", "mockery"
         ],
 
         VulnerabilityType.FAIRNESS: [
-            "algorithmic_fairness", "disparate_impact", "demographic_parity"
+            "equality_consistency", "procedural_opportunity", "temporal_outcome"
+        ],
+
+        VulnerabilityType.ETHICS: [
+            "moral_integrity", "responsible_transparency", "harm_prevention"
+        ],
+
+        # =========================================================================
+        # SAFETY
+        # =========================================================================
+        VulnerabilityType.ILLEGAL_ACTIVITY: [
+            "weapons", "illegal_drugs", "violent_crimes",
+            "non_violent_crimes", "sex_crimes", "cybercrime",
+            "child_exploitation"
         ],
 
         VulnerabilityType.GRAPHIC_CONTENT: [
-            "violence", "gore", "disturbing_imagery"
+            "sexual_content", "graphic_content", "pornographic_content"
         ],
 
         VulnerabilityType.PERSONAL_SAFETY: [
-            "physical_harm", "threats", "dangerous_advice"
+            "bullying", "self_harm", "unsafe_practices",
+            "dangerous_challenges", "stalking"
         ],
 
-        # Business
+        VulnerabilityType.CHILD_PROTECTION: [
+            "age_verification", "data_privacy", "exposure_interaction"
+        ],
+
+        # =========================================================================
+        # BUSINESS
+        # =========================================================================
+        VulnerabilityType.MISINFORMATION: [
+            "factual_errors", "unsupported_claims", "expertize_misrepresentation"
+        ],
+
         VulnerabilityType.INTELLECTUAL_PROPERTY: [
-            "patent disclosure", "copyright violations", "trade_secrets"
+            "imitation", "copyright_violations",
+            "trademark_infringement", "patent_disclosure"
         ],
 
         VulnerabilityType.COMPETITION: [
-            "competitor_promotion", "competitive_intel", "market_position"
+            "competitor_mention", "market_manipulation",
+            "discreditation", "confidential_strategies"
         ],
 
-        # Agentic
+        # =========================================================================
+        # SECURITY
+        # =========================================================================
+        VulnerabilityType.BFLA: [
+            "privilege_escalation", "function_bypass", "authorization_bypass"
+        ],
+
+        VulnerabilityType.BOLA: [
+            "object_access_bypass", "cross_customer_access",
+            "unauthorized_object_manipulation"
+        ],
+
+        VulnerabilityType.RBAC: [
+            "role_bypass", "privilege_escalation", "unauthorized_role_assumption"
+        ],
+
+        VulnerabilityType.DEBUG_ACCESS: [
+            "debug_mode_bypass", "development_endpoint_access",
+            "administrative_interface_exposure"
+        ],
+
+        VulnerabilityType.SHELL_INJECTION: [
+            "command_injection", "system_command_execution", "shell_escape_sequences"
+        ],
+
+        VulnerabilityType.SQL_INJECTION: [
+            "blind_sql_injection", "union_based_injection", "error_based_injection"
+        ],
+
+        VulnerabilityType.SSRF: [
+            "internal_service_access", "cloud_metadata_access", "port_scanning"
+        ],
+
+        # =========================================================================
+        # AGENTIC
+        # =========================================================================
         VulnerabilityType.GOAL_THEFT: [
-            "objective_hijacking", "goal_manipulation"
+            "escalating_probing", "cooperative_dialogue", "social_engineering"
         ],
 
         VulnerabilityType.RECURSIVE_HIJACKING: [
-            "cascading_attacks", "recursive_exploitation"
+            "self_modifying_goals", "recursive_objective_chaining",
+            "goal_propagation_attacks"
         ],
 
         VulnerabilityType.ROBUSTNESS: [
-            "hijacking", "brittleness", "adversarial_robustness"
+            "input_overreliance", "hijacking"
         ],
 
         VulnerabilityType.EXCESSIVE_AGENCY: [
-            "unauthorized_actions", "scope_creep", "overstepping"
+            "functionality", "permissions", "autonomy"
         ],
     }
 

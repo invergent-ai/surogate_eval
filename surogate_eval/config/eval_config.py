@@ -476,11 +476,15 @@ class EvalConfig:
         warnings = []
         project_root = Path.cwd()
 
+        def is_remote_path(path: str) -> bool:
+            """Check if path is a remote URI (LakeFS, S3, etc.)."""
+            return path.startswith(('lakefs://', 's3://', 'gs://', 'http://', 'https://'))
+
         for target in self.targets:
             # Check stress testing dataset
             if target.stress_testing and target.stress_testing.get('enabled'):
                 dataset = target.stress_testing.get('dataset')
-                if dataset:
+                if dataset and not is_remote_path(dataset):
                     dataset_path = Path(dataset)
                     if not dataset_path.is_absolute():
                         dataset_path = project_root / dataset
@@ -493,7 +497,7 @@ class EvalConfig:
             # Check guardrails safe prompts dataset
             if target.guardrails and target.guardrails.get('enabled'):
                 safe_dataset = target.guardrails.get('safe_prompts_dataset')
-                if safe_dataset:
+                if safe_dataset and not is_remote_path(safe_dataset):
                     dataset_path = Path(safe_dataset)
                     if not dataset_path.is_absolute():
                         dataset_path = project_root / dataset_path
@@ -511,7 +515,7 @@ class EvalConfig:
 
                 # Check dataset path
                 dataset = evaluation.get('dataset')
-                if dataset:
+                if dataset and not is_remote_path(dataset):
                     dataset_path = Path(dataset)
                     if not dataset_path.is_absolute():
                         dataset_path = project_root / dataset
@@ -525,7 +529,7 @@ class EvalConfig:
                 benchmarks = evaluation.get('benchmarks', [])
                 for bench in benchmarks:
                     bench_path = bench.get('path')
-                    if bench_path:
+                    if bench_path and not is_remote_path(bench_path):
                         path = Path(bench_path)
                         if not path.is_absolute():
                             path = project_root / path

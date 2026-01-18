@@ -8,7 +8,7 @@ description = "Evaluation core for the surogate LLMOps framework"
 requires-python = ">=3.12"
 
 dependencies = [
-    "evalscope==1.4.1",
+    "evalscope[sandbox]==1.4.1",
     "torch>=2.5.0",
     "transformers>=4.48.0",
     "huggingface-hub>=0.28.0",

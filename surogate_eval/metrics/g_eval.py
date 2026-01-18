@@ -84,11 +84,37 @@ class ConversationalGEvalMetric(DeepEvalAdapter):
 
 @register_metric(MetricType.MULTIMODAL_G_EVAL)
 class MultimodalGEvalMetric(DeepEvalAdapter):
-    """Multimodal G-Eval for vision+language models."""
+    """Multimodal G-Eval for vision+language models.
+
+    Maps to specific deepeval multimodal metrics:
+    - image_coherence
+    - image_helpfulness (default)
+    - image_editing
+    - image_reference
+    - text_to_image
+    """
 
     def __init__(self, config: Dict[str, Any]):
         """Initialize Multimodal G-Eval metric."""
-        config['deepeval_metric_type'] = 'multimodal_g_eval'
+        # Allow user to specify which multimodal metric to use
+        multimodal_type = config.get('multimodal_type', 'image_helpfulness')
+
+        valid_types = [
+            'image_coherence',
+            'image_helpfulness',
+            'image_editing',
+            'image_reference',
+            'text_to_image',
+        ]
+
+        if multimodal_type not in valid_types:
+            logger.warning(
+                f"Unknown multimodal_type '{multimodal_type}', "
+                f"defaulting to 'image_helpfulness'. Valid: {valid_types}"
+            )
+            multimodal_type = 'image_helpfulness'
+
+        config['deepeval_metric_type'] = multimodal_type
         config['type'] = MetricType.MULTIMODAL_G_EVAL.value
 
         if 'parameters' not in config:
@@ -119,7 +145,7 @@ class MultimodalGEvalMetric(DeepEvalAdapter):
                     enum_params = [MLLMTestCaseParams.ACTUAL_OUTPUT]
 
                 config['parameters'] = {
-                    'name': config.get('name', 'Multimodal G-Eval'),
+                    'name': config.get('name', f'Multimodal G-Eval ({multimodal_type})'),
                     'criteria': config.get('criteria', 'Image-Text Alignment'),
                     'evaluation_params': enum_params,
                 }
@@ -130,7 +156,7 @@ class MultimodalGEvalMetric(DeepEvalAdapter):
             except ImportError:
                 logger.warning("Could not import MLLMTestCaseParams from deepeval")
                 config['parameters'] = {
-                    'name': config.get('name', 'Multimodal G-Eval'),
+                    'name': config.get('name', f'Multimodal G-Eval ({multimodal_type})'),
                     'criteria': config.get('criteria', 'Image-Text Alignment'),
                     'evaluation_params': evaluation_params,
                 }
@@ -155,7 +181,7 @@ class MultimodalGEvalMetric(DeepEvalAdapter):
                             max_score = int(match.group(2))
                             rubric_list.append(
                                 Rubric(
-                                    score_range=(min_score, max_score),  # tuple, not list
+                                    score_range=(min_score, max_score),
                                     expected_outcome=value
                                 )
                             )
@@ -164,7 +190,6 @@ class MultimodalGEvalMetric(DeepEvalAdapter):
                     config['parameters']['rubric'] = rubric_list
 
                 elif isinstance(rubric, list):
-                    # Convert list of dicts to Rubric objects
                     rubric_objects = []
                     for item in rubric:
                         if isinstance(item, dict):
@@ -175,7 +200,6 @@ class MultimodalGEvalMetric(DeepEvalAdapter):
                                 continue
 
                             score_range = item['score_range']
-                            # Convert list to tuple if needed
                             if isinstance(score_range, list):
                                 score_range = tuple(score_range)
 
@@ -193,7 +217,6 @@ class MultimodalGEvalMetric(DeepEvalAdapter):
 
             except ImportError:
                 logger.error("Could not import Rubric from deepeval.metrics.g_eval")
-                # Fallback: try to pass as-is and let DeepEval handle it
                 config['parameters']['rubric'] = rubric
 
         super().__init__(config)

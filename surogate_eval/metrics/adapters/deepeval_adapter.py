@@ -1,5 +1,5 @@
 # surogate/eval/metrics/adapters/deepeval_adapter.py
-from typing import Dict, Any, Optional, Union, List
+from typing import Dict, Any, Optional, Union
 
 from ...utils.logger import get_logger
 
@@ -7,16 +7,12 @@ try:
     from deepeval.metrics import (
         GEval,
         ConversationalGEval,
-        MultimodalGEval,
     )
     from deepeval.test_case import (
         LLMTestCase,
         ConversationalTestCase,
         Turn as DeepEvalTurn,
-        MLLMTestCase,
-        MLLMImage,
     )
-    # DAG components
     from deepeval.metrics.dag import (
         DeepAcyclicGraph,
         TaskNode,
@@ -26,15 +22,46 @@ try:
     )
 
     DEEPEVAL_AVAILABLE = True
+
+    # Multimodal support (separate try block)
+    try:
+        from deepeval.test_case import MLLMTestCase, MLLMImage
+        from deepeval.metrics import (
+            ImageCoherenceMetric,
+            ImageEditingMetric,
+            ImageHelpfulnessMetric,
+            ImageReferenceMetric,
+            TextToImageMetric,
+        )
+        MULTIMODAL_AVAILABLE = True
+    except ImportError:
+        MULTIMODAL_AVAILABLE = False
+        MLLMTestCase = None
+        MLLMImage = None
+        ImageCoherenceMetric = None
+        ImageEditingMetric = None
+        ImageHelpfulnessMetric = None
+        ImageReferenceMetric = None
+        TextToImageMetric = None
+
 except ImportError as e:
     DEEPEVAL_AVAILABLE = False
+    MULTIMODAL_AVAILABLE = False
     DEEPEVAL_IMPORT_ERROR = str(e)
 
-from ..base import BaseMetric, MetricResult, MetricType, LLMJudgeMetric
+from ..base import MetricResult, MetricType, LLMJudgeMetric
 from ...datasets.test_case import TestCase, MultiTurnTestCase
 from ...targets.base import TargetResponse
 
 logger = get_logger()
+
+MULTIMODAL_METRIC_TYPES = [
+    'image_coherence',
+    'image_editing',
+    'image_helpfulness',
+    'image_reference',
+    'text_to_image',
+]
 
 
 class DeepEvalAdapter(LLMJudgeMetric):
@@ -55,8 +82,8 @@ class DeepEvalAdapter(LLMJudgeMetric):
 
         # IMPORTANT: Set flags BEFORE calling super().__init__()
         deepeval_type = config.get('deepeval_metric_type')
-        self.is_conversational = (deepeval_type in ['conversational_g_eval', 'conversational_dag'])
-        self.is_multimodal = (deepeval_type == 'multimodal_g_eval')
+        self.is_conversational = deepeval_type in ['conversational_g_eval', 'conversational_dag']
+        self.is_multimodal = deepeval_type in MULTIMODAL_METRIC_TYPES
 
         super().__init__(config)
         self.deepeval_metric = None
@@ -77,10 +104,26 @@ class DeepEvalAdapter(LLMJudgeMetric):
         # Map our metric types to DeepEval metrics
         if deepeval_type == 'g_eval':
             self.deepeval_metric = GEval(**parameters)
+
         elif deepeval_type == 'conversational_g_eval':
             self.deepeval_metric = ConversationalGEval(**parameters)
-        elif deepeval_type == 'multimodal_g_eval':
-            self.deepeval_metric = MultimodalGEval(**parameters)
+
+        elif deepeval_type in MULTIMODAL_METRIC_TYPES:
+            if not MULTIMODAL_AVAILABLE:
+                raise ImportError(
+                    "Multimodal metrics require MLLMTestCase support. "
+                    "Upgrade deepeval: pip install --upgrade deepeval"
+                )
+
+            multimodal_metrics = {
+                'image_coherence': ImageCoherenceMetric,
+                'image_editing': ImageEditingMetric,
+                'image_helpfulness': ImageHelpfulnessMetric,
+                'image_reference': ImageReferenceMetric,
+                'text_to_image': TextToImageMetric,
+            }
+            self.deepeval_metric = multimodal_metrics[deepeval_type](**parameters)
+
         elif deepeval_type == 'dag':
             dag = parameters.get('dag')
             if not dag:
@@ -96,6 +139,7 @@ class DeepEvalAdapter(LLMJudgeMetric):
                 async_mode=parameters.get('async_mode', True),
                 verbose_mode=parameters.get('verbose_mode', False),
             )
+
         elif deepeval_type == 'conversational_dag':
             dag = parameters.get('dag')
             if not dag:
@@ -111,6 +155,7 @@ class DeepEvalAdapter(LLMJudgeMetric):
                 async_mode=parameters.get('async_mode', True),
                 verbose_mode=parameters.get('verbose_mode', False),
             )
+
         else:
             raise ValueError(f"Unknown DeepEval metric type: {deepeval_type}")
 
@@ -161,6 +206,15 @@ class DeepEvalAdapter(LLMJudgeMetric):
             if isinstance(test_case, TestCase):
                 # Check if this is a multimodal metric
                 if self.is_multimodal:
+                    if not MULTIMODAL_AVAILABLE:
+                        return MetricResult(
+                            metric_name=self.name,
+                            metric_type=self.metric_type,
+                            score=0.0,
+                            success=False,
+                            reason="Multimodal evaluation not available in this deepeval version"
+                        )
+
                     # Convert to MLLMTestCase for multimodal evaluation
                     images = test_case.metadata.get('images', [])
                     if isinstance(images, str):
@@ -170,7 +224,6 @@ class DeepEvalAdapter(LLMJudgeMetric):
                     mllm_images = []
                     for img in images:
                         if isinstance(img, str):
-                            # MLLMImage will auto-detect if it's local or remote
                             mllm_images.append(MLLMImage(url=img))
                         elif isinstance(img, MLLMImage):
                             mllm_images.append(img)
@@ -260,7 +313,7 @@ class DeepEvalAdapter(LLMJudgeMetric):
                         context="\n".join(conversation_context),
                     )
 
-                    logger.debug(f"Converted multi-turn to single-turn for non-conversational metric")
+                    logger.debug("Converted multi-turn to single-turn for non-conversational metric")
             else:
                 raise ValueError(f"Unknown test case type: {type(test_case)}")
 

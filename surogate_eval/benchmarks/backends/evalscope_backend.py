@@ -6,20 +6,22 @@ from typing import Dict, Any, List
 from pathlib import Path
 
 import requests
+
 _original_request = requests.Session.request
+
+
 def _patched_request(self, method, url, **kwargs):
     if 'headers' not in kwargs:
         kwargs['headers'] = {}
     if 'User-Agent' not in kwargs['headers'] and 'user-agent' not in kwargs['headers']:
         kwargs['headers']['User-Agent'] = 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36'
     return _original_request(self, method, url, **kwargs)
-requests.Session.request = _patched_request
 
+
+requests.Session.request = _patched_request
 
 from surogate_eval.targets import BaseTarget
 from surogate_eval.utils.logger import get_logger
-
-
 
 try:
     from evalscope import run_task, TaskConfig
@@ -56,7 +58,11 @@ class EvalScopeBackend:
         'winogrande': 'winogrande',
         'bbh': 'bbh',
         'humaneval': 'humaneval',
+        'humaneval_plus': 'humaneval_plus',
         'mbpp': 'mbpp',
+        'mbpp_plus': 'mbpp_plus',
+        'ds1000': 'ds1000',
+        'leetcode': 'leetcode',
 
         # EvalScope-specific benchmarks
         'bfcl': 'bfcl_v3',
@@ -255,6 +261,10 @@ class EvalScopeBackend:
             config: Dict[str, Any]
     ) -> TaskConfig:
         """Prepare EvalScope TaskConfig."""
+
+        # Code benchmarks that require sandbox execution
+        CODE_BENCHMARKS = {'mbpp', 'humaneval', 'humaneval_plus', 'mbpp_plus', 'ds1000', 'leetcode'}
+
         eval_type = self._get_eval_type(target)
 
         # Base config
@@ -262,6 +272,12 @@ class EvalScopeBackend:
             'datasets': [dataset_name],
             'work_dir': tempfile.gettempdir(),
         }
+
+        # Enable sandbox for code benchmarks
+        if dataset_name.lower() in CODE_BENCHMARKS:
+            task_cfg_dict['use_sandbox'] = True
+            task_cfg_dict['sandbox_type'] = 'docker'
+            logger.info(f"Enabling sandbox for code benchmark: {dataset_name}")
 
         # Add model configuration based on eval type
         if eval_type == EvalType.SERVICE:
@@ -296,7 +312,7 @@ class EvalScopeBackend:
                 task_cfg_dict['dataset_args'][dataset_name] = {}
 
             task_cfg_dict['dataset_args'][dataset_name]['dataset_id'] = dataset_path
-            task_cfg_dict['dataset_args'][dataset_name]['default_subset'] = 'default'  # <-- ADD THIS
+            task_cfg_dict['dataset_args'][dataset_name]['default_subset'] = 'default'
             logger.info(f"Set custom dataset_id to: {dataset_path}")
 
         dataset_hub = config.get('dataset_hub') or config.get('hub')

@@ -12,6 +12,9 @@ EVALSCOPE_BENCHMARKS = [
     'hellaswag', 'truthfulqa', 'winogrande', 'bbh', 'humaneval', 'mbpp',
     'boolq', 'drop', 'squad', 'lambada', 'logiqa', 'mathqa', 'ifeval',
 
+    # Code benchmarks (require sandbox)
+    'humaneval_plus', 'mbpp_plus', 'ds1000', 'leetcode',
+
     # Math & reasoning
     'math', 'aime', 'aime_2024', 'aime_2025',
 
@@ -29,13 +32,12 @@ EVALSCOPE_BENCHMARKS = [
     'infovqa', 'ai2d', 'seed_bench', 'mm_bench', 'mm_star', 'pope',
     'real_world_qa',
 
-    # QA benchmarks (NEW)
+    # QA benchmarks
     'triviaqa', 'commonsenseqa', 'piqa', 'siqa', 'race', 'sciq', 'pubmedqa',
 ]
 
 # Register all benchmarks using generic class
 for benchmark_name in EVALSCOPE_BENCHMARKS:
-    # Create a class dynamically
     BenchmarkRegistry._benchmarks[benchmark_name] = GenericBenchmark
 
 __all__ = [

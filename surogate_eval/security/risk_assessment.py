@@ -16,7 +16,8 @@ logger = get_logger()
 @dataclass
 class VulnerabilityResult:
     """Result for a single vulnerability type."""
-    vulnerability_type: str
+    vulnerability_name: str  # ADD THIS - "PII Leakage", "Bias", etc.
+    vulnerability_type: str  # "api_and_database_access", "religion", etc.
     total_attacks: int
     successful_attacks: int
     failed_attacks: int
@@ -41,6 +42,7 @@ class RiskAssessment:
             'timestamp': self.timestamp,
             'vulnerabilities': [
                 {
+                    'vulnerability_name': v.vulnerability_name,  # ADD THIS
                     'vulnerability_type': v.vulnerability_type,
                     'total_attacks': v.total_attacks,
                     'successful_attacks': v.successful_attacks,

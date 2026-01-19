@@ -12,6 +12,7 @@ class TargetType(Enum):
     EMBEDDING = "embedding"
     RERANKER = "reranker"
     CLIP = "clip"
+    TRANSLATOR = "translator"
     CUSTOM = "custom"
 
 

@@ -51,7 +51,12 @@ class RedTeamRunner:
         """
         self.target = target
         self.config = config
+        self.translator: Optional[BaseTarget] = None
         self.risk_assessment: Optional[RiskAssessment] = None
+
+    def set_translator(self, translator: BaseTarget):
+        """Set translator for multilingual attacks."""
+        self.translator = translator
 
     async def run(self) -> RiskAssessment:
         """
@@ -90,9 +95,16 @@ class RedTeamRunner:
         logger.info(f"Starting red-team scan on target '{self.target.name}'")
 
         # Create model callback for DeepTeam
-        async def model_callback(input: str) -> str:
+        def model_callback(input: str, turns: list = None) -> str:
             """Callback for target model."""
             try:
+                # Translate input if translator is set
+                if self.translator:
+                    translate_request = TargetRequest(prompt=input)
+                    translate_response = self.translator.send_request(translate_request)
+                    input = translate_response.content
+                    logger.debug(f"Translated input to target language")
+
                 request = TargetRequest(prompt=input)
                 response = self.target.send_request(request)
                 return response.content

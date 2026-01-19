@@ -791,6 +791,18 @@ class SurogateEval(SurogateCommand):
 
             # Run red-teaming
             runner = RedTeamRunner(target, config)
+
+            translator_config = red_team_config.get('translator')
+            if translator_config:
+                translator_target_name = translator_config.get('target')
+                if translator_target_name:
+                    translator_target = self._find_target_by_name(translator_target_name)
+                    if translator_target:
+                        runner.set_translator(translator_target)
+                        logger.info(f"Using translator target '{translator_target_name}'")
+                    else:
+                        logger.warning(f"Translator target '{translator_target_name}' not found")
+
             risk_assessment = await runner.run()
 
             return risk_assessment.to_dict()

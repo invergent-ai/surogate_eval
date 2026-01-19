@@ -1,7 +1,7 @@
 from typing import Dict, Any
 
 from .base import BaseTarget, TargetType
-from .model import APIModelTarget, LocalModelTarget, EmbeddingTarget, RerankerTarget, CLIPTarget
+from .model import APIModelTarget, LocalModelTarget, EmbeddingTarget, RerankerTarget, CLIPTarget, TranslatorTarget
 from ..utils.logger import get_logger
 
 logger = get_logger()
@@ -43,6 +43,9 @@ class TargetFactory:
 
         elif target_type == TargetType.CLIP:
             return CLIPTarget(config)
+
+        elif target_type == TargetType.TRANSLATOR:
+            return TranslatorTarget(config)
 
         else:
             raise ValueError(f"Unknown target type: {target_type}")

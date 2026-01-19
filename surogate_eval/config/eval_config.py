@@ -295,7 +295,7 @@ class EvalConfig:
         if not target.type:
             errors.append(f"Target '{target.name}': type is required")
         else:
-            valid_types = ['llm', 'multimodal', 'embedding', 'reranker', 'clip', 'custom']
+            valid_types = ['llm', 'multimodal', 'embedding', 'reranker', 'clip', 'custom', 'translator']
             if target.type not in valid_types:
                 errors.append(
                     f"Target '{target.name}': invalid type '{target.type}'. "

@@ -1059,3 +1059,108 @@ class CLIPTarget(BaseTarget):
             del self.model_obj
         if hasattr(self, 'processor'):
             del self.processor
+
+
+class TranslatorTarget(BaseTarget):
+    """Target that translates prompts/responses to a target language."""
+
+    def __init__(self, config: Dict[str, Any]):
+        super().__init__(config)
+        self.target_language = config.get('target_language', 'en')
+        self.source_language = config.get('source_language', 'en')
+        self.translator_target: Optional[BaseTarget] = None  # Set later via set_translator
+        self.translate_input = config.get('translate_input', True)
+        self.translate_output = config.get('translate_output', False)
+
+    def _validate_config(self):
+        """Validate translator configuration."""
+        if not self.config.get('target_language'):
+            raise ValueError("target_language is required")
+
+    def set_translator(self, target: BaseTarget):
+        """Set the translator model target."""
+        self.translator_target = target
+
+    def translate(self, text: str, to_language: str, from_language: str = None) -> str:
+        """Translate text to target language."""
+        if not self.translator_target:
+            logger.warning("No translator target set, returning original text")
+            return text
+
+        from_lang = f" from {from_language}" if from_language else ""
+        prompt = f"""Translate the following text{from_lang} to {to_language}.
+
+IMPORTANT:
+- Output ONLY the translation, nothing else
+- Preserve any JSON structure exactly
+- Preserve any code or technical terms
+- Do not add explanations
+
+Text to translate:
+{text}"""
+
+        request = TargetRequest(prompt=prompt)
+        response = self.translator_target.send_request(request)
+
+        content = response.content
+        # Handle thinking models
+        if "</think>" in content:
+            content = content.split("</think>")[-1].strip()
+
+        return content
+
+    def send_request(self, request: TargetRequest) -> TargetResponse:
+        """Translate the request prompt/messages."""
+        start_time = time.time()
+
+        try:
+            # Get original text
+            if request.prompt:
+                original_text = request.prompt
+            elif request.messages:
+                # Translate last user message
+                original_text = request.messages[-1].get('content', '')
+            else:
+                raise ValueError("No text to translate")
+
+            # Translate
+            translated = self.translate(
+                original_text,
+                to_language=self.target_language,
+                from_language=self.source_language
+            )
+
+            end_time = time.time()
+
+            return TargetResponse(
+                content=translated,
+                raw_response={'original': original_text, 'translated': translated},
+                metadata={
+                    'source_language': self.source_language,
+                    'target_language': self.target_language
+                },
+                timing={
+                    'total_time': end_time - start_time,
+                    'start_time': start_time,
+                    'end_time': end_time
+                }
+            )
+
+        except Exception as e:
+            logger.error(f"Translation error: {e}")
+            end_time = time.time()
+            return TargetResponse(
+                content="",
+                raw_response={},
+                metadata={},
+                timing={'total_time': end_time - start_time},
+                error=str(e)
+            )
+
+    def health_check(self) -> bool:
+        """Check if translator is available."""
+        return self.translator_target is not None and self.translator_target.health_check()
+
+    def cleanup(self):
+        """Cleanup resources."""
+        pass  # Translator target is managed separately

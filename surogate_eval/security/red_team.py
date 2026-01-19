@@ -119,7 +119,6 @@ class RedTeamRunner:
         logger.info(f"simulator_model value: {self.config.simulator_model}")
         logger.info(f"evaluation_model type: {type(self.config.evaluation_model)}")
         logger.info(f"evaluation_model value: {self.config.evaluation_model}")
-
         # Run red-teaming using DeepTeam's actual API
         try:
             dt_risk_assessment = dt_red_team(

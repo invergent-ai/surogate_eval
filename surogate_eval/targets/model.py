@@ -1,4 +1,5 @@
 # surogate/eval/targets/model.py
+import asyncio
 import json
 import time
 
@@ -60,6 +61,10 @@ class APIModelTarget(BaseTarget):
         headers.update(custom_headers)
 
         return headers
+
+    async def send_request_async(self, request: TargetRequest) -> TargetResponse:
+        """Async wrapper around synchronous send_request."""
+        return await asyncio.to_thread(self.send_request, request)
 
     def send_request(self, request: TargetRequest) -> TargetResponse:
         """Send request to API model."""

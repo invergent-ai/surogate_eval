@@ -27,6 +27,7 @@ class DatasetLoader:
     def _download_from_lakefs(self, lakefs_uri: str) -> str:
         """
         Download file from LakeFS to local temp path.
+        If no file path specified, auto-discovers single dataset file.
 
         Returns local path to downloaded file.
         """
@@ -44,14 +45,14 @@ class DatasetLoader:
                 "Install with: pip install lakefs"
             )
 
-        # Parse lakefs://repo/branch/path
+        # Parse lakefs://repo/branch or lakefs://repo/branch/path
         uri_parts = lakefs_uri.replace('lakefs://', '').split('/', 2)
-        if len(uri_parts) < 3:
-            raise ValueError(f"Invalid LakeFS URI: {lakefs_uri}. Expected lakefs://repo/branch/path")
+        if len(uri_parts) < 2:
+            raise ValueError(f"Invalid LakeFS URI: {lakefs_uri}. Expected lakefs://repo/branch[/path]")
 
-        repo, branch, path = uri_parts[0], uri_parts[1], uri_parts[2]
-
-        logger.info(f"Downloading from LakeFS: {lakefs_uri}")
+        repo = uri_parts[0]
+        branch = uri_parts[1]
+        path = uri_parts[2] if len(uri_parts) > 2 else None
 
         # Configure client from environment
         endpoint = os.environ.get('LAKECTL_SERVER_ENDPOINT_URL') or os.environ.get('LAKEFS_ENDPOINT')
@@ -70,6 +71,15 @@ class DatasetLoader:
             password=secret_key
         )
 
+        repo_obj = lakefs.Repository(repo, client=client)
+        branch_obj = repo_obj.branch(branch)
+
+        # Auto-discover if no path given
+        if not path:
+            path = self._discover_dataset_file(branch_obj, lakefs_uri)
+
+        logger.info(f"Downloading from LakeFS: {lakefs_uri} -> {path}")
+
         # Download to temp file
         suffix = Path(path).suffix
         temp_file = tempfile.NamedTemporaryFile(delete=False, suffix=suffix)
@@ -77,8 +87,6 @@ class DatasetLoader:
         temp_file.close()
 
         try:
-            repo_obj = lakefs.Repository(repo, client=client)
-            branch_obj = repo_obj.branch(branch)
             obj = branch_obj.object(path)
 
             with open(temp_path, 'wb') as f:
@@ -94,20 +102,47 @@ class DatasetLoader:
                 os.unlink(temp_path)
             raise FileNotFoundError(f"Failed to download from LakeFS: {lakefs_uri}. Error: {e}")
 
-    def load(self, filepath: str, format: Optional[str] = None) -> pl.DataFrame:
+    def _discover_dataset_file(self, branch_obj, lakefs_uri: str) -> str:
+        """
+        Find the single dataset file in the branch.
+
+        Raises error if zero or multiple dataset files found.
+        """
+        dataset_files = []
+
+        for obj in branch_obj.objects():
+            path = obj.path
+            suffix = Path(path).suffix.lower()
+            if suffix in self.SUPPORTED_FORMATS:
+                dataset_files.append(path)
+
+        if len(dataset_files) == 0:
+            raise FileNotFoundError(
+                f"No dataset files found in {lakefs_uri}. "
+                f"Supported formats: {self.SUPPORTED_FORMATS}"
+            )
+
+        if len(dataset_files) > 1:
+            raise ValueError(
+                f"Multiple dataset files found in {lakefs_uri}: {dataset_files}. "
+                f"Please specify the file path explicitly."
+            )
+
+        logger.info(f"Auto-discovered dataset file: {dataset_files[0]}")
+        return dataset_files[0]
+
+
+    def load(self, filepath: str, format: Optional[str] = None, limit: Optional[int] = None) -> pl.DataFrame:
         """
         Load dataset from file.
 
         Args:
             filepath: Path to dataset file (local or lakefs://)
             format: File format (auto-detected if None)
+            limit: Maximum number of rows to load
 
         Returns:
             Polars DataFrame
-
-        Raises:
-            FileNotFoundError: If file doesn't exist
-            ValueError: If format not supported
         """
         # Handle LakeFS paths
         if self._is_lakefs_path(filepath):
@@ -125,7 +160,7 @@ class DatasetLoader:
         if format not in self.SUPPORTED_FORMATS:
             raise ValueError(f"Unsupported format: {format}. Supported: {self.SUPPORTED_FORMATS}")
 
-        logger.info(f"Loading dataset from {filepath} (format: {format})")
+        logger.info(f"Loading dataset from {filepath} (format: {format}, limit: {limit})")
 
         if format == '.jsonl':
             df = self._load_jsonl(path)
@@ -133,6 +168,10 @@ class DatasetLoader:
             df = self._load_csv(path)
         else:
             raise ValueError(f"Unsupported format: {format}")
+
+        # Apply limit
+        if limit is not None and limit > 0:
+            df = df.head(limit)
 
         logger.info(f"Loaded dataset: {len(df)} rows, {len(df.columns)} columns")
         return df
@@ -197,17 +236,18 @@ class DatasetLoader:
         except Exception as e:
             raise ValueError(f"Failed to load CSV: {e}")
 
-    def load_test_cases(self, filepath: str) -> List[Union[TestCase, MultiTurnTestCase]]:
+    def load_test_cases(self, filepath: str, limit: Optional[int] = None) -> List[Union[TestCase, MultiTurnTestCase]]:
         """
         Load test cases from file.
 
         Args:
             filepath: Path to dataset file (local or lakefs://)
+            limit: Maximum number of test cases to load
 
         Returns:
             List of TestCase or MultiTurnTestCase objects
         """
-        df = self.load(filepath)
+        df = self.load(filepath, limit=limit)
 
         is_multi_turn = 'turns' in df.columns
 

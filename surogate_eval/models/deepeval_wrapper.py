@@ -26,72 +26,69 @@ class DeepEvalTargetWrapper(DeepEvalBaseLLM):
         logger.info(f"Prompt preview: {prompt[:300]}...")
 
         params = {}
-
-        # If schema is provided, try to use guided decoding
         if schema:
             try:
                 json_schema = schema.model_json_schema()
-                # For vLLM guided decoding
                 params = {"extra_body": {"guided_json": json_schema}}
-                logger.debug(f"Using guided JSON schema")
             except Exception as e:
                 logger.warning(f"Failed to get JSON schema: {e}")
 
         request = TargetRequest(prompt=prompt, parameters=params if params else None)
         response = self.target.send_request(request)
+
         logger.info(f"Response content length: {len(response.content) if response.content else 0}")
         logger.info(f"Response error: {response.error}")
-        logger.info(f"Response preview: {response.content[:200] if response.content else 'EMPTY'}...")
+        logger.info(f"Response preview: {response.content[:300] if response.content else 'EMPTY'}...")
 
         if response.error:
             logger.error(f"Target returned error: {response.error}")
-            # Return empty but valid response to avoid JSON parse errors
             if schema:
-                try:
-                    # Try to create a minimal valid instance
-                    return schema.model_construct()
-                except:
-                    pass
+                return schema.model_construct()
             return ""
 
         if not response.content:
             logger.warning(f"Empty response from target {self.target.name}")
             if schema:
-                try:
-                    return schema.model_construct()
-                except:
-                    pass
+                return schema.model_construct()
             return ""
+
+        content = response.content
+
+        # Handle thinking models - extract content after </think> tag
+        if "</think>" in content:
+            content = content.split("</think>")[-1].strip()
+            logger.info(f"Extracted content after </think>: {content[:300]}...")
 
         if schema:
             try:
-                # Parse JSON and return schema instance
-                json_result = json.loads(response.content)
+                json_result = json.loads(content)
                 return schema(**json_result)
             except json.JSONDecodeError as e:
                 logger.error(f"Failed to parse JSON response: {e}")
-                logger.debug(f"Response content: {response.content[:500]}")
-                # Try to extract JSON from response
+                # Try to extract JSON from markdown or other wrappers
                 try:
-                    # Sometimes models wrap JSON in markdown
-                    content = response.content
                     if "```json" in content:
-                        content = content.split("```json")[1].split("```")[0]
+                        content = content.split("```json")[1].split("```")[0].strip()
                     elif "```" in content:
-                        content = content.split("```")[1].split("```")[0]
-                    json_result = json.loads(content.strip())
-                    return schema(**json_result)
-                except:
-                    logger.error(f"Could not extract JSON from response")
-                    try:
-                        return schema.model_construct()
-                    except:
-                        raise
-            except Exception as e:
-                logger.error(f"Failed to create schema instance: {e}")
-                raise
+                        content = content.split("```")[1].split("```")[0].strip()
+                    # Try to find JSON object/array
+                    elif "{" in content:
+                        start = content.find("{")
+                        end = content.rfind("}") + 1
+                        content = content[start:end]
+                    elif "[" in content:
+                        start = content.find("[")
+                        end = content.rfind("]") + 1
+                        content = content[start:end]
 
-        return response.content
+                    logger.info(f"Extracted JSON: {content[:300]}...")
+                    json_result = json.loads(content)
+                    return schema(**json_result)
+                except Exception as ex:
+                    logger.error(f"Could not extract JSON from response: {ex}")
+                    return schema.model_construct()
+
+        return content
 
     async def a_generate(self, prompt: str, schema: Optional[BaseModel] = None) -> Union[str, BaseModel]:
         logger.debug(f"DeepEvalTargetWrapper.a_generate called")

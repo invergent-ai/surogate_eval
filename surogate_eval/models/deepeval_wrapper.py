@@ -20,7 +20,10 @@ class DeepEvalTargetWrapper(DeepEvalBaseLLM):
         return self.target
 
     def generate(self, prompt: str, schema: Optional[BaseModel] = None) -> Union[str, BaseModel]:
-        logger.debug(f"DeepEvalTargetWrapper.generate called, schema={schema is not None}")
+        logger.info(f"=== DeepEvalTargetWrapper.generate CALLED ===")
+        logger.info(f"Schema: {schema is not None}")
+        logger.info(f"Prompt length: {len(prompt)}")
+        logger.info(f"Prompt preview: {prompt[:300]}...")
 
         params = {}
 
@@ -36,6 +39,9 @@ class DeepEvalTargetWrapper(DeepEvalBaseLLM):
 
         request = TargetRequest(prompt=prompt, parameters=params if params else None)
         response = self.target.send_request(request)
+        logger.info(f"Response content length: {len(response.content) if response.content else 0}")
+        logger.info(f"Response error: {response.error}")
+        logger.info(f"Response preview: {response.content[:200] if response.content else 'EMPTY'}...")
 
         if response.error:
             logger.error(f"Target returned error: {response.error}")

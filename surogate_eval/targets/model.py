@@ -1,4 +1,5 @@
 # surogate/eval/targets/model.py
+import json
 import time
 
 import httpx
@@ -65,13 +66,19 @@ class APIModelTarget(BaseTarget):
         import time
 
         start_time = time.time()
+        logger.info(f"=== APIModelTarget.send_request CALLED ===")
+        logger.info(f"Base URL: {self.base_url}")
+        logger.info(f"Model: {self.model}")
+
 
         try:
             # Build request payload
             payload = self._build_payload(request)
+            logger.info(f"Payload: {json.dumps(payload)[:500]}...")
 
             # Send request
             response = self.client.post("/chat/completions", json=payload)
+            logger.info(f"Response status: {response.status_code}")
             response.raise_for_status()
 
             # Parse response

@@ -90,7 +90,7 @@ class RedTeamRunner:
         logger.info(f"Starting red-team scan on target '{self.target.name}'")
 
         # Create model callback for DeepTeam
-        async def model_callback(input: str) -> str:
+        def model_callback(input: str, turns: list = None) -> str:
             """Callback for target model."""
             try:
                 request = TargetRequest(prompt=input)
@@ -115,6 +115,10 @@ class RedTeamRunner:
             attacks = [PromptInjection(), Roleplay()]
 
         logger.info(f"Scanning {len(vulnerabilities)} vulnerabilities with {len(attacks)} attack types")
+        logger.info(f"simulator_model type: {type(self.config.simulator_model)}")
+        logger.info(f"simulator_model value: {self.config.simulator_model}")
+        logger.info(f"evaluation_model type: {type(self.config.evaluation_model)}")
+        logger.info(f"evaluation_model value: {self.config.evaluation_model}")
 
         # Run red-teaming using DeepTeam's actual API
         try:

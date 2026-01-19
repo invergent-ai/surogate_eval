@@ -179,14 +179,9 @@ class DatasetLoader:
     def detect_dataset_type(self, path: str) -> str:
         """
         Detect if dataset is single-turn or multi-turn.
-
-        Args:
-            path: Path to dataset file (local or lakefs://)
-
-        Returns:
-            'single_turn' or 'multi_turn'
+        Only loads first row to check columns.
         """
-        df = self.load(path)
+        df = self.load(path, limit=1)  # Just need 1 row to check columns
 
         if 'turns' in df.columns:
             return 'multi_turn'

@@ -273,14 +273,6 @@ class SurogateEval(SurogateCommand):
     ) -> Dict[str, Any]:
         """
         Run a single evaluation on a target.
-
-        Args:
-            target: Target to evaluate
-            eval_config: Evaluation configuration (dict from evaluations list)
-            backend: Execution backend (optional)
-
-        Returns:
-            Evaluation result dictionary
         """
 
         eval_name = eval_config.get('name', 'unnamed')
@@ -296,17 +288,36 @@ class SurogateEval(SurogateCommand):
             return None
 
         try:
-            # Load dataset
+            # Load metrics config first
+            metric_configs = eval_config.get('metrics', [])
+            if not metric_configs:
+                logger.warning(f"No metrics specified for evaluation '{eval_name}'")
+                return None
+
+            # Calculate max limit for dataset loading
+            max_limit = None
+            all_have_limits = True
+            for mc in metric_configs:
+                metric_limit = mc.get('limit')
+                if metric_limit is None:
+                    all_have_limits = False
+                    break
+                elif max_limit is None or metric_limit > max_limit:
+                    max_limit = metric_limit
+
+            dataset_limit = max_limit if all_have_limits else None
+
+            # Load dataset once
             loader = DatasetLoader()
             dataset_type = loader.detect_dataset_type(dataset_path)
             logger.info(f"Dataset type: {dataset_type}")
 
-            test_cases = loader.load_test_cases(dataset_path)
-            logger.info(f"Loaded {len(test_cases)} test cases")
+            all_test_cases = loader.load_test_cases(dataset_path, limit=dataset_limit)
+            logger.info(f"Loaded {len(all_test_cases)} test cases")
 
             # Validate dataset
             validator = DatasetValidator()
-            df = loader.load(dataset_path)
+            df = loader.load(dataset_path, limit=dataset_limit)
             is_valid, errors = validator.validate(df)
 
             if not is_valid:
@@ -321,14 +332,6 @@ class SurogateEval(SurogateCommand):
                     "errors": errors
                 }
 
-            # Load metrics
-            from surogate_eval.metrics import MetricRegistry
-
-            metric_configs = eval_config.get('metrics', [])
-            if not metric_configs:
-                logger.warning(f"No metrics specified for evaluation '{eval_name}'")
-                return None
-
             # Filter metrics by dataset type
             filtered_metric_configs = self._filter_metrics_by_dataset_type(
                 metric_configs,
@@ -341,14 +344,18 @@ class SurogateEval(SurogateCommand):
 
             logger.info(f"Using {len(filtered_metric_configs)} metric(s)")
 
+            from surogate_eval.metrics import MetricRegistry
             metrics = MetricRegistry.create_metrics(filtered_metric_configs)
 
-            # Run inference
-            logger.info(f"Running inference on {len(test_cases)} test cases...")
-            target_outputs = []
-            target_responses = []
+            # Cache for inference results: index -> (output, response)
+            inference_cache = {}
 
-            for idx, test_case in enumerate(test_cases):
+            def get_inference(idx: int):
+                """Get or compute inference for test case at index."""
+                if idx in inference_cache:
+                    return inference_cache[idx]
+
+                test_case = all_test_cases[idx]
                 try:
                     from surogate_eval.targets.base import TargetRequest
                     from surogate_eval.datasets.test_case import TestCase, MultiTurnTestCase
@@ -359,28 +366,48 @@ class SurogateEval(SurogateCommand):
                         request = TargetRequest(messages=test_case.get_context())
                     else:
                         logger.error(f"Unknown test case type: {type(test_case)}")
-                        continue
+                        inference_cache[idx] = ("", None)
+                        return inference_cache[idx]
 
                     response = target.send_request(request)
-                    target_outputs.append(response.content)
-                    target_responses.append(response)
-
-                    if (idx + 1) % 10 == 0:
-                        logger.step(idx + 1, len(test_cases), f"Progress: {idx + 1}/{len(test_cases)} test cases")
+                    inference_cache[idx] = (response.content, response)
 
                 except Exception as e:
                     logger.error(f"Failed to get output for test case {idx}: {e}")
-                    target_outputs.append("")
-                    target_responses.append(None)
+                    inference_cache[idx] = ("", None)
 
-            logger.success(f"Completed inference on {len(test_cases)} test cases")
+                return inference_cache[idx]
 
-            # Run metrics
+            # Run metrics - each with its own limit
             metric_results = {}
-            detailed_results = []
+            detailed_results = {}  # Use dict keyed by index for sparse results
 
-            for metric in metrics:
+            for metric, metric_config in zip(metrics, filtered_metric_configs):
                 logger.info(f"Running metric: {metric.name}")
+
+                # Get this metric's limit
+                metric_limit = metric_config.get('limit')
+
+                # Determine how many test cases for this metric
+                if metric_limit is not None:
+                    num_cases = min(metric_limit, len(all_test_cases))
+                else:
+                    num_cases = len(all_test_cases)
+
+                logger.info(f"  Running inference on {num_cases} test cases")
+
+                # Get test cases and run inference for this metric
+                metric_test_cases = all_test_cases[:num_cases]
+                metric_outputs = []
+                metric_responses = []
+
+                for idx in range(num_cases):
+                    output, response = get_inference(idx)
+                    metric_outputs.append(output)
+                    metric_responses.append(response)
+
+                    if (idx + 1) % 10 == 0:
+                        logger.step(idx + 1, num_cases, f"Progress: {idx + 1}/{num_cases}")
 
                 try:
                     # Set judge target if needed
@@ -399,9 +426,9 @@ class SurogateEval(SurogateCommand):
 
                     # Evaluate batch
                     batch_result = metric.evaluate_batch(
-                        test_cases,
-                        target_outputs,
-                        target_responses
+                        metric_test_cases,
+                        metric_outputs,
+                        metric_responses
                     )
 
                     # Store aggregated results
@@ -409,19 +436,19 @@ class SurogateEval(SurogateCommand):
 
                     # Store detailed per-test-case results
                     for i, individual_result in enumerate(batch_result.results):
-                        if i >= len(detailed_results):
+                        if i not in detailed_results:
                             from surogate_eval.datasets.test_case import TestCase
-                            if isinstance(test_cases[i], TestCase):
-                                input_preview = test_cases[i].input[:100]
+                            if isinstance(metric_test_cases[i], TestCase):
+                                input_preview = metric_test_cases[i].input[:100]
                             else:
-                                input_preview = f"multi-turn ({len(test_cases[i].turns)} turns)"
+                                input_preview = f"multi-turn ({len(metric_test_cases[i].turns)} turns)"
 
-                            detailed_results.append({
+                            detailed_results[i] = {
                                 'test_case_index': i,
                                 'input': input_preview,
-                                'output': target_outputs[i][:200] if target_outputs[i] else "",
+                                'output': metric_outputs[i][:200] if metric_outputs[i] else "",
                                 'metrics': {}
-                            })
+                            }
 
                         detailed_results[i]['metrics'][metric.name] = {
                             'score': individual_result.score,
@@ -430,7 +457,6 @@ class SurogateEval(SurogateCommand):
                             'metadata': individual_result.metadata
                         }
 
-                    # Use metric() method for displaying results
                     logger.metric(f"{metric.name} - Avg Score", f"{batch_result.avg_score:.3f}")
                     logger.metric(f"{metric.name} - Success Rate", f"{batch_result.success_rate:.3f}")
 
@@ -443,16 +469,19 @@ class SurogateEval(SurogateCommand):
                         'status': 'failed'
                     }
 
+            # Convert detailed_results dict to sorted list
+            detailed_results_list = [detailed_results[i] for i in sorted(detailed_results.keys())]
+
             # Create evaluation result
             return {
                 "name": eval_name,
                 "dataset": dataset_path,
                 "dataset_type": dataset_type,
-                "num_test_cases": len(test_cases),
+                "num_test_cases": len(inference_cache),  # Actual number of inferences run
                 "num_metrics": len(metrics),
                 "status": "completed",
                 "metrics_summary": metric_results,
-                "detailed_results": detailed_results
+                "detailed_results": detailed_results_list
             }
 
         except Exception as e:

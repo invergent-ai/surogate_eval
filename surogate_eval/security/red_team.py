@@ -90,7 +90,7 @@ class RedTeamRunner:
         logger.info(f"Starting red-team scan on target '{self.target.name}'")
 
         # Create model callback for DeepTeam
-        def model_callback(input: str, turns: list = None) -> str:
+        async def model_callback(input: str) -> str:
             """Callback for target model."""
             try:
                 request = TargetRequest(prompt=input)

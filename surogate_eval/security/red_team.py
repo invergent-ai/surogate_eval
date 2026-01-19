@@ -94,19 +94,19 @@ class RedTeamRunner:
 
         logger.info(f"Starting red-team scan on target '{self.target.name}'")
 
-        # Create model callback for DeepTeam
-        def model_callback(input: str, turns: list = None) -> str:
+
+        async def model_callback(input: str, turns: list = None) -> str:
             """Callback for target model."""
             try:
                 # Translate input if translator is set
                 if self.translator:
                     translate_request = TargetRequest(prompt=input)
-                    translate_response = self.translator.send_request(translate_request)
+                    translate_response = await self.translator.send_request_async(translate_request)
                     input = translate_response.content
                     logger.debug(f"Translated input to target language")
 
                 request = TargetRequest(prompt=input)
-                response = self.target.send_request(request)
+                response = await self.target.send_request_async(request)
                 return response.content
             except Exception as e:
                 logger.error(f"Error in model callback: {e}")

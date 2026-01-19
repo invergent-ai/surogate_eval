@@ -19,7 +19,7 @@ class APIModelTarget(BaseTarget):
         self.base_url = config.get('base_url', self._get_default_base_url())
         self.api_key = config.get('api_key')
         self.model = config.get('model')
-        self.timeout = config.get('timeout', 60)
+        self.timeout = config.get('timeout', 300)
 
         self.client = httpx.Client(
             base_url=self.base_url,

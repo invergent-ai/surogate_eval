@@ -103,12 +103,8 @@ class APIModelTarget(BaseTarget):
             )
 
     def _build_payload(self, request: TargetRequest) -> Dict[str, Any]:
-        """Build API request payload."""
-        payload = {
-            "model": self.model,
-        }
+        payload = {"model": self.model}
 
-        # Handle messages or prompt
         if request.messages:
             payload["messages"] = request.messages
         elif request.prompt:
@@ -116,8 +112,11 @@ class APIModelTarget(BaseTarget):
         else:
             raise ValueError("Either messages or prompt must be provided")
 
-        # Add parameters
         if request.parameters:
+            # Handle extra_body for vLLM guided decoding
+            extra_body = request.parameters.pop("extra_body", None)
+            if extra_body:
+                payload.update(extra_body)
             payload.update(request.parameters)
 
         return payload

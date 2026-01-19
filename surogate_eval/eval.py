@@ -717,10 +717,35 @@ class SurogateEval(SurogateCommand):
             Red teaming results
         """
         from surogate_eval.security import RedTeamRunner, RedTeamConfig
+        from surogate_eval.models import DeepEvalTargetWrapper
 
         logger.info(f"Running red-team scan for target '{target.name}'")
 
         try:
+            # Resolve simulator_model - can be string OR target reference
+            simulator_model = red_team_config.get('simulator_model', 'gpt-4o-mini')
+            if isinstance(simulator_model, dict) and simulator_model.get('target'):
+                sim_target = self._find_target_by_name(simulator_model['target'])
+                if sim_target:
+                    simulator_model = DeepEvalTargetWrapper(sim_target)
+                    logger.info(f"Using target '{simulator_model.get_model_name()}' as simulator model")
+                else:
+                    logger.warning(
+                        f"Simulator target '{simulator_model['target']}' not found, using default 'gpt-4o-mini'")
+                    simulator_model = 'gpt-4o-mini'
+
+            # Resolve evaluation_model - can be string OR target reference
+            evaluation_model = red_team_config.get('evaluation_model', 'gpt-4o-mini')
+            if isinstance(evaluation_model, dict) and evaluation_model.get('target'):
+                eval_target = self._find_target_by_name(evaluation_model['target'])
+                if eval_target:
+                    evaluation_model = DeepEvalTargetWrapper(eval_target)
+                    logger.info(f"Using target '{evaluation_model.get_model_name()}' as evaluation model")
+                else:
+                    logger.warning(
+                        f"Evaluation target '{evaluation_model['target']}' not found, using default 'gpt-4o-mini'")
+                    evaluation_model = 'gpt-4o-mini'
+
             # Create config
             config = RedTeamConfig(
                 vulnerabilities=red_team_config.get('vulnerabilities', []),
@@ -729,8 +754,8 @@ class SurogateEval(SurogateCommand):
                 attacks_per_vulnerability=red_team_config.get('attacks_per_vulnerability', 3),
                 max_concurrent=red_team_config.get('max_concurrent', 10),
                 run_async=red_team_config.get('run_async', True),
-                simulator_model=red_team_config.get('simulator_model', 'gpt-3.5-turbo'),
-                evaluation_model=red_team_config.get('evaluation_model', 'gpt-4o'),
+                simulator_model=simulator_model,
+                evaluation_model=evaluation_model,
                 purpose=red_team_config.get('purpose'),
                 ignore_errors=red_team_config.get('ignore_errors', False)
             )
@@ -764,10 +789,35 @@ class SurogateEval(SurogateCommand):
             Guardrails test results
         """
         from surogate_eval.security import GuardrailsEvaluator, GuardrailsConfig
+        from surogate_eval.models import DeepEvalTargetWrapper
 
         logger.info(f"Testing guardrails for target '{target.name}'")
 
         try:
+            # Resolve simulator_model - can be string OR target reference
+            simulator_model = guardrails_config.get('simulator_model', 'gpt-3.5-turbo')
+            if isinstance(simulator_model, dict) and simulator_model.get('target'):
+                sim_target = self._find_target_by_name(simulator_model['target'])
+                if sim_target:
+                    simulator_model = DeepEvalTargetWrapper(sim_target)
+                    logger.info(f"Using target '{simulator_model.get_model_name()}' as simulator model")
+                else:
+                    logger.warning(
+                        f"Simulator target '{simulator_model['target']}' not found, using default 'gpt-3.5-turbo'")
+                    simulator_model = 'gpt-3.5-turbo'
+
+            # Resolve evaluation_model - can be string OR target reference
+            evaluation_model = guardrails_config.get('evaluation_model', 'gpt-4o-mini')
+            if isinstance(evaluation_model, dict) and evaluation_model.get('target'):
+                eval_target = self._find_target_by_name(evaluation_model['target'])
+                if eval_target:
+                    evaluation_model = DeepEvalTargetWrapper(eval_target)
+                    logger.info(f"Using target '{evaluation_model.get_model_name()}' as evaluation model")
+                else:
+                    logger.warning(
+                        f"Evaluation target '{evaluation_model['target']}' not found, using default 'gpt-4o-mini'")
+                    evaluation_model = 'gpt-4o-mini'
+
             # Create config
             config = GuardrailsConfig(
                 vulnerabilities=guardrails_config.get('vulnerabilities', []),
@@ -777,8 +827,8 @@ class SurogateEval(SurogateCommand):
                 safe_prompts_dataset=guardrails_config.get('safe_prompts_dataset'),
                 refusal_judge_model_target=guardrails_config.get('refusal_judge_model', {}).get('target'),
                 max_concurrent=guardrails_config.get('max_concurrent', 10),
-                simulator_model=guardrails_config.get('simulator_model', 'gpt-3.5-turbo'),
-                evaluation_model=guardrails_config.get('evaluation_model', 'gpt-4o-mini'),
+                simulator_model=simulator_model,
+                evaluation_model=evaluation_model,
                 purpose=guardrails_config.get('purpose'),
                 ignore_errors=guardrails_config.get('ignore_errors', False)
             )
@@ -789,6 +839,8 @@ class SurogateEval(SurogateCommand):
                 judge_target = self._find_target_by_name(config.refusal_judge_model_target)
                 if not judge_target:
                     logger.warning(f"Judge target '{config.refusal_judge_model_target}' not found")
+                else:
+                    logger.info(f"Using target '{judge_target.name}' as refusal judge")
 
             # Run guardrails evaluation
             evaluator = GuardrailsEvaluator(target, config, judge_target)

@@ -4,7 +4,9 @@
 
 import os
 from dataclasses import dataclass, field
-from typing import List, Dict, Any, Optional
+from typing import List, Dict, Any, Optional, Union
+
+from deepeval.models import DeepEvalBaseLLM
 
 from .base import SeverityLevel
 from .risk_assessment import RiskAssessment
@@ -29,8 +31,8 @@ class RedTeamConfig:
     run_async: bool = True
 
     # Model configuration
-    simulator_model: Optional[str] = "gpt-4o-mini"
-    evaluation_model: Optional[str] = "gpt-4o-mini"
+    simulator_model: Optional[Union[str, DeepEvalBaseLLM]] = "gpt-4o-mini"
+    evaluation_model: Optional[Union[str, DeepEvalBaseLLM]] = "gpt-4o-mini"
 
     # Advanced options
     purpose: Optional[str] = None

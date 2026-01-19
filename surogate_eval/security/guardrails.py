@@ -3,7 +3,9 @@
 
 from dataclasses import dataclass, field
 from datetime import datetime
-from typing import List, Dict, Any, Optional
+from typing import List, Dict, Any, Optional, Union
+
+from deepeval.models import DeepEvalBaseLLM
 
 from .red_team import RedTeamConfig, RedTeamRunner
 from ..datasets import DatasetLoader, TestCase
@@ -27,12 +29,12 @@ class GuardrailsConfig:
     safe_prompts_dataset: Optional[str] = None
 
     # Refusal detection
-    refusal_judge_model_target: Optional[str] = None  # Target name for judge
+    refusal_judge_model_target: Optional[str] = None
 
     # Execution configuration
     max_concurrent: int = 10
-    simulator_model: str = "gpt-3.5-turbo"
-    evaluation_model: str = "gpt-4o-mini"
+    simulator_model: Optional[Union[str, DeepEvalBaseLLM]] = "gpt-3.5-turbo"
+    evaluation_model: Optional[Union[str, DeepEvalBaseLLM]] = "gpt-4o-mini"
 
     # Advanced options
     purpose: Optional[str] = None

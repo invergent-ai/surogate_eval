@@ -33,6 +33,7 @@ try:
             ImageReferenceMetric,
             TextToImageMetric,
         )
+
         MULTIMODAL_AVAILABLE = True
     except ImportError:
         MULTIMODAL_AVAILABLE = False
@@ -51,7 +52,7 @@ except ImportError as e:
 
 from ..base import MetricResult, MetricType, LLMJudgeMetric
 from ...datasets.test_case import TestCase, MultiTurnTestCase
-from ...targets.base import TargetResponse
+from ...targets.base import TargetResponse, BaseTarget
 
 logger = get_logger()
 
@@ -87,7 +88,19 @@ class DeepEvalAdapter(LLMJudgeMetric):
 
         super().__init__(config)
         self.deepeval_metric = None
+        self._judge_target: Optional[BaseTarget] = None
         self._initialize_deepeval_metric()
+
+    def set_judge_target(self, target: BaseTarget):
+        """Set the judge target and reinitialize the metric with the wrapper."""
+        from ...models.deepeval_wrapper import DeepEvalTargetWrapper
+
+        self._judge_target = target
+        wrapper = DeepEvalTargetWrapper(target)
+
+        # Reinitialize the metric with the new model
+        self._initialize_deepeval_metric(model_override=wrapper)
+        logger.info(f"Set judge target '{target.name}' for metric '{self.name}'")
 
     def _validate_config(self):
         """Validate configuration."""
@@ -96,10 +109,14 @@ class DeepEvalAdapter(LLMJudgeMetric):
             if field not in self.config:
                 raise ValueError(f"Missing required config field: {field}")
 
-    def _initialize_deepeval_metric(self):
+    def _initialize_deepeval_metric(self, model_override=None):
         """Initialize the underlying DeepEval metric."""
         deepeval_type = self.config.get('deepeval_metric_type')
-        parameters = self.config.get('parameters', {})
+        parameters = self.config.get('parameters', {}).copy()
+
+        # Use model_override if provided (from set_judge_target)
+        if model_override is not None:
+            parameters['model'] = model_override
 
         # Map our metric types to DeepEval metrics
         if deepeval_type == 'g_eval':
@@ -335,8 +352,10 @@ class DeepEvalAdapter(LLMJudgeMetric):
                 reason=reason,
                 metadata={
                     'deepeval_type': self.config.get('deepeval_metric_type'),
-                    'evaluation_model': self.deepeval_metric.evaluation_model if hasattr(self.deepeval_metric,
-                                                                                         'evaluation_model') else None,
+                    'evaluation_model': self._judge_target.name if self._judge_target else (
+                        self.deepeval_metric.evaluation_model if hasattr(self.deepeval_metric,
+                                                                         'evaluation_model') else None
+                    ),
                     'is_conversational': self.is_conversational,
                     'is_multimodal': self.is_multimodal,
                     'test_case_type': type(test_case).__name__,

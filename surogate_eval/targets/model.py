@@ -145,6 +145,10 @@ class APIModelTarget(BaseTarget):
             elif "text" in choice:
                 content = choice["text"]
 
+        # Strip thinking tags from response
+        if content and "</think>" in content:
+            content = content.split("</think>")[-1].strip()
+
         metadata = {
             "model": data.get("model"),
             "usage": data.get("usage", {}),

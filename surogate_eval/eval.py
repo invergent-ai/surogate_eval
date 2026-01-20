@@ -439,14 +439,15 @@ class SurogateEval(SurogateCommand):
                         if i not in detailed_results:
                             from surogate_eval.datasets.test_case import TestCase
                             if isinstance(metric_test_cases[i], TestCase):
-                                input_preview = metric_test_cases[i].input[:100]
+                                input_text = metric_test_cases[i].input
                             else:
-                                input_preview = f"multi-turn ({len(metric_test_cases[i].turns)} turns)"
+                                input_text = [{"role": turn.role, "content": turn.content} for turn in
+                                              metric_test_cases[i].turns]
 
                             detailed_results[i] = {
                                 'test_case_index': i,
-                                'input': input_preview,
-                                'output': metric_outputs[i][:200] if metric_outputs[i] else "",
+                                'input': input_text,
+                                'output': metric_outputs[i] or "",
                                 'metrics': {}
                             }
 
@@ -1270,7 +1271,7 @@ class SurogateEval(SurogateCommand):
                             f.write(f"\n")
 
                 f.write(f"\n---\n\n")
-                f.write(f"**Full Results:** `eval_results/eval_{timestamp}.json`\n")
+                # f.write(f"**Full Results:** `eval_results/eval_{timestamp}.json`\n")
 
             logger.success(f"Summary report saved to: {report_file}")
 

@@ -3,7 +3,7 @@
 
 from abc import ABC, abstractmethod
 from dataclasses import dataclass, field
-from typing import Dict, Any, List, Optional, Union
+from typing import Dict, Any, List, Optional, Union, Literal
 
 from surogate_eval.targets import BaseTarget
 from surogate_eval.utils.logger import get_logger
@@ -11,20 +11,35 @@ from surogate_eval.utils.logger import get_logger
 logger = get_logger()
 
 
+# In surogate/eval/benchmarks/base.py - update BenchmarkConfig
+
 @dataclass
 class BenchmarkConfig:
     """Configuration for a benchmark."""
     name: str
+    backend: Literal['evalscope', 'lm_eval', 'custom_eval'] = 'evalscope'
 
-    # Dataset configuration
-    path: Optional[str] = None  # NEW: Custom dataset path
+    # Dataset source (HF path or local file)
+    source: Optional[str] = None
+
+    # Task configuration
+    task_type: Optional[Literal['multiple_choice', 'generation']] = None
+    columns: Dict[str, str] = field(default_factory=dict)
+    choices_columns: Optional[List[str]] = None
+    choices_labels: Optional[List[str]] = None
+    split: str = 'test'
+    prompt_template: Optional[str] = None
+    stop_sequences: Optional[List[str]] = None
+
+    # Legacy/common fields
+    path: Optional[str] = None  # deprecated, use source
     num_fewshot: Optional[int] = None
     limit: Optional[Union[int, float]] = None
-
-    # Task-specific configuration
     tasks: Optional[List[str]] = None
-    subset: Optional[Union[str, List[str]]] = None  # NEW: Subsets
+    subset: Optional[Union[str, List[str]]] = None
     dataset_hub: Optional[str] = None
+    log_samples: bool = True
+
     # Additional parameters
     backend_params: Dict[str, Any] = field(default_factory=dict)
 
@@ -32,28 +47,34 @@ class BenchmarkConfig:
     use_cache: bool = True
     cache_dir: Optional[str] = None
 
+    # lm-eval specific
+    tokenizer: Optional[str] = None
+    batch_size: Optional[int] = None
+    max_tokens: Optional[int] = None
+    temperature: Optional[float] = None
+    num_concurrent: Optional[int] = None
+    system_prompt: Optional[str] = None
+    judge_model: Optional[Dict[str, Any]] = None
+    judge_criteria: Optional[str] = None
 
 @dataclass
 class BenchmarkResult:
-    """Results from benchmark evaluation."""
-    # Required fields first
     benchmark_name: str
     overall_score: float
     num_samples: int
-
-    # Fields with defaults last
     backend: str = "evalscope"
     task_results: Dict[str, Dict[str, Any]] = field(default_factory=dict)
+    detailed_results: List[Dict[str, Any]] = field(default_factory=list)
     metadata: Dict[str, Any] = field(default_factory=dict)
 
     def to_dict(self) -> Dict[str, Any]:
-        """Convert result to dictionary."""
         return {
             'benchmark_name': self.benchmark_name,
             'backend': self.backend,
             'overall_score': self.overall_score,
             'num_samples': self.num_samples,
             'task_results': self.task_results,
+            'detailed_results': self.detailed_results,
             'metadata': self.metadata,
         }
 
@@ -78,18 +99,26 @@ class BenchmarkResult:
 class BaseBenchmark(ABC):
     """Base class for all benchmarks."""
 
-    # Add class-level attribute to specify required target types
-    REQUIRED_TARGET_TYPES: List[str] = []  # Empty = any target type
+    REQUIRED_TARGET_TYPES: List[str] = []
 
     def __init__(self, config: BenchmarkConfig):
         """Initialize benchmark."""
         self.config = config
         self.name = config.name
 
-        from .backends.evalscope_backend import EvalScopeBackend
-        self.backend = EvalScopeBackend()
-
-        logger.info(f"Initialized benchmark: {self.name} (EvalScope)")
+        # Select backend based on config
+        if config.backend == 'lm_eval':
+            from .backends.lm_eval_backend import LMEvalBackend
+            self.backend = LMEvalBackend()
+            logger.info(f"Initialized benchmark: {self.name} (lm-eval)")
+        elif config.backend == 'custom_eval':
+            from .backends.custom_eval_backend import CustomEvalBackend
+            self.backend = CustomEvalBackend()
+            logger.info(f"Initialized benchmark: {self.name} (custom-eval)")
+        else:
+            from .backends.evalscope_backend import EvalScopeBackend
+            self.backend = EvalScopeBackend()
+            logger.info(f"Initialized benchmark: {self.name} (EvalScope)")
 
     def validate_target(self, target: BaseTarget) -> bool:
         """

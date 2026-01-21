@@ -4,6 +4,11 @@ import argparse
 import gc
 import importlib.util
 import os
+
+os.environ['HF_DATASETS_TRUST_REMOTE_CODE'] = '1'
+os.environ['HF_ALLOW_CODE_EVAL'] = '1'
+os.environ['TRUST_REMOTE_CODE'] = '1'
+
 import subprocess
 import sys
 from typing import Optional, List, Dict

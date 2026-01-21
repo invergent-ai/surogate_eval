@@ -21,12 +21,13 @@ class APIModelTarget(BaseTarget):
         self.base_url = config.get('base_url', self._get_default_base_url())
         self.api_key = config.get('api_key')
         self.model = config.get('model')
-        self.timeout = config.get('timeout', 300)
+        self.timeout = config.get('timeout', 600)
 
         self.client = httpx.Client(
             base_url=self.base_url,
             timeout=self.timeout,
-            headers=self._build_headers()
+            headers=self._build_headers(),
+            verify=False
         )
 
     def _validate_config(self):

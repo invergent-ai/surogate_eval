@@ -31,25 +31,17 @@ class BenchmarkRegistry:
 
     @classmethod
     def create_benchmark(cls, config: BenchmarkConfig) -> BaseBenchmark:
-        """
-        Create a benchmark instance from config.
-
-        Args:
-            config: Benchmark configuration
-
-        Returns:
-            Benchmark instance
-        """
         benchmark_name = config.name
 
-        if benchmark_name not in cls._benchmarks:
-            raise ValueError(
-                f"Unknown benchmark: {benchmark_name}. "
-                f"Available: {list(cls._benchmarks.keys())}"
-            )
+        # If benchmark is registered, use it
+        if benchmark_name in cls._benchmarks:
+            benchmark_class = cls._benchmarks[benchmark_name]
+            return benchmark_class(config)
 
-        benchmark_class = cls._benchmarks[benchmark_name]
-        return benchmark_class(config)
+        # Otherwise, use GenericBenchmark (lm-eval/evalscope handles validation)
+        from .generic import GenericBenchmark
+        logger.debug(f"Using GenericBenchmark for '{benchmark_name}'")
+        return GenericBenchmark(config)
 
     @classmethod
     def list_benchmarks(cls) -> List[str]:

@@ -542,6 +542,17 @@ class SurogateEval(SurogateCommand):
 
             config = BenchmarkConfig(
                 name=benchmark_name,
+                backend=bench_config.get('backend', 'evalscope'),
+                # New custom dataset fields
+                source=bench_config.get('source'),
+                task_type=bench_config.get('task_type'),
+                columns=bench_config.get('columns', {}),
+                choices_columns=bench_config.get('choices_columns'),
+                choices_labels=bench_config.get('choices_labels'),
+                split=bench_config.get('split', 'test'),
+                prompt_template=bench_config.get('prompt_template'),
+                stop_sequences=bench_config.get('stop_sequences'),
+                # Existing fields
                 path=bench_config.get('path'),
                 num_fewshot=bench_config.get('num_fewshot'),
                 limit=bench_config.get('limit'),
@@ -551,6 +562,15 @@ class SurogateEval(SurogateCommand):
                 cache_dir=bench_config.get('cache_dir'),
                 backend_params=bench_config.get('backend_params', {}),
                 dataset_hub=bench_config.get('dataset_hub'),
+                tokenizer=bench_config.get('tokenizer'),
+                batch_size=bench_config.get('batch_size'),
+                max_tokens=bench_config.get('max_tokens'),
+                temperature=bench_config.get('temperature'),
+                system_prompt=bench_config.get('system_prompt'),
+                num_concurrent=bench_config.get('num_concurrent'),
+                log_samples=bench_config.get('log_samples', True),
+                judge_model=bench_config.get('judge_model'),
+                judge_criteria=bench_config.get('judge_criteria'),
             )
 
             # Create benchmark instance

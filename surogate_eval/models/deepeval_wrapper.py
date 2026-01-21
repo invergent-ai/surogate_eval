@@ -19,6 +19,22 @@ class DeepEvalTargetWrapper(DeepEvalBaseLLM):
     def load_model(self):
         return self.target
 
+    def _is_openai_api(self) -> bool:
+        """Check if target is using OpenAI's API (not local/vLLM)."""
+        base_url = self.target.config.get('base_url', '')
+        provider = self.target.config.get('provider', '')
+
+        # Check for local endpoints
+        local_indicators = ['localhost', '127.0.0.1', '0.0.0.0', 'densemax', ':8000', ':8080', ':11434']
+        is_local = any(x in base_url for x in local_indicators)
+
+        # It's OpenAI if:
+        # 1. Explicitly api.openai.com
+        # 2. Provider is openai AND not a local endpoint
+        is_openai = 'api.openai.com' in base_url or (provider == 'openai' and not is_local and not base_url)
+
+        return is_openai
+
     def generate(self, prompt: str, schema: Optional[BaseModel] = None) -> Union[str, BaseModel]:
         logger.info(f"=== DeepEvalTargetWrapper.generate CALLED ===")
         logger.info(f"Schema: {schema is not None}")
@@ -27,11 +43,22 @@ class DeepEvalTargetWrapper(DeepEvalBaseLLM):
 
         params = {}
         if schema:
-            try:
-                json_schema = schema.model_json_schema()
-                params = {"extra_body": {"guided_json": json_schema}}
-            except Exception as e:
-                logger.warning(f"Failed to get JSON schema: {e}")
+            is_openai = self._is_openai_api()
+            logger.info(f"Is OpenAI API: {is_openai}")
+
+            if is_openai:
+                # OpenAI: use simple JSON mode (no schema enforcement)
+                # The model will return JSON, we parse it ourselves
+                params = {"response_format": {"type": "json_object"}}
+                logger.info("Using OpenAI JSON mode")
+            else:
+                # vLLM/local: use guided_json for structured output
+                try:
+                    json_schema = schema.model_json_schema()
+                    params = {"extra_body": {"guided_json": json_schema}}
+                    logger.info("Using vLLM guided_json mode")
+                except Exception as e:
+                    logger.warning(f"Failed to get JSON schema: {e}")
 
         request = TargetRequest(prompt=prompt, parameters=params if params else None)
         response = self.target.send_request(request)

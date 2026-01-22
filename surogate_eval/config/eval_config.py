@@ -230,10 +230,12 @@ class EvalConfig:
     """
     project: Optional[ProjectConfig] = None
     targets: Optional[List[TargetConfig]] = None
+    report_format_pdf: bool = False
 
     def __init__(self, cfg: DictDefault):
         self.project = ProjectConfig(cfg['project']) if cfg['project'] else None
         self.targets = [TargetConfig(t) for t in cfg['targets']] if cfg['targets'] else []
+        self.report_format_pdf = cfg.get('report_format_pdf', False)
         self.__post_init__()
 
     def __post_init__(self):

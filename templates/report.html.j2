@@ -1,0 +1,550 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Evaluation Report - {{ project.name | default('N/A') }}</title>
+    <style>
+        :root {
+            --color-success: #22c55e;
+            --color-warning: #f59e0b;
+            --color-error: #ef4444;
+            --color-info: #3b82f6;
+            --color-muted: #6b7280;
+            --color-border: #e5e7eb;
+            --color-bg-light: #f9fafb;
+        }
+
+        * {
+            margin: 0;
+            padding: 0;
+            box-sizing: border-box;
+        }
+
+        body {
+            font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Oxygen, Ubuntu, sans-serif;
+            font-size: 11pt;
+            line-height: 1.5;
+            color: #1f2937;
+            padding: 40px;
+        }
+
+        h1 {
+            font-size: 24pt;
+            color: #111827;
+            margin-bottom: 8px;
+            border-bottom: 3px solid var(--color-info);
+            padding-bottom: 8px;
+        }
+
+        h2 {
+            font-size: 16pt;
+            color: #1f2937;
+            margin-top: 24px;
+            margin-bottom: 12px;
+            border-bottom: 2px solid var(--color-border);
+            padding-bottom: 4px;
+        }
+
+        h3 {
+            font-size: 13pt;
+            color: #374151;
+            margin-top: 16px;
+            margin-bottom: 8px;
+        }
+
+        h4 {
+            font-size: 11pt;
+            color: #4b5563;
+            margin-top: 12px;
+            margin-bottom: 6px;
+        }
+
+        .header-meta {
+            color: var(--color-muted);
+            font-size: 10pt;
+            margin-bottom: 24px;
+        }
+
+        .header-meta p {
+            margin: 2px 0;
+        }
+
+        .summary-box {
+            background: var(--color-bg-light);
+            border: 1px solid var(--color-border);
+            border-radius: 8px;
+            padding: 16px;
+            margin: 16px 0;
+        }
+
+        .summary-grid {
+            display: flex;
+            gap: 24px;
+        }
+
+        .summary-item {
+            text-align: center;
+        }
+
+        .summary-value {
+            font-size: 20pt;
+            font-weight: bold;
+            color: var(--color-info);
+        }
+
+        .summary-label {
+            font-size: 9pt;
+            color: var(--color-muted);
+            text-transform: uppercase;
+        }
+
+        .target-card {
+            border: 1px solid var(--color-border);
+            border-radius: 8px;
+            padding: 16px;
+            margin: 16px 0;
+            page-break-inside: avoid;
+        }
+
+        .target-header {
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            margin-bottom: 12px;
+        }
+
+        .target-name {
+            font-size: 14pt;
+            font-weight: bold;
+            color: #111827;
+        }
+
+        .target-meta {
+            font-size: 9pt;
+            color: var(--color-muted);
+        }
+
+        .badge {
+            display: inline-block;
+            padding: 2px 8px;
+            border-radius: 12px;
+            font-size: 9pt;
+            font-weight: 500;
+        }
+
+        .badge-success {
+            background: #dcfce7;
+            color: #166534;
+        }
+
+        .badge-warning {
+            background: #fef3c7;
+            color: #92400e;
+        }
+
+        .badge-error {
+            background: #fee2e2;
+            color: #991b1b;
+        }
+
+        .badge-info {
+            background: #dbeafe;
+            color: #1e40af;
+        }
+
+        table {
+            width: 100%;
+            border-collapse: collapse;
+            margin: 12px 0;
+            font-size: 10pt;
+        }
+
+        th, td {
+            border: 1px solid var(--color-border);
+            padding: 8px 12px;
+            text-align: left;
+        }
+
+        th {
+            background: var(--color-bg-light);
+            font-weight: 600;
+            color: #374151;
+        }
+
+        tr:nth-child(even) {
+            background: #fafafa;
+        }
+
+        .text-success { color: var(--color-success); }
+        .text-warning { color: var(--color-warning); }
+        .text-error { color: var(--color-error); }
+        .text-muted { color: var(--color-muted); }
+
+        .metric-value {
+            font-family: 'Monaco', 'Consolas', monospace;
+            font-weight: 600;
+        }
+
+        .status-icon {
+            font-size: 12pt;
+        }
+
+        .section {
+            margin: 20px 0;
+        }
+
+        .evaluation-block {
+            background: #fff;
+            border: 1px solid var(--color-border);
+            border-radius: 6px;
+            padding: 12px;
+            margin: 12px 0;
+        }
+
+        .footer {
+            margin-top: 40px;
+            padding-top: 16px;
+            border-top: 1px solid var(--color-border);
+            text-align: center;
+            font-size: 9pt;
+            color: var(--color-muted);
+        }
+
+        @page {
+            size: A4;
+            margin: 20mm;
+        }
+
+        .page-break {
+            page-break-before: always;
+        }
+    </style>
+</head>
+<body>
+    <h1>📊 Evaluation Report</h1>
+
+    <div class="header-meta">
+        <p><strong>Project:</strong> {{ project.name | default('N/A') }} (v{{ project.version | default('N/A') }})</p>
+        <p><strong>Generated:</strong> {{ timestamp | default('N/A') }}</p>
+        {% if project.description %}
+        <p><strong>Description:</strong> {{ project.description }}</p>
+        {% endif %}
+    </div>
+
+    <div class="summary-box">
+        <h3>Summary</h3>
+        <div class="summary-grid">
+            <div class="summary-item">
+                <div class="summary-value">{{ summary.total_targets | default(0) }}</div>
+                <div class="summary-label">Targets</div>
+            </div>
+            <div class="summary-item">
+                <div class="summary-value">{{ summary.total_evaluations | default(0) }}</div>
+                <div class="summary-label">Evaluations</div>
+            </div>
+            <div class="summary-item">
+                <div class="summary-value">{{ summary.total_test_cases | default(0) }}</div>
+                <div class="summary-label">Test Cases</div>
+            </div>
+        </div>
+    </div>
+
+    {% for target in targets %}
+    <div class="target-card">
+        <div class="target-header">
+            <div>
+                <span class="target-name">🎯 {{ target.name | default('Unknown') }}</span>
+                <div class="target-meta">
+                    Type: {{ target.type | default('N/A') }} |
+                    Model: {{ target.model | default('N/A') }} |
+                    Provider: {{ target.provider | default('N/A') }}
+                </div>
+            </div>
+            <span class="badge {% if target.status == 'success' %}badge-success{% elif target.status == 'failed' %}badge-error{% else %}badge-warning{% endif %}">
+                {{ target.status | default('unknown') | upper }}
+            </span>
+        </div>
+
+        {% if target.evaluations %}
+        <div class="section">
+            <h3>Evaluations ({{ target.evaluations | length }})</h3>
+
+            {% for eval in target.evaluations %}
+            <div class="evaluation-block">
+                <h4>{{ eval.name | default('Unknown') }}</h4>
+                <p class="text-muted" style="font-size: 9pt; margin-bottom: 8px;">
+                    Dataset: {{ eval.dataset | default('N/A') }} |
+                    Type: {{ eval.dataset_type | default('N/A') }} |
+                    Test Cases: {{ eval.num_test_cases | default(0) }}
+                </p>
+
+                {% if eval.metrics_summary %}
+                <table>
+                    <thead>
+                        <tr>
+                            <th>Metric</th>
+                            <th>Avg Score</th>
+                            <th>Success Rate</th>
+                            <th>Status</th>
+                        </tr>
+                    </thead>
+                    <tbody>
+                        {% for metric_name, metric_data in eval.metrics_summary.items() %}
+                        <tr>
+                            <td>{{ metric_name }}</td>
+                            {% if metric_data.error is defined %}
+                            <td class="text-muted">N/A</td>
+                            <td class="text-muted">N/A</td>
+                            <td><span class="text-error">❌ Failed</span></td>
+                            {% else %}
+                            <td class="metric-value">{{ metric_data.avg_score | default(0) | format_score }}</td>
+                            <td class="metric-value">{{ metric_data.success_rate | default(0) | format_percent }}</td>
+                            <td>
+                                {% if metric_data.success_rate >= 0.8 %}
+                                <span class="text-success">✅ Excellent</span>
+                                {% elif metric_data.success_rate >= 0.6 %}
+                                <span class="text-warning">⚠️ Good</span>
+                                {% else %}
+                                <span class="text-error">❌ Needs Work</span>
+                                {% endif %}
+                            </td>
+                            {% endif %}
+                        </tr>
+                        {% endfor %}
+                    </tbody>
+                </table>
+                {% endif %}
+            </div>
+            {% endfor %}
+        </div>
+        {% endif %}
+
+        {# Benchmarks #}
+        {% if target.benchmarks %}
+        {% set custom_benchmarks = target.benchmarks | selectattr('backend', 'equalto', 'custom_eval') | list %}
+        {% set standard_benchmarks = target.benchmarks | rejectattr('backend', 'equalto', 'custom_eval') | list %}
+
+        {% if custom_benchmarks %}
+        <div class="section">
+            <h3>🧪 Custom Evaluation</h3>
+            {% for bench in custom_benchmarks %}
+            <div class="evaluation-block">
+                <h4>{{ bench.benchmark_name | default(bench.benchmark | default('Custom')) }}</h4>
+                {% set score_status = "text-success" if bench.overall_score >= 0.8 else "text-warning" if bench.overall_score >= 0.6 else "text-error" %}
+                <p>
+                    <strong>Overall Score:</strong>
+                    <span class="metric-value {{ score_status }}">{{ bench.overall_score | default(0) | format_percent }}</span>
+                </p>
+
+                {% if bench.task_results %}
+                <table>
+                    <thead>
+                        <tr>
+                            <th>Task Type</th>
+                            <th>Total</th>
+                            <th>Correct/Success</th>
+                            <th>Accuracy/Score</th>
+                        </tr>
+                    </thead>
+                    <tbody>
+                        {% for task_name, task_data in bench.task_results.items() %}
+                        <tr>
+                            <td>{{ task_name }}</td>
+                            <td>{{ task_data.total | default(0) }}</td>
+                            {% if task_data.accuracy is defined %}
+                            <td>{{ task_data.correct | default(0) }}</td>
+                            <td class="metric-value">{{ task_data.accuracy | format_percent }}</td>
+                            {% elif task_data.avg_score is defined %}
+                            <td>{{ task_data.success_rate | default(0) | format_percent }}</td>
+                            <td class="metric-value">{{ task_data.avg_score | format_score(2) }}</td>
+                            {% endif %}
+                        </tr>
+                        {% endfor %}
+                    </tbody>
+                </table>
+                {% endif %}
+            </div>
+            {% endfor %}
+        </div>
+        {% endif %}
+
+        {% if standard_benchmarks %}
+        <div class="section">
+            <h3>📊 Standard Benchmarks</h3>
+            <table>
+                <thead>
+                    <tr>
+                        <th>Benchmark</th>
+                        <th>Overall Score</th>
+                        <th>Backend</th>
+                        <th>Status</th>
+                    </tr>
+                </thead>
+                <tbody>
+                    {% for bench in standard_benchmarks %}
+                    <tr>
+                        <td>{{ bench.benchmark_name | default(bench.benchmark | default('Unknown')) }}</td>
+                        <td class="metric-value">{{ bench.overall_score | default(0) | format_score(4) }}</td>
+                        <td>{{ bench.backend | default('unknown') }}</td>
+                        <td>
+                            {% if bench.status == 'completed' %}
+                            <span class="text-success">✅</span>
+                            {% else %}
+                            <span class="text-error">❌</span>
+                            {% endif %}
+                        </td>
+                    </tr>
+                    {% endfor %}
+                </tbody>
+            </table>
+        </div>
+        {% endif %}
+        {% endif %}
+
+        {# Stress Testing #}
+        {% if target.stress_testing is defined %}
+        <div class="section">
+            <h3>⚡ Stress Testing</h3>
+            <p><strong>Status:</strong> {{ target.stress_testing.status | default('N/A') }}</p>
+
+            {% if target.stress_testing.metrics is defined %}
+            <table>
+                <thead>
+                    <tr>
+                        <th>Metric</th>
+                        <th>Value</th>
+                    </tr>
+                </thead>
+                <tbody>
+                    <tr><td>Avg Latency</td><td class="metric-value">{{ "%.2f" | format(target.stress_testing.metrics.avg_latency_ms | default(0)) }} ms</td></tr>
+                    <tr><td>P95 Latency</td><td class="metric-value">{{ "%.2f" | format(target.stress_testing.metrics.p95_latency_ms | default(0)) }} ms</td></tr>
+                    <tr><td>P99 Latency</td><td class="metric-value">{{ "%.2f" | format(target.stress_testing.metrics.p99_latency_ms | default(0)) }} ms</td></tr>
+                    <tr><td>Throughput</td><td class="metric-value">{{ "%.2f" | format(target.stress_testing.metrics.throughput_rps | default(0)) }} RPS</td></tr>
+                    <tr><td>Error Rate</td><td class="metric-value">{{ target.stress_testing.metrics.error_rate | default(0) | format_percent }}</td></tr>
+                    <tr><td>Total Requests</td><td class="metric-value">{{ target.stress_testing.metrics.total_requests | default(0) }}</td></tr>
+                </tbody>
+            </table>
+            {% endif %}
+        </div>
+        {% endif %}
+
+        {# Red Teaming #}
+        {% if target.red_teaming is defined %}
+        <div class="section">
+            <h3>🔴 Red Teaming & Security Assessment</h3>
+
+            {% if target.red_teaming.status == 'failed' %}
+            <p><span class="text-error">❌ Failed:</span> {{ target.red_teaming.error | default('Unknown error') }}</p>
+            {% else %}
+            {% if target.red_teaming.vulnerabilities %}
+            <table>
+                <thead>
+                    <tr>
+                        <th>Vulnerability</th>
+                        <th>Total</th>
+                        <th>Successful</th>
+                        <th>Failed</th>
+                        <th>Success Rate</th>
+                        <th>Severity</th>
+                    </tr>
+                </thead>
+                <tbody>
+                    {% for vuln in target.red_teaming.vulnerabilities %}
+                    <tr>
+                        <td>{{ vuln.vulnerability_type | default('Unknown') }}</td>
+                        <td>{{ vuln.total_attacks | default(0) }}</td>
+                        <td>{{ vuln.successful_attacks | default(0) }}</td>
+                        <td>{{ vuln.failed_attacks | default(0) }}</td>
+                        <td class="metric-value {% if vuln.success_rate < 0.2 %}text-success{% elif vuln.success_rate < 0.5 %}text-warning{% else %}text-error{% endif %}">
+                            {{ vuln.success_rate | default(0) | format_percent }}
+                        </td>
+                        <td>
+                            {% if vuln.severity == 'critical' %}
+                            <span class="badge badge-error">CRITICAL</span>
+                            {% elif vuln.severity == 'high' %}
+                            <span class="badge badge-warning">HIGH</span>
+                            {% elif vuln.severity == 'medium' %}
+                            <span class="badge badge-info">MEDIUM</span>
+                            {% else %}
+                            <span class="badge badge-success">LOW</span>
+                            {% endif %}
+                        </td>
+                    </tr>
+                    {% endfor %}
+                </tbody>
+            </table>
+            {% endif %}
+            {% endif %}
+        </div>
+        {% endif %}
+
+        {# Guardrails #}
+        {% if target.guardrails is defined %}
+        <div class="section">
+            <h3>🛡️ Guardrails Evaluation</h3>
+
+            {% if target.guardrails.status == 'failed' %}
+            <p><span class="text-error">❌ Failed:</span> {{ target.guardrails.error | default('Unknown error') }}</p>
+            {% else %}
+            {% if target.guardrails.harmful_prompts is defined %}
+            {% set harmful = target.guardrails.harmful_prompts %}
+            {% set refusal_rate = harmful.refusal_rate | default(0) %}
+            <p>
+                <strong>Harmful Prompts:</strong>
+                {{ harmful.tested | default(0) }} tested,
+                {{ harmful.refused | default(0) }} refused
+                (<span class="metric-value {% if refusal_rate >= 0.8 %}text-success{% elif refusal_rate >= 0.4 %}text-warning{% else %}text-error{% endif %}">{{ refusal_rate | format_percent }}</span> refusal rate)
+            </p>
+            {% endif %}
+
+            {% if target.guardrails.safe_prompts is defined and target.guardrails.safe_prompts.tested | default(0) > 0 %}
+            {% set safe = target.guardrails.safe_prompts %}
+            {% set fp_rate = safe.false_positive_rate | default(0) %}
+            <p>
+                <strong>Safe Prompts:</strong>
+                {{ safe.tested | default(0) }} tested,
+                {{ safe.allowed | default(0) }} allowed
+                (<span class="metric-value {% if fp_rate <= 0.1 %}text-success{% elif fp_rate <= 0.4 %}text-warning{% else %}text-error{% endif %}">{{ fp_rate | format_percent }}</span> false positive rate)
+            </p>
+            {% endif %}
+
+            {% if target.guardrails.refusal_by_vulnerability is defined %}
+            <table>
+                <thead>
+                    <tr>
+                        <th>Vulnerability</th>
+                        <th>Refusal Rate</th>
+                        <th>Assessment</th>
+                    </tr>
+                </thead>
+                <tbody>
+                    {% for vuln, rate in target.guardrails.refusal_by_vulnerability.items() %}
+                    <tr>
+                        <td>{{ vuln }}</td>
+                        <td class="metric-value">{{ rate | format_percent }}</td>
+                        <td>
+                            {% if rate >= 0.8 %}
+                            <span class="text-success">✅ Strong</span>
+                            {% elif rate >= 0.6 %}
+                            <span class="text-warning">⚠️ Moderate</span>
+                            {% else %}
+                            <span class="text-error">❌ Weak</span>
+                            {% endif %}
+                        </td>
+                    </tr>
+                    {% endfor %}
+                </tbody>
+            </table>
+            {% endif %}
+            {% endif %}
+        </div>
+        {% endif %}
+    </div>
+    {% endfor %}
+
+    <div class="footer">
+        <p>Report generated by <strong>Surogate Eval</strong></p>
+    </div>
+</body>
+</html>

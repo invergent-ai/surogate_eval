@@ -11,22 +11,17 @@ from surogate_eval.utils.logger import get_logger
 logger = get_logger()
 
 
-# In surogate/eval/benchmarks/base.py - update BenchmarkConfig
-
 @dataclass
 class BenchmarkConfig:
     """Configuration for a benchmark."""
     name: str
     backend: Literal['evalscope', 'lm_eval', 'custom_eval'] = 'evalscope'
 
-    # Dataset source (HF path or local file)
+    # Dataset source (HF path, LakeFS, or local file)
     source: Optional[str] = None
 
-    # Task configuration
-    task_type: Optional[Literal['multiple_choice', 'generation']] = None
+    # Column mappings (instruction, answer, eval_type, judge_criteria)
     columns: Dict[str, str] = field(default_factory=dict)
-    choices_columns: Optional[List[str]] = None
-    choices_labels: Optional[List[str]] = None
     split: str = 'test'
     prompt_template: Optional[str] = None
     stop_sequences: Optional[List[str]] = None
@@ -47,7 +42,7 @@ class BenchmarkConfig:
     use_cache: bool = True
     cache_dir: Optional[str] = None
 
-    # lm-eval specific
+    # Generation/eval params
     tokenizer: Optional[str] = None
     batch_size: Optional[int] = None
     max_tokens: Optional[int] = None
@@ -56,6 +51,7 @@ class BenchmarkConfig:
     system_prompt: Optional[str] = None
     judge_model: Optional[Dict[str, Any]] = None
     judge_criteria: Optional[str] = None
+
 
 @dataclass
 class BenchmarkResult:
@@ -79,21 +75,17 @@ class BenchmarkResult:
         }
 
     def get_summary(self) -> str:
-        """Get a summary string of results."""
         lines = [
             f"Benchmark: {self.benchmark_name}",
             f"Overall Score: {self.overall_score:.4f}",
             f"Samples: {self.num_samples}",
         ]
-
         if self.task_results:
             lines.append("\nTask Results:")
             for task_name, task_data in self.task_results.items():
                 score = task_data.get('score', task_data.get('accuracy', 'N/A'))
                 lines.append(f"  {task_name}: {score}")
-
         return "\n".join(lines)
-
 
 
 class BaseBenchmark(ABC):
@@ -102,11 +94,9 @@ class BaseBenchmark(ABC):
     REQUIRED_TARGET_TYPES: List[str] = []
 
     def __init__(self, config: BenchmarkConfig):
-        """Initialize benchmark."""
         self.config = config
         self.name = config.name
 
-        # Select backend based on config
         if config.backend == 'lm_eval':
             from .backends.lm_eval_backend import LMEvalBackend
             self.backend = LMEvalBackend()
@@ -121,30 +111,15 @@ class BaseBenchmark(ABC):
             logger.info(f"Initialized benchmark: {self.name} (EvalScope)")
 
     def validate_target(self, target: BaseTarget) -> bool:
-        """
-        Validate that target is compatible with this benchmark.
-
-        Args:
-            target: Target to validate
-
-        Returns:
-            True if compatible
-        """
-        # If no specific requirements, accept all targets
         if not self.REQUIRED_TARGET_TYPES:
             return True
-
-        # Check if target type matches requirements
         target_type_str = target.target_type.value if hasattr(target.target_type, 'value') else str(target.target_type)
-
         return target_type_str in self.REQUIRED_TARGET_TYPES
 
     @abstractmethod
     def evaluate(self, target: BaseTarget) -> BenchmarkResult:
-        """Evaluate target on this benchmark."""
         pass
 
     @abstractmethod
     def get_dataset_info(self) -> Dict[str, Any]:
-        """Get information about the benchmark dataset."""
         pass

@@ -1,8 +1,7 @@
 # surogate/eval/benchmarks/generic.py
 
-from typing import Dict, Any, List
+from typing import Dict, Any
 from .base import BaseBenchmark, BenchmarkResult, BenchmarkConfig
-from .registry import BenchmarkRegistry
 from ..targets import BaseTarget
 from ..utils.logger import get_logger
 
@@ -10,9 +9,8 @@ logger = get_logger()
 
 
 class GenericBenchmark(BaseBenchmark):
-    """Generic benchmark that delegates to EvalScope."""
+    """Generic benchmark that delegates to backend."""
 
-    # Define which benchmarks need specific target types
     VISION_BENCHMARKS = {
         'mmmu', 'mathvista', 'chartqa', 'docvqa', 'infovqa',
         'ocrvqa', 'ai2d', 'scienceqa', 'seedbench'
@@ -23,34 +21,26 @@ class GenericBenchmark(BaseBenchmark):
     }
 
     def __init__(self, config: BenchmarkConfig):
-        """Initialize benchmark and set requirements."""
         super().__init__(config)
 
-        # Set required target types based on benchmark name
         if self.name.lower() in self.VISION_BENCHMARKS:
             self.REQUIRED_TARGET_TYPES = ['multimodal']
-            logger.debug(f"Benchmark '{self.name}' requires multimodal target")
         elif self.name.lower() in self.EMBEDDING_BENCHMARKS:
             self.REQUIRED_TARGET_TYPES = ['embedding']
-            logger.debug(f"Benchmark '{self.name}' requires embedding target")
         else:
-            self.REQUIRED_TARGET_TYPES = []  # Accept any
+            self.REQUIRED_TARGET_TYPES = []
 
     def evaluate(self, target: BaseTarget) -> BenchmarkResult:
-        """Evaluate target on this benchmark."""
         logger.info(f"Evaluating {target.name} on {self.name}")
 
         backend_config = {
-            # New custom dataset fields
+            # Dataset
             'source': self.config.source,
-            'task_type': self.config.task_type,
             'columns': self.config.columns,
-            'choices_columns': self.config.choices_columns,
-            'choices_labels': self.config.choices_labels,
             'split': self.config.split,
             'prompt_template': self.config.prompt_template,
             'stop_sequences': self.config.stop_sequences,
-            # Existing fields
+            # Eval params
             'tasks': self.config.tasks or [self.name],
             'num_fewshot': self.config.num_fewshot,
             'limit': self.config.limit,
@@ -85,7 +75,6 @@ class GenericBenchmark(BaseBenchmark):
         return result
 
     def _parse_results(self, backend_results: Dict[str, Any]) -> BenchmarkResult:
-        """Parse backend results."""
         overall_score = backend_results.get('overall_score', 0.0)
         task_results = backend_results.get('task_results', {})
         detailed_results = backend_results.get('detailed_results', [])
@@ -109,10 +98,9 @@ class GenericBenchmark(BaseBenchmark):
         )
 
     def get_dataset_info(self) -> Dict[str, Any]:
-        """Get dataset information."""
         return {
             'name': self.name,
             'description': f'Benchmark: {self.name}',
-            'backend': 'evalscope',
+            'backend': self.config.backend,
             'required_target_types': self.REQUIRED_TARGET_TYPES,
         }

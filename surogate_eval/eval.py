@@ -543,16 +543,13 @@ class SurogateEval(SurogateCommand):
             config = BenchmarkConfig(
                 name=benchmark_name,
                 backend=bench_config.get('backend', 'evalscope'),
-                # New custom dataset fields
+                # Dataset
                 source=bench_config.get('source'),
-                task_type=bench_config.get('task_type'),
                 columns=bench_config.get('columns', {}),
-                choices_columns=bench_config.get('choices_columns'),
-                choices_labels=bench_config.get('choices_labels'),
                 split=bench_config.get('split', 'test'),
                 prompt_template=bench_config.get('prompt_template'),
                 stop_sequences=bench_config.get('stop_sequences'),
-                # Existing fields
+                # Eval params
                 path=bench_config.get('path'),
                 num_fewshot=bench_config.get('num_fewshot'),
                 limit=bench_config.get('limit'),
@@ -582,7 +579,6 @@ class SurogateEval(SurogateCommand):
                 judge_target_name = judge_model_config.get('target')
                 judge_target = self._find_target_by_name(judge_target_name)
                 if judge_target:
-                    # Pass judge to backend via backend_params
                     benchmark.config.backend_params['judge_target'] = judge_target
                     logger.info(f"Using judge '{judge_target_name}' for benchmark '{benchmark_name}'")
                 else:
@@ -605,7 +601,6 @@ class SurogateEval(SurogateCommand):
             # Run benchmark
             result = benchmark.evaluate(target)
 
-            # Convert to dict
             result_dict = result.to_dict()
             result_dict['status'] = 'completed'
 

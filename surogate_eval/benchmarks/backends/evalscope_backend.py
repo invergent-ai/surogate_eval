@@ -306,11 +306,12 @@ class EvalScopeBackend:
         # Handle custom dataset path
         dataset_path = config.get('dataset_path') or config.get('path') or config.get('custom_dataset')
         dataset_hub = config.get('dataset_hub') or config.get('hub')
+        available_splits = None
 
         if dataset_path:
             # Check if it's a LakeFS URL - need to download first
             if dataset_path.startswith('lakefs://'):
-                local_dataset_path = self._download_lakefs_dataset(dataset_path, dataset_name)
+                local_dataset_path, available_splits = self._download_lakefs_dataset(dataset_path, dataset_name)
                 logger.info(f"Downloaded LakeFS dataset to: {local_dataset_path}")
                 dataset_path = local_dataset_path
                 dataset_hub = 'local'
@@ -322,6 +323,13 @@ class EvalScopeBackend:
 
             task_cfg_dict['dataset_args'][dataset_name]['dataset_id'] = dataset_path
             task_cfg_dict['dataset_args'][dataset_name]['default_subset'] = 'default'
+
+            # If local dataset has no train split, use test for few-shot examples
+            if available_splits is not None and 'train' not in available_splits:
+                if 'test' in available_splits or not available_splits:
+                    task_cfg_dict['dataset_args'][dataset_name]['train_split'] = 'test'
+                    logger.info(f"No train split found, using test split for few-shot examples")
+
             logger.info(f"Set custom dataset_id to: {dataset_path}")
 
         if dataset_hub:
@@ -393,7 +401,7 @@ class EvalScopeBackend:
 
         return TaskConfig(**task_cfg_dict)
 
-    def _download_lakefs_dataset(self, lakefs_url: str, dataset_name: str) -> str:
+    def _download_lakefs_dataset(self, lakefs_url: str, dataset_name: str) -> tuple[str, set[str]]:
         """
         Download dataset from LakeFS to local directory.
 
@@ -402,7 +410,7 @@ class EvalScopeBackend:
             dataset_name: Name of the dataset (used for local directory naming)
 
         Returns:
-            Local path to downloaded dataset
+            Tuple of (local_path, available_splits)
         """
         import subprocess
 
@@ -426,17 +434,25 @@ class EvalScopeBackend:
             )
             logger.debug(f"lakectl output: {result.stdout}")
 
-            # Check what was downloaded
+            # Check what was downloaded and detect splits
             downloaded_files = list(local_dir.rglob('*'))
             logger.info(f"Downloaded {len(downloaded_files)} files to {local_dir}")
 
-            for f in downloaded_files[:10]:
-                logger.debug(f"  - {f}")
+            # Detect available splits from filenames
+            available_splits = set()
+            for f in downloaded_files:
+                if f.is_file():
+                    stem = f.stem.lower()
+                    if stem in ('train', 'test', 'validation', 'val', 'dev'):
+                        available_splits.add(stem)
+                    logger.debug(f"  - {f}")
 
             if not downloaded_files:
                 raise RuntimeError(f"No files downloaded from {lakefs_url}")
 
-            return str(local_dir)
+            logger.info(f"Detected splits: {available_splits if available_splits else 'none (single file)'}")
+
+            return str(local_dir), available_splits
 
         except subprocess.CalledProcessError as e:
             logger.error(f"Failed to download from LakeFS: {e.stderr}")

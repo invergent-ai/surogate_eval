@@ -266,6 +266,7 @@ class EvalScopeBackend:
         CODE_BENCHMARKS = {'mbpp', 'humaneval', 'humaneval_plus', 'mbpp_plus', 'ds1000', 'leetcode'}
 
         eval_type = self._get_eval_type(target)
+        force_default_subset = config.get('_force_default_subset', False)
 
         # Base config
         task_cfg_dict = {
@@ -342,7 +343,9 @@ class EvalScopeBackend:
 
         # Add subset if specified
         subset = config.get('subset')
+
         if subset:
+            # User explicitly specified a subset
             if not task_cfg_dict.get('dataset_args'):
                 task_cfg_dict['dataset_args'] = {}
             if dataset_name not in task_cfg_dict['dataset_args']:
@@ -351,6 +354,16 @@ class EvalScopeBackend:
             if isinstance(subset, str):
                 subset = [subset]
             task_cfg_dict['dataset_args'][dataset_name]['subset_list'] = subset
+            logger.info(f"Using '{subset}' subset for dataset: {dataset_name}")
+
+        elif force_default_subset:
+            # Only force 'default' when retrying after subset error
+            if not task_cfg_dict.get('dataset_args'):
+                task_cfg_dict['dataset_args'] = {}
+            if dataset_name not in task_cfg_dict['dataset_args']:
+                task_cfg_dict['dataset_args'][dataset_name] = {}
+            task_cfg_dict['dataset_args'][dataset_name]['subset_list'] = ['default']
+            logger.info(f"Retrying with 'default' subset for dataset: {dataset_name}")
 
         # Add backend params for concurrency and batching
         backend_params = config.get('backend_params', {})

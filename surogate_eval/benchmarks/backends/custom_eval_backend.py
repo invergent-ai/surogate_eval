@@ -66,8 +66,17 @@ class CustomEvalBackend:
             split: str = 'test',
             limit: Optional[int] = None
     ) -> Dataset:
-        """Load dataset from HuggingFace or local file."""
+        """Load dataset from HuggingFace, LakeFS, or local file."""
         logger.info(f"Loading dataset from: {source}")
+
+        # Handle LakeFS URLs - use DatasetLoader
+        if source.startswith('lakefs://'):
+            from surogate_eval.datasets import DatasetLoader
+            loader = DatasetLoader()
+            # Download and get local path
+            local_path = loader._download_from_lakefs(source)
+            # Now load as local file
+            source = local_path
 
         if self._is_hf_dataset(source):
             # HuggingFace dataset

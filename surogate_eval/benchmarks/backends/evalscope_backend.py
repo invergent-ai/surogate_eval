@@ -302,10 +302,18 @@ class EvalScopeBackend:
             if model_args:
                 task_cfg_dict['model_args'] = model_args
 
-        # After setting dataset_hub, also override dataset_id for local datasets
+        # Handle custom dataset path
         dataset_path = config.get('dataset_path') or config.get('path') or config.get('custom_dataset')
-        # For custom datasets, override the dataset_id in dataset_args
+        dataset_hub = config.get('dataset_hub') or config.get('hub')
+
         if dataset_path:
+            # Check if it's a LakeFS URL - need to download first
+            if dataset_path.startswith('lakefs://'):
+                local_dataset_path = self._download_lakefs_dataset(dataset_path, dataset_name)
+                logger.info(f"Downloaded LakeFS dataset to: {local_dataset_path}")
+                dataset_path = local_dataset_path
+                dataset_hub = 'local'
+
             if not task_cfg_dict.get('dataset_args'):
                 task_cfg_dict['dataset_args'] = {}
             if dataset_name not in task_cfg_dict['dataset_args']:
@@ -315,20 +323,8 @@ class EvalScopeBackend:
             task_cfg_dict['dataset_args'][dataset_name]['default_subset'] = 'default'
             logger.info(f"Set custom dataset_id to: {dataset_path}")
 
-        dataset_hub = config.get('dataset_hub') or config.get('hub')
         if dataset_hub:
             task_cfg_dict['dataset_hub'] = dataset_hub
-
-        # For local datasets, override the dataset_id in dataset_args
-        if dataset_hub == 'local' and dataset_path:
-            if not task_cfg_dict.get('dataset_args'):
-                task_cfg_dict['dataset_args'] = {}
-            if dataset_name not in task_cfg_dict['dataset_args']:
-                task_cfg_dict['dataset_args'][dataset_name] = {}
-
-            # Point dataset_id to the local path
-            task_cfg_dict['dataset_args'][dataset_name]['dataset_id'] = dataset_path
-            logger.info(f"Set local dataset_id to: {dataset_path}")
 
         # Add limit if specified
         if 'limit' in config and config['limit']:
@@ -383,6 +379,53 @@ class EvalScopeBackend:
             logger.debug(f"Setting judge_worker_num to {max_workers}")
 
         return TaskConfig(**task_cfg_dict)
+
+    def _download_lakefs_dataset(self, lakefs_url: str, dataset_name: str) -> str:
+        """
+        Download dataset from LakeFS to local directory.
+
+        Args:
+            lakefs_url: LakeFS URL (lakefs://repo/ref or lakefs://repo/ref/path)
+            dataset_name: Name of the dataset (used for local directory naming)
+
+        Returns:
+            Local path to downloaded dataset
+        """
+        import subprocess
+        import os
+
+        # Create local directory for dataset
+        local_dir = Path(tempfile.gettempdir()) / 'evalscope_datasets' / dataset_name
+        local_dir.mkdir(parents=True, exist_ok=True)
+
+        logger.info(f"Downloading LakeFS dataset: {lakefs_url} -> {local_dir}")
+
+        try:
+            # Use lakectl to download the dataset
+            # lakefs://repo/ref -> download all files from that path
+            result = subprocess.run(
+                ['lakectl', 'fs', 'download', '--recursive', lakefs_url, str(local_dir)],
+                capture_output=True,
+                text=True,
+                check=True
+            )
+            logger.debug(f"lakectl output: {result.stdout}")
+
+            # Check what was downloaded
+            downloaded_files = list(local_dir.rglob('*'))
+            logger.info(f"Downloaded {len(downloaded_files)} files to {local_dir}")
+
+            for f in downloaded_files[:10]:  # Log first 10 files
+                logger.debug(f"  - {f}")
+
+            return str(local_dir)
+
+        except subprocess.CalledProcessError as e:
+            logger.error(f"Failed to download from LakeFS: {e.stderr}")
+            raise RuntimeError(f"LakeFS download failed: {e.stderr}")
+        except FileNotFoundError:
+            logger.error("lakectl command not found. Is LakeFS CLI installed?")
+            raise RuntimeError("lakectl command not found")
 
     def _get_eval_type(self, target: BaseTarget) -> str:
         """

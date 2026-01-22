@@ -288,26 +288,24 @@ class SurogateEval(SurogateCommand):
             logger.debug(traceback.format_exc())
 
     def _create_summary_report(self, results: Dict[str, Any], results_dir: Path, timestamp: str):
-        """Create human-readable summary reports (MD and optionally PDF)."""
+        """Create human-readable summary reports (MD and PDF)."""
         try:
             from surogate_eval.report import ReportGenerator
 
             generator = ReportGenerator()
 
-            # Always generate markdown
+            # Generate markdown
             md_file = results_dir / f"report_{timestamp}.md"
             generator.save_markdown(results, md_file)
 
-            # Generate PDF if configured
-            report_format_pdf = getattr(self.config, "report_format_pdf", False)
-            if report_format_pdf:
-                pdf_file = results_dir / f"report_{timestamp}.pdf"
-                try:
-                    generator.save_pdf(results, pdf_file)
-                except ImportError:
-                    logger.warning("PDF generation skipped - weasyprint not installed")
-                except Exception as e:
-                    logger.error(f"Failed to generate PDF report: {e}")
+            # Generate PDF
+            pdf_file = results_dir / f"report_{timestamp}.pdf"
+            try:
+                generator.save_pdf(results, pdf_file)
+            except ImportError:
+                logger.warning("PDF generation skipped - weasyprint not installed")
+            except Exception as e:
+                logger.error(f"Failed to generate PDF report: {e}")
 
         except Exception as e:
             logger.error(f"Failed to create summary report: {e}")

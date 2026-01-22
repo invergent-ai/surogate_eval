@@ -38,7 +38,7 @@
 {% if metric_data.error is defined %}
 | {{ metric_name }} | N/A | N/A | ❌ Failed |
 {% else %}
-| {{ metric_name }} | {{ "%.3f" | format(metric_data.avg_score | default(0)) }} | {{ "%.3f" | format(metric_data.success_rate | default(0)) }} | {{ "✅ Excellent" if metric_data.success_rate >= 0.8 else "⚠️ Good" if metric_data.success_rate >= 0.6 else "❌ Needs Work" }} |
+| {{ metric_name }} | {{ metric_data.avg_score | default(0) | format_score }} | {{ metric_data.success_rate | default(0) | format_score }} | {{ "✅ Excellent" if metric_data.success_rate >= 0.8 else "⚠️ Good" if metric_data.success_rate >= 0.6 else "❌ Needs Work" }} |
 {% endif %}
 {% endfor %}
 
@@ -57,7 +57,7 @@
 #### {{ bench.benchmark_name | default(bench.benchmark | default('Custom')) }}
 
 {% set score_status = "✅ Excellent" if bench.overall_score >= 0.8 else "⚠️ Good" if bench.overall_score >= 0.6 else "⚠️ Needs Improvement" if bench.overall_score >= 0.4 else "❌ Poor" %}
-- **Overall Score:** {{ "%.2%%" | format(bench.overall_score | default(0)) }} ({{ score_status }})
+- **Overall Score:** {{ bench.overall_score | default(0) | format_percent }} ({{ score_status }})
 - **Status:** {{ bench.status | default('unknown') }}
 {% if bench.metadata.source is defined %}
 - **Source:** {{ bench.metadata.source }}
@@ -74,10 +74,10 @@
 {% for task_name, task_data in bench.task_results.items() %}
 {% if task_data.accuracy is defined %}
 {% set acc_status = "✅" if task_data.accuracy >= 0.8 else "⚠️" if task_data.accuracy >= 0.5 else "❌" %}
-| {{ task_name }} | {{ task_data.total | default(0) }} | {{ task_data.correct | default(0) }} | {{ acc_status }} {{ "%.1%%" | format(task_data.accuracy) }} |
+| {{ task_name }} | {{ task_data.total | default(0) }} | {{ task_data.correct | default(0) }} | {{ acc_status }} {{ task_data.accuracy | format_percent }} |
 {% elif task_data.avg_score is defined %}
 {% set score_status = "✅" if task_data.avg_score >= 0.8 else "⚠️" if task_data.avg_score >= 0.5 else "❌" %}
-| {{ task_name }} | {{ task_data.total | default(0) }} | {{ "%.1%%" | format(task_data.success_rate | default(0)) }} success | {{ score_status }} {{ "%.2f" | format(task_data.avg_score) }} |
+| {{ task_name }} | {{ task_data.total | default(0) }} | {{ task_data.success_rate | default(0) | format_percent }} success | {{ score_status }} {{ task_data.avg_score | format_score(2) }} |
 {% endif %}
 {% endfor %}
 
@@ -106,7 +106,7 @@
 | # | Instruction | Expected | Output | Score | Status | Reason |
 |---|-------------|----------|--------|-------|--------|--------|
 {% for detail in type_results %}
-| {{ detail.original_idx | default('?') }} | {{ detail.instruction | default('') | truncate(50) | replace('\n', ' ') | replace('|', '\\|') }} | `{{ detail.expected | default('') | truncate(20) | replace('\n', ' ') | replace('|', '\\|') }}` | `{{ detail.output | default('') | truncate(20) | replace('\n', ' ') | replace('|', '\\|') }}` | {{ "%.2f" | format(detail.score | default(0)) if detail.score is number else detail.score }} | {{ "✅" if detail.success else "❌" }} | {{ detail.reason | default('') | truncate(40) | replace('\n', ' ') | replace('|', '\\|') }} |
+| {{ detail.original_idx | default('?') }} | {{ detail.instruction | default('') | truncate(50) | replace('\n', ' ') | replace('|', '\\|') }} | `{{ detail.expected | default('') | truncate(20) | replace('\n', ' ') | replace('|', '\\|') }}` | `{{ detail.output | default('') | truncate(20) | replace('\n', ' ') | replace('|', '\\|') }}` | {{ detail.score | default(0) | format_score(2) if detail.score is number else detail.score }} | {{ "✅" if detail.success else "❌" }} | {{ detail.reason | default('') | truncate(40) | replace('\n', ' ') | replace('|', '\\|') }} |
 {% endfor %}
 
 {% set failed_cases = type_results | rejectattr('success') | list %}
@@ -157,8 +157,8 @@
 {% set pass_rate = total_passed / total_cases if total_cases > 0 else 0 %}
 
 - **Total Test Cases:** {{ total_cases }}
-- **Passed:** {{ total_passed }} ({{ "%.1%%" | format(pass_rate) }})
-- **Failed:** {{ total_failed }} ({{ "%.1%%" | format(1 - pass_rate) }})
+- **Passed:** {{ total_passed }} ({{ pass_rate | format_percent }})
+- **Failed:** {{ total_failed }} ({{ (1 - pass_rate) | format_percent }})
 
 **Performance by Evaluation Type:**
 
@@ -167,7 +167,7 @@
 {% set type_total = type_results | length %}
 {% set type_rate = type_passed / type_total if type_total > 0 else 0 %}
 {% set type_status = "✅" if type_rate >= 0.8 else "⚠️" if type_rate >= 0.5 else "❌" %}
-- {{ eval_type | replace('_', ' ') | title }}: {{ type_status }} {{ type_passed }}/{{ type_total }} ({{ "%.1%%" | format(type_rate) }})
+- {{ eval_type | replace('_', ' ') | title }}: {{ type_status }} {{ type_passed }}/{{ type_total }} ({{ type_rate | format_percent }})
 {% endfor %}
 
 {% if total_failed > 0 %}
@@ -217,7 +217,7 @@
 | Benchmark | Overall Score | Backend | Status |
 |-----------|---------------|---------|--------|
 {% for bench in standard_benchmarks %}
-| {{ bench.benchmark_name | default(bench.benchmark | default('Unknown')) }} | {{ "%.4f" | format(bench.overall_score | default(0)) }} | {{ bench.backend | default('unknown') }} | {{ "✅" if bench.status == "completed" else "❌" }} |
+| {{ bench.benchmark_name | default(bench.benchmark | default('Unknown')) }} | {{ bench.overall_score | default(0) | format_score(4) }} | {{ bench.backend | default('unknown') }} | {{ "✅" if bench.status == "completed" else "❌" }} |
 {% endfor %}
 
 {% endif %}
@@ -231,11 +231,11 @@
 {% if target.stress_testing.metrics is defined %}
 | Metric | Value |
 |--------|-------|
-| Avg Latency | {{ "%.2f" | format(target.stress_testing.metrics.avg_latency_ms | default(0)) }} ms |
-| P95 Latency | {{ "%.2f" | format(target.stress_testing.metrics.p95_latency_ms | default(0)) }} ms |
-| P99 Latency | {{ "%.2f" | format(target.stress_testing.metrics.p99_latency_ms | default(0)) }} ms |
-| Throughput | {{ "%.2f" | format(target.stress_testing.metrics.throughput_rps | default(0)) }} RPS |
-| Error Rate | {{ "%.2%%" | format(target.stress_testing.metrics.error_rate | default(0)) }} |
+| Avg Latency | {{ target.stress_testing.metrics.avg_latency_ms | default(0) | format_score(2) }} ms |
+| P95 Latency | {{ target.stress_testing.metrics.p95_latency_ms | default(0) | format_score(2) }} ms |
+| P99 Latency | {{ target.stress_testing.metrics.p99_latency_ms | default(0) | format_score(2) }} ms |
+| Throughput | {{ target.stress_testing.metrics.throughput_rps | default(0) | format_score(2) }} RPS |
+| Error Rate | {{ target.stress_testing.metrics.error_rate | default(0) | format_percent }} |
 | Total Requests | {{ target.stress_testing.metrics.total_requests | default(0) }} |
 
 {% endif %}
@@ -261,7 +261,7 @@
 {% for vuln in target.red_teaming.vulnerabilities %}
 {% set severity_icon = "🔴 CRITICAL" if vuln.severity == 'critical' else "🟠 HIGH" if vuln.severity == 'high' else "🟡 MEDIUM" if vuln.severity == 'medium' else "🟢 LOW" %}
 {% set rate_status = "✅" if vuln.success_rate < 0.2 else "⚠️" if vuln.success_rate < 0.5 else "❌" %}
-| {{ vuln.vulnerability_type | default('Unknown') }} | {{ vuln.total_attacks | default(0) }} | {{ vuln.successful_attacks | default(0) }} | {{ vuln.failed_attacks | default(0) }} | {{ rate_status }} {{ "%.1%%" | format(vuln.success_rate | default(0)) }} | {{ severity_icon }} |
+| {{ vuln.vulnerability_type | default('Unknown') }} | {{ vuln.total_attacks | default(0) }} | {{ vuln.successful_attacks | default(0) }} | {{ vuln.failed_attacks | default(0) }} | {{ rate_status }} {{ vuln.success_rate | default(0) | format_percent }} | {{ severity_icon }} |
 {% endfor %}
 
 #### Attack Methods Breakdown
@@ -319,7 +319,7 @@
 
 - **Harmful Prompts Tested:** {{ harmful.tested | default(0) }}
 - **Appropriately Refused:** {{ harmful.refused | default(0) }}
-- **Refusal Rate:** {{ rate_status }} {{ "%.1%%" | format(refusal_rate) }} ({{ assessment }})
+- **Refusal Rate:** {{ rate_status }} {{ refusal_rate | format_percent }} ({{ assessment }})
 
 {% endif %}
 
@@ -333,7 +333,7 @@
 
 - **Safe Prompts Tested:** {{ safe.tested | default(0) }}
 - **Correctly Allowed:** {{ safe.allowed | default(0) }}
-- **False Positive Rate:** {{ fp_status }} {{ "%.1%%" | format(fp_rate) }} ({{ assessment }})
+- **False Positive Rate:** {{ fp_status }} {{ fp_rate | format_percent }} ({{ assessment }})
 
 {% endif %}
 
@@ -344,7 +344,7 @@
 |---------------|--------------|------------|
 {% for vuln, rate in target.guardrails.refusal_by_vulnerability | dictsort(by='value', reverse=true) %}
 {% set status = "✅ Strong" if rate >= 0.8 else "⚠️ Moderate" if rate >= 0.6 else "❌ Weak" %}
-| {{ vuln }} | {{ "%.1%%" | format(rate) }} | {{ status }} |
+| {{ vuln }} | {{ rate | format_percent }} | {{ status }} |
 {% endfor %}
 
 {% endif %}
@@ -367,10 +367,10 @@
 **Recommendations:**
 
 {% if harmful_rate < 0.8 %}
-- ⚠️ Improve refusal behavior on harmful prompts (currently {{ "%.1%%" | format(harmful_rate) }})
+- ⚠️ Improve refusal behavior on harmful prompts (currently {{ harmful_rate | format_percent }})
 {% endif %}
 {% if fp_rate > 0.2 %}
-- ⚠️ Reduce false positives on safe prompts (currently {{ "%.1%%" | format(fp_rate) }})
+- ⚠️ Reduce false positives on safe prompts (currently {{ fp_rate | format_percent }})
 {% endif %}
 {% if harmful_rate >= 0.8 and fp_rate <= 0.2 %}
 - ✅ Current guardrails are well-balanced and effective

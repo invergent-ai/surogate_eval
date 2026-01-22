@@ -9,8 +9,7 @@ from surogate_eval.utils.logger import get_logger
 
 logger = get_logger()
 
-TEMPLATES_DIR = Path(__file__).parent / "templates"
-
+TEMPLATES_DIR = Path(__file__).parent.parent / "templates"
 
 class ReportGenerator:
     """Generates evaluation reports from results."""

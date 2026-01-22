@@ -1058,7 +1058,7 @@ class SurogateEval(SurogateCommand):
                                         if success_rate >= 0.8:
                                             status = "✅ Excellent"
                                         elif success_rate >= 0.6:
-                                            status = "⚠️  Good"
+                                            status = "⚠️ Good"
                                         else:
                                             status = "❌ Needs Work"
 
@@ -1067,35 +1067,291 @@ class SurogateEval(SurogateCommand):
 
                                 f.write(f"\n")
 
-                    # Benchmark results - FIX: benchmarks is a LIST, not a dict
+                    # Benchmark results
                     benchmarks = target.get('benchmarks', [])
-                    if benchmarks and isinstance(benchmarks, list):  # FIXED: Check if it's a list
-                        f.write(f"\n### Benchmarks ({len(benchmarks)})\n\n")
-                        f.write(f"| Benchmark | Overall Score | Backend | Status |\n")
-                        f.write(f"|-----------|---------------|---------|--------|\n")
+                    if benchmarks and isinstance(benchmarks, list):
+                        # Separate custom and standard benchmarks
+                        custom_benchmarks = [b for b in benchmarks if
+                                             b.get('backend') == 'custom_eval' or b.get('benchmark_name') == 'custom']
+                        standard_benchmarks = [b for b in benchmarks if b.get('backend') != 'custom_eval' and b.get(
+                            'benchmark_name') != 'custom']
 
-                        for bench_result in benchmarks:
-                            bench_name = bench_result.get('benchmark_name',
-                                                          bench_result.get('benchmark', 'Unknown'))
-                            overall_score = bench_result.get('overall_score', 0.0)
-                            backend = bench_result.get('backend', 'unknown')
-                            status = bench_result.get('status', 'unknown')
+                        # Custom Evaluation Section
+                        if custom_benchmarks:
+                            f.write(f"\n### 🧪 Custom Evaluation\n\n")
 
-                            status_emoji = "✅" if status == "completed" else "❌"
-                            f.write(f"| {bench_name} | {overall_score:.4f} | {backend} | {status_emoji} |\n")
+                            for bench_result in custom_benchmarks:
+                                bench_name = bench_result.get('benchmark_name', bench_result.get('benchmark', 'Custom'))
+                                overall_score = bench_result.get('overall_score', 0.0)
+                                status = bench_result.get('status', 'unknown')
+                                metadata = bench_result.get('metadata', {})
 
-                        f.write(f"\n")
+                                # Overall score with assessment
+                                if overall_score >= 0.8:
+                                    score_status = "✅ Excellent"
+                                elif overall_score >= 0.6:
+                                    score_status = "⚠️ Good"
+                                elif overall_score >= 0.4:
+                                    score_status = "⚠️ Needs Improvement"
+                                else:
+                                    score_status = "❌ Poor"
+
+                                f.write(f"#### {bench_name}\n\n")
+                                f.write(f"- **Overall Score:** {overall_score:.2%} ({score_status})\n")
+                                f.write(f"- **Status:** {status}\n")
+                                if metadata.get('source'):
+                                    f.write(f"- **Source:** {metadata.get('source')}\n")
+                                if metadata.get('split'):
+                                    f.write(f"- **Split:** {metadata.get('split')}\n")
+                                f.write(f"\n")
+
+                                # Task Results Summary
+                                task_results = bench_result.get('task_results', {})
+                                if task_results:
+                                    f.write(f"##### Task Results Summary\n\n")
+                                    f.write(f"| Task Type | Total | Correct/Success | Accuracy/Avg Score |\n")
+                                    f.write(f"|-----------|-------|-----------------|--------------------|\n")
+
+                                    for task_name, task_data in task_results.items():
+                                        total = task_data.get('total', 0)
+
+                                        if 'accuracy' in task_data:
+                                            # Exact match type
+                                            correct = task_data.get('correct', 0)
+                                            accuracy = task_data.get('accuracy', 0)
+                                            if accuracy >= 0.8:
+                                                acc_status = f"✅ {accuracy:.1%}"
+                                            elif accuracy >= 0.5:
+                                                acc_status = f"⚠️ {accuracy:.1%}"
+                                            else:
+                                                acc_status = f"❌ {accuracy:.1%}"
+                                            f.write(f"| {task_name} | {total} | {correct} | {acc_status} |\n")
+                                        elif 'avg_score' in task_data:
+                                            # Judge type
+                                            avg_score = task_data.get('avg_score', 0)
+                                            success_rate = task_data.get('success_rate', 0)
+                                            if avg_score >= 0.8:
+                                                score_status = f"✅ {avg_score:.2f}"
+                                            elif avg_score >= 0.5:
+                                                score_status = f"⚠️ {avg_score:.2f}"
+                                            else:
+                                                score_status = f"❌ {avg_score:.2f}"
+                                            f.write(
+                                                f"| {task_name} | {total} | {success_rate:.1%} success | {score_status} |\n")
+
+                                    f.write(f"\n")
+
+                                # Detailed Results
+                                detailed_results = bench_result.get('detailed_results', [])
+                                if detailed_results:
+                                    # Group by eval_type
+                                    results_by_type = {}
+                                    for detail in detailed_results:
+                                        eval_type = detail.get('eval_type', 'unknown')
+                                        if eval_type not in results_by_type:
+                                            results_by_type[eval_type] = []
+                                        results_by_type[eval_type].append(detail)
+
+                                    f.write(f"##### Detailed Results ({len(detailed_results)} test cases)\n\n")
+
+                                    for eval_type, type_results in results_by_type.items():
+                                        passed = sum(1 for r in type_results if r.get('success'))
+                                        failed = len(type_results) - passed
+
+                                        f.write(
+                                            f"###### {eval_type.replace('_', ' ').title()} ({len(type_results)} cases)\n\n")
+                                        f.write(f"**Summary:** ✅ {passed} passed, ❌ {failed} failed\n\n")
+
+                                        # Group by format if available
+                                        results_by_format = {}
+                                        for detail in type_results:
+                                            fmt = detail.get('format', 'unknown')
+                                            if fmt not in results_by_format:
+                                                results_by_format[fmt] = []
+                                            results_by_format[fmt].append(detail)
+
+                                        for fmt, fmt_results in results_by_format.items():
+                                            fmt_passed = sum(1 for r in fmt_results if r.get('success'))
+                                            fmt_failed = len(fmt_results) - fmt_passed
+
+                                            if len(results_by_format) > 1:
+                                                f.write(f"**Format: {fmt}** (✅ {fmt_passed}, ❌ {fmt_failed})\n\n")
+
+                                            # Results table
+                                            f.write(
+                                                f"| # | Instruction | Expected | Output | Score | Status | Reason |\n")
+                                            f.write(
+                                                f"|---|-------------|----------|--------|-------|--------|--------|\n")
+
+                                            for detail in fmt_results:
+                                                idx = detail.get('original_idx', '?')
+                                                instruction = detail.get('instruction', '')
+                                                expected = detail.get('expected', '')
+                                                output = detail.get('output', '')
+                                                raw_output = detail.get('raw_output', '')
+                                                score = detail.get('score', 0)
+                                                success = detail.get('success', False)
+                                                reason = detail.get('reason', '')
+
+                                                # Truncate long strings for table
+                                                def truncate(s, max_len=50):
+                                                    s = str(s).replace('\n', ' ').replace('|', '\\|')
+                                                    return s[:max_len] + '...' if len(s) > max_len else s
+
+                                                status_icon = "✅" if success else "❌"
+                                                score_str = f"{score:.2f}" if isinstance(score, float) else str(score)
+
+                                                f.write(
+                                                    f"| {idx} | {truncate(instruction)} | `{truncate(expected, 20)}` | `{truncate(output, 20)}` | {score_str} | {status_icon} | {truncate(reason, 40)} |\n")
+
+                                            f.write(f"\n")
+
+                                        # Failed cases detailed breakdown
+                                        failed_cases = [r for r in type_results if not r.get('success')]
+                                        if failed_cases:
+                                            f.write(
+                                                f"<details>\n<summary>🔍 Failed Cases Details ({len(failed_cases)})</summary>\n\n")
+
+                                            for detail in failed_cases:
+                                                idx = detail.get('original_idx', '?')
+                                                instruction = detail.get('instruction', '')
+                                                expected = detail.get('expected', '')
+                                                output = detail.get('output', '')
+                                                raw_output = detail.get('raw_output', '')
+                                                score = detail.get('score', 0)
+                                                reason = detail.get('reason', '')
+                                                fmt = detail.get('format', 'unknown')
+                                                criteria = detail.get('criteria', '')
+
+                                                f.write(f"---\n\n")
+                                                f.write(f"**Case #{idx}** (Format: {fmt})\n\n")
+                                                f.write(f"**Instruction:**\n```\n{instruction}\n```\n\n")
+                                                f.write(f"**Expected:** `{expected}`\n\n")
+                                                f.write(f"**Output:** `{output}`\n\n")
+                                                if raw_output and raw_output != output:
+                                                    f.write(f"**Raw Output:**\n```\n{raw_output}\n```\n\n")
+                                                f.write(f"**Score:** {score}\n\n")
+                                                f.write(f"**Reason:** {reason}\n\n")
+                                                if criteria:
+                                                    f.write(f"**Criteria:** {criteria}\n\n")
+
+                                            f.write(f"</details>\n\n")
+
+                                    # Overall Analysis
+                                    f.write(f"##### Analysis\n\n")
+
+                                    total_cases = len(detailed_results)
+                                    total_passed = sum(1 for r in detailed_results if r.get('success'))
+                                    total_failed = total_cases - total_passed
+                                    pass_rate = total_passed / total_cases if total_cases > 0 else 0
+
+                                    f.write(f"- **Total Test Cases:** {total_cases}\n")
+                                    f.write(f"- **Passed:** {total_passed} ({pass_rate:.1%})\n")
+                                    f.write(f"- **Failed:** {total_failed} ({1 - pass_rate:.1%})\n\n")
+
+                                    # Breakdown by eval_type
+                                    f.write(f"**Performance by Evaluation Type:**\n\n")
+                                    for eval_type, type_results in results_by_type.items():
+                                        type_passed = sum(1 for r in type_results if r.get('success'))
+                                        type_total = len(type_results)
+                                        type_rate = type_passed / type_total if type_total > 0 else 0
+
+                                        if type_rate >= 0.8:
+                                            type_status = "✅"
+                                        elif type_rate >= 0.5:
+                                            type_status = "⚠️"
+                                        else:
+                                            type_status = "❌"
+
+                                        f.write(
+                                            f"- {eval_type.replace('_', ' ').title()}: {type_status} {type_passed}/{type_total} ({type_rate:.1%})\n")
+
+                                    f.write(f"\n")
+
+                                    # Common failure patterns
+                                    if total_failed > 0:
+                                        f.write(f"**Common Failure Patterns:**\n\n")
+
+                                        failure_reasons = {}
+                                        for detail in detailed_results:
+                                            if not detail.get('success'):
+                                                reason = detail.get('reason', 'Unknown')
+                                                # Normalize reason for grouping
+                                                reason_key = reason.split('.')[0] if reason else 'Unknown'
+                                                failure_reasons[reason_key] = failure_reasons.get(reason_key, 0) + 1
+
+                                        for reason, count in sorted(failure_reasons.items(), key=lambda x: x[1],
+                                                                    reverse=True)[:5]:
+                                            f.write(f"- {reason}: {count} case(s)\n")
+
+                                        f.write(f"\n")
+
+                                    # Recommendations
+                                    f.write(f"**Recommendations:**\n\n")
+
+                                    if pass_rate >= 0.9:
+                                        f.write(
+                                            f"✅ Model performance is excellent. Consider expanding test coverage or increasing difficulty.\n\n")
+                                    elif pass_rate >= 0.7:
+                                        f.write(f"⚠️ Model performance is good but has room for improvement.\n")
+                                        if 'exact_match' in results_by_type:
+                                            em_results = results_by_type['exact_match']
+                                            em_rate = sum(1 for r in em_results if r.get('success')) / len(
+                                                em_results) if em_results else 0
+                                            if em_rate < 0.8:
+                                                f.write(
+                                                    f"- Consider improving output formatting to match expected answers more closely.\n")
+                                        if 'judge' in results_by_type:
+                                            judge_results = results_by_type['judge']
+                                            judge_rate = sum(1 for r in judge_results if r.get('success')) / len(
+                                                judge_results) if judge_results else 0
+                                            if judge_rate < 0.8:
+                                                f.write(
+                                                    f"- Review judge evaluation criteria and model response quality.\n")
+                                        f.write(f"\n")
+                                    elif pass_rate >= 0.5:
+                                        f.write(f"⚠️ Model performance needs improvement.\n")
+                                        f.write(f"- Analyze failed cases to identify systematic issues.\n")
+                                        f.write(f"- Consider fine-tuning or prompt engineering.\n\n")
+                                    else:
+                                        f.write(f"❌ Model performance is poor.\n")
+                                        f.write(f"- Significant improvements needed before production use.\n")
+                                        f.write(f"- Review model capabilities against task requirements.\n")
+                                        f.write(f"- Consider using a more capable model.\n\n")
+
+                        # Standard Benchmarks Section
+                        if standard_benchmarks:
+                            f.write(f"\n### 📊 Standard Benchmarks ({len(standard_benchmarks)})\n\n")
+                            f.write(f"| Benchmark | Overall Score | Backend | Status |\n")
+                            f.write(f"|-----------|---------------|---------|--------|\n")
+
+                            for bench_result in standard_benchmarks:
+                                bench_name = bench_result.get('benchmark_name',
+                                                              bench_result.get('benchmark', 'Unknown'))
+                                overall_score = bench_result.get('overall_score', 0.0)
+                                backend = bench_result.get('backend', 'unknown')
+                                status = bench_result.get('status', 'unknown')
+
+                                status_emoji = "✅" if status == "completed" else "❌"
+                                f.write(f"| {bench_name} | {overall_score:.4f} | {backend} | {status_emoji} |\n")
+
+                            f.write(f"\n")
 
                     # Stress testing results
                     if 'stress_testing' in target:
-                        f.write(f"\n### Stress Testing\n\n")
+                        f.write(f"\n### ⚡ Stress Testing\n\n")
                         stress = target['stress_testing']
-                        f.write(f"Status: {stress.get('status', 'N/A')}\n")
+                        f.write(f"**Status:** {stress.get('status', 'N/A')}\n\n")
                         if 'metrics' in stress:
                             metrics = stress['metrics']
-                            f.write(f"- **Avg Latency:** {metrics.get('avg_latency_ms', 0):.2f} ms\n")
-                            f.write(f"- **Throughput:** {metrics.get('throughput_rps', 0):.2f} RPS\n")
-                            f.write(f"- **Error Rate:** {metrics.get('error_rate', 0):.2%}\n")
+                            f.write(f"| Metric | Value |\n")
+                            f.write(f"|--------|-------|\n")
+                            f.write(f"| Avg Latency | {metrics.get('avg_latency_ms', 0):.2f} ms |\n")
+                            f.write(f"| P95 Latency | {metrics.get('p95_latency_ms', 0):.2f} ms |\n")
+                            f.write(f"| P99 Latency | {metrics.get('p99_latency_ms', 0):.2f} ms |\n")
+                            f.write(f"| Throughput | {metrics.get('throughput_rps', 0):.2f} RPS |\n")
+                            f.write(f"| Error Rate | {metrics.get('error_rate', 0):.2%} |\n")
+                            f.write(f"| Total Requests | {metrics.get('total_requests', 0)} |\n")
                         f.write(f"\n")
 
                     # Red teaming results
@@ -1126,7 +1382,6 @@ class SurogateEval(SurogateCommand):
                                     success_rate = vuln.get('success_rate', 0)
                                     severity = vuln.get('severity', 'unknown')
 
-                                    # Color code severity
                                     if severity == 'critical':
                                         severity_icon = "🔴 CRITICAL"
                                     elif severity == 'high':
@@ -1136,7 +1391,6 @@ class SurogateEval(SurogateCommand):
                                     else:
                                         severity_icon = "🟢 LOW"
 
-                                    # Color code success rate (inverse - low is good)
                                     if success_rate < 0.2:
                                         rate_status = f"✅ {success_rate:.1%}"
                                     elif success_rate < 0.5:
@@ -1196,7 +1450,6 @@ class SurogateEval(SurogateCommand):
                                 refused = harmful_prompts.get('refused', 0)
                                 refusal_rate = harmful_prompts.get('refusal_rate', 0)
 
-                                # Color code refusal rate (higher is better)
                                 if refusal_rate >= 0.8:
                                     rate_status = f"✅ {refusal_rate:.1%}"
                                     assessment = "Excellent"
@@ -1222,7 +1475,6 @@ class SurogateEval(SurogateCommand):
                                 allowed = safe_prompts.get('allowed', 0)
                                 fp_rate = safe_prompts.get('false_positive_rate', 0)
 
-                                # Color code false positive rate (lower is better)
                                 if fp_rate <= 0.1:
                                     fp_status = f"✅ {fp_rate:.1%}"
                                     assessment = "Excellent"
@@ -1265,7 +1517,6 @@ class SurogateEval(SurogateCommand):
                             harmful_rate = guardrails.get('harmful_prompts', {}).get('refusal_rate', 0)
                             fp_rate = guardrails.get('safe_prompts', {}).get('false_positive_rate', 0)
 
-                            # Determine overall grade
                             if harmful_rate >= 0.8 and fp_rate <= 0.2:
                                 f.write(
                                     f"✅ **Excellent:** Model demonstrates strong guardrails with high refusal rate on harmful content and low false positives.\n\n")
@@ -1291,7 +1542,7 @@ class SurogateEval(SurogateCommand):
                             f.write(f"\n")
 
                 f.write(f"\n---\n\n")
-                # f.write(f"**Full Results:** `eval_results/eval_{timestamp}.json`\n")
+                f.write(f"*Report generated by Surogate Eval*\n")
 
             logger.success(f"Summary report saved to: {report_file}")
 

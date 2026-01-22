@@ -2,7 +2,8 @@
 """Custom evaluation backend supporting mixed exact_match and judge evaluation types."""
 
 import os
-import re
+import json
+import tempfile
 from pathlib import Path
 from typing import Dict, Any, List, Optional
 
@@ -29,7 +30,7 @@ class CustomEvalBackend:
     """
     Backend for custom evaluation with mixed eval types.
 
-    Dataset schema (simple):
+    Dataset schema:
     - instruction (required): The full prompt including any choices
     - answer (required): Expected answer
     - eval_type (optional): 'judge' or 'exact_match' (default: exact_match)
@@ -61,11 +62,9 @@ class CustomEvalBackend:
         # Check if HuggingFace dataset
         source_path = Path(source)
         if not source_path.exists() and '/' in source:
-            # HuggingFace dataset
             dataset = load_dataset(source, split=split, trust_remote_code=True)
             logger.info(f"Loaded HF dataset '{source}' split '{split}'")
         else:
-            # Local file
             if not source_path.exists():
                 raise FileNotFoundError(f"Dataset file not found: {source}")
 
@@ -95,160 +94,239 @@ class CustomEvalBackend:
             return default
         return value
 
-    def _extract_answer(self, output: str) -> str:
-        """Extract answer from model output."""
-        if not output:
-            return ""
-
-        output = output.strip()
-
-        # Get first line
-        first_line = re.split(r'\\n|\n', output)[0].strip()
-
-        # Extract from \boxed{X}
-        boxed_match = re.search(r'\\boxed\{([^\}]+)\}', first_line)
-        if boxed_match:
-            return boxed_match.group(1).strip()
-
-        # For MCQ: extract letter A-D
-        letter_match = re.match(r'^([A-Da-d])(?:[\.\,\)\s]|$)', first_line)
-        if letter_match:
-            return letter_match.group(1).upper()
-
-        return first_line
-
-    def _check_exact_match(self, output: str, expected: str) -> bool:
-        """Check if output matches expected answer."""
-        output = self._extract_answer(output).lower().strip()
-        expected = expected.lower().strip()
-        return output == expected
-
-    def _evaluate_exact_match(
+    def _split_by_eval_type(
             self,
-            row: Dict[str, Any],
-            target: BaseTarget,
-            columns: Dict[str, str],
-            config: Dict[str, Any]
-    ) -> Dict[str, Any]:
-        """Evaluate a single row with exact match."""
-        instruction = self._get_column_value(row, columns, 'instruction', '')
-        expected = self._get_column_value(row, columns, 'answer', '')
+            dataset: Dataset,
+            columns: Dict[str, str]
+    ) -> tuple[List[Dict[str, Any]], List[Dict[str, Any]]]:
+        """Split dataset rows by eval_type."""
+        exact_match_rows = []
+        judge_rows = []
 
-        # Get model output
+        eval_type_col = columns.get('eval_type', 'eval_type')
+        has_eval_type = eval_type_col in dataset.column_names
+
+        for idx, row in enumerate(dataset):
+            row_dict = dict(row)
+            row_dict['_original_idx'] = idx
+
+            if has_eval_type:
+                eval_type = self._get_column_value(row, columns, 'eval_type', 'exact_match')
+            else:
+                eval_type = 'exact_match'
+
+            if eval_type == 'judge':
+                judge_rows.append(row_dict)
+            else:
+                exact_match_rows.append(row_dict)
+
+        logger.info(f"Split dataset: {len(exact_match_rows)} exact_match, {len(judge_rows)} judge")
+        return exact_match_rows, judge_rows
+
+    def _evaluate_exact_match_rows(
+            self,
+            rows: List[Dict[str, Any]],
+            target: BaseTarget,
+            config: Dict[str, Any],
+            columns: Dict[str, str]
+    ) -> List[Dict[str, Any]]:
+        """Evaluate exact_match rows using LM-Eval backend."""
+        if not rows:
+            return []
+
+        logger.info(f"Evaluating {len(rows)} exact_match rows with lm-eval")
+
+        from .lm_eval_backend import LMEvalBackend
+
+        # Prepare rows for lm-eval format
+        lm_eval_rows = []
+        for row in rows:
+            lm_row = {
+                'instruction': self._get_column_value(row, columns, 'instruction', ''),
+                'answer': self._get_column_value(row, columns, 'answer', ''),
+                '_original_idx': row['_original_idx']
+            }
+            lm_eval_rows.append(lm_row)
+
+        # Write to temp file
+        with tempfile.NamedTemporaryFile(mode='w', suffix='.jsonl', delete=False) as f:
+            for row in lm_eval_rows:
+                f.write(json.dumps(row) + '\n')
+            temp_path = f.name
+
         try:
-            from surogate_eval.targets.base import TargetRequest
-            request = TargetRequest(prompt=instruction)
-            response = target.send_request(request)
-            raw_output = response.content
-        except Exception as e:
-            logger.error(f"Inference error: {e}")
-            return {
-                'instruction': instruction,
-                'expected': expected,
-                'output': '',
-                'raw_output': '',
-                'score': 0.0,
-                'success': False,
-                'reason': f'Inference error: {str(e)}',
+            # Configure lm-eval backend
+            lm_config = {
+                'source': temp_path,
+                'columns': {
+                    'question': 'instruction',
+                    'answer': 'answer',
+                },
+                'split': 'test',
+                'num_fewshot': 0,
+                'max_tokens': config.get('max_tokens', 256),
+                'tokenizer': config.get('tokenizer'),
+                'batch_size': config.get('batch_size', 1),
+                'stop_sequences': config.get('stop_sequences'),
+                'system_prompt': config.get('system_prompt'),
             }
 
-        output = self._extract_answer(raw_output)
-        success = self._check_exact_match(raw_output, expected)
+            # Run lm-eval
+            backend = LMEvalBackend()
+            benchmark_name = f"{config.get('name', 'custom')}_exact_match"
+            lm_results = backend.evaluate(target, benchmark_name, lm_config)
 
-        return {
-            'instruction': instruction,
-            'expected': expected,
-            'output': output,
-            'raw_output': raw_output,
-            'score': 1.0 if success else 0.0,
-            'success': success,
-            'reason': 'Exact match' if success else 'No match',
-        }
+            # Map results back to original indices
+            detailed_results = lm_results.get('detailed_results', [])
+            results = []
 
-    def _evaluate_judge(
+            for i, row in enumerate(lm_eval_rows):
+                if i < len(detailed_results):
+                    detail = detailed_results[i]
+                    score = 1.0 if detail.get('metrics', {}).get('exact_match', 0) else 0.0
+                    success = bool(detail.get('metrics', {}).get('exact_match', 0))
+                    output = detail.get('output', '')
+                    raw_output = detail.get('raw_output', '')
+                    reason = 'Exact match' if success else 'No match'
+                else:
+                    score = 0.0
+                    success = False
+                    output = ''
+                    raw_output = ''
+                    reason = 'No result'
+
+                result = {
+                    'original_idx': row['_original_idx'],
+                    'eval_type': 'exact_match',
+                    'instruction': row['instruction'],
+                    'expected': row['answer'],
+                    'output': output,
+                    'raw_output': raw_output,
+                    'score': score,
+                    'success': success,
+                    'reason': reason,
+                }
+                results.append(result)
+
+            logger.info(f"Completed exact_match: {sum(r['success'] for r in results)}/{len(results)} correct")
+            return results
+
+        finally:
+            try:
+                os.unlink(temp_path)
+            except Exception:
+                pass
+
+    def _evaluate_judge_rows(
             self,
-            row: Dict[str, Any],
+            rows: List[Dict[str, Any]],
             target: BaseTarget,
-            columns: Dict[str, str],
             config: Dict[str, Any],
-            judge_target: Optional[BaseTarget]
-    ) -> Dict[str, Any]:
-        """Evaluate a single row with LLM judge."""
+            columns: Dict[str, str],
+            judge_target: Optional[BaseTarget] = None
+    ) -> List[Dict[str, Any]]:
+        """Evaluate judge rows using G-Eval."""
+        if not rows:
+            return []
+
         if not DEEPEVAL_AVAILABLE:
             raise ImportError("deepeval is required for judge evaluation")
 
-        instruction = self._get_column_value(row, columns, 'instruction', '')
-        expected = self._get_column_value(row, columns, 'answer', '')
-        criteria = self._get_column_value(row, columns, 'judge_criteria') or config.get(
+        logger.info(f"Evaluating {len(rows)} judge rows with G-Eval")
+
+        judge_model = None
+        if judge_target:
+            from surogate_eval.models.deepeval_wrapper import DeepEvalTargetWrapper
+            judge_model = DeepEvalTargetWrapper(judge_target)
+            logger.info(f"Using judge target: {judge_target.name}")
+
+        default_criteria = config.get(
             'judge_criteria',
             'Evaluate if the response correctly answers the question based on the expected answer.'
         )
 
-        # Get model output
-        try:
-            from surogate_eval.targets.base import TargetRequest
-            request = TargetRequest(prompt=instruction)
-            response = target.send_request(request)
-            actual_output = response.content
-        except Exception as e:
-            logger.error(f"Inference error: {e}")
-            return {
-                'instruction': instruction,
-                'expected': expected,
-                'output': '',
-                'score': 0.0,
-                'success': False,
-                'reason': f'Inference error: {str(e)}',
-                'criteria': criteria,
-            }
+        results = []
 
-        # Run G-Eval
-        try:
-            judge_model = None
-            if judge_target:
-                from surogate_eval.models.deepeval_wrapper import DeepEvalTargetWrapper
-                judge_model = DeepEvalTargetWrapper(judge_target)
+        for row in rows:
+            original_idx = row['_original_idx']
+            instruction = self._get_column_value(row, columns, 'instruction', '')
+            expected = self._get_column_value(row, columns, 'answer', '')
+            row_criteria = self._get_column_value(row, columns, 'judge_criteria') or default_criteria
 
-            metric = GEval(
-                name="judge",
-                criteria=criteria,
-                evaluation_params=[
-                    LLMTestCaseParams.INPUT,
-                    LLMTestCaseParams.ACTUAL_OUTPUT,
-                    LLMTestCaseParams.EXPECTED_OUTPUT,
-                ],
-                model=judge_model,
-            )
+            # Get model output
+            try:
+                from surogate_eval.targets.base import TargetRequest
+                request = TargetRequest(prompt=instruction)
+                response = target.send_request(request)
+                actual_output = response.content
+            except Exception as e:
+                logger.error(f"Inference error for row {original_idx}: {e}")
+                results.append({
+                    'original_idx': original_idx,
+                    'eval_type': 'judge',
+                    'instruction': instruction,
+                    'expected': expected,
+                    'output': '',
+                    'score': 0.0,
+                    'success': False,
+                    'reason': f'Inference error: {str(e)}',
+                    'criteria': row_criteria,
+                })
+                continue
 
-            test_case = LLMTestCase(
-                input=instruction,
-                actual_output=actual_output,
-                expected_output=expected,
-            )
+            # Run G-Eval
+            try:
+                metric = GEval(
+                    name=f"judge_{original_idx}",
+                    criteria=row_criteria,
+                    evaluation_params=[
+                        LLMTestCaseParams.INPUT,
+                        LLMTestCaseParams.ACTUAL_OUTPUT,
+                        LLMTestCaseParams.EXPECTED_OUTPUT,
+                    ],
+                    model=judge_model,
+                )
 
-            metric.measure(test_case, _show_indicator=False)
+                test_case = LLMTestCase(
+                    input=instruction,
+                    actual_output=actual_output,
+                    expected_output=expected,
+                )
 
-            return {
-                'instruction': instruction,
-                'expected': expected,
-                'output': actual_output,
-                'score': metric.score,
-                'success': metric.score >= 0.5,
-                'reason': getattr(metric, 'reason', None),
-                'criteria': criteria,
-            }
+                metric.measure(test_case, _show_indicator=False)
 
-        except Exception as e:
-            logger.error(f"G-Eval failed: {e}")
-            return {
-                'instruction': instruction,
-                'expected': expected,
-                'output': actual_output,
-                'score': 0.0,
-                'success': False,
-                'reason': f'Judge error: {str(e)}',
-                'criteria': criteria,
-            }
+                results.append({
+                    'original_idx': original_idx,
+                    'eval_type': 'judge',
+                    'instruction': instruction,
+                    'expected': expected,
+                    'output': actual_output,
+                    'score': metric.score,
+                    'success': metric.score >= 0.5,
+                    'reason': getattr(metric, 'reason', None),
+                    'criteria': row_criteria,
+                })
+
+                logger.debug(f"Row {original_idx} judge score: {metric.score:.3f}")
+
+            except Exception as e:
+                logger.error(f"G-Eval failed for row {original_idx}: {e}")
+                results.append({
+                    'original_idx': original_idx,
+                    'eval_type': 'judge',
+                    'instruction': instruction,
+                    'expected': expected,
+                    'output': actual_output,
+                    'score': 0.0,
+                    'success': False,
+                    'reason': f'Judge error: {str(e)}',
+                    'criteria': row_criteria,
+                })
+
+        avg_score = sum(r['score'] for r in results) / len(results) if results else 0.0
+        logger.info(f"Completed judge evaluation: avg score {avg_score:.3f}")
+
+        return results
 
     def evaluate(
             self,
@@ -265,6 +343,8 @@ class CustomEvalBackend:
             - split: Dataset split
             - limit: Max rows
             - judge_criteria: Default criteria for judge rows
+            - tokenizer: Tokenizer for lm-eval
+            - max_tokens: Max generation tokens
         """
         logger.info(f"Running custom evaluation: {benchmark_name}")
 
@@ -288,39 +368,27 @@ class CustomEvalBackend:
         if answer_col not in dataset.column_names:
             raise ValueError(f"Column '{answer_col}' not found in dataset")
 
-        # Check if eval_type column exists, default all to exact_match if not
-        eval_type_col = columns.get('eval_type', 'eval_type')
-        has_eval_type = eval_type_col in dataset.column_names
+        # Split by eval_type
+        exact_match_rows, judge_rows = self._split_by_eval_type(dataset, columns)
 
+        # Get judge target if configured
         judge_target = config.get('backend_params', {}).get('judge_target')
 
-        # Evaluate each row
-        results = []
-        exact_match_results = []
-        judge_results = []
+        # Evaluate each type
+        exact_match_results = self._evaluate_exact_match_rows(
+            exact_match_rows, target, config, columns
+        )
 
-        for idx, row in enumerate(dataset):
-            eval_type = 'exact_match'
-            if has_eval_type:
-                eval_type = self._get_column_value(row, columns, 'eval_type', 'exact_match')
+        judge_results = self._evaluate_judge_rows(
+            judge_rows, target, config, columns, judge_target
+        )
 
-            if eval_type == 'judge':
-                result = self._evaluate_judge(row, target, columns, config, judge_target)
-                result['eval_type'] = 'judge'
-                judge_results.append(result)
-            else:
-                result = self._evaluate_exact_match(row, target, columns, config)
-                result['eval_type'] = 'exact_match'
-                exact_match_results.append(result)
-
-            result['original_idx'] = idx
-            results.append(result)
-
-            if (idx + 1) % 10 == 0:
-                logger.info(f"Progress: {idx + 1}/{len(dataset)}")
+        # Merge results
+        all_results = exact_match_results + judge_results
+        all_results.sort(key=lambda x: x['original_idx'])
 
         # Calculate metrics
-        total = len(results)
+        total = len(all_results)
         em_total = len(exact_match_results)
         judge_total = len(judge_results)
 
@@ -333,8 +401,6 @@ class CustomEvalBackend:
                 (em_correct / em_total if em_total else 0.0) * em_total +
                 judge_avg * judge_total
             ) / total
-
-        logger.info(f"Completed: {em_correct}/{em_total} exact_match, {judge_avg:.2f} avg judge score")
 
         return {
             'overall_score': overall_score,
@@ -351,7 +417,7 @@ class CustomEvalBackend:
                     'success_rate': sum(1 for r in judge_results if r['success']) / judge_total if judge_total else 0.0,
                 },
             },
-            'detailed_results': results,
+            'detailed_results': all_results,
             'metadata': {
                 'backend': 'custom_eval',
                 'benchmark': benchmark_name,

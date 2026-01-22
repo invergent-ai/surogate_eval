@@ -392,19 +392,21 @@ class EvalScopeBackend:
             Local path to downloaded dataset
         """
         import subprocess
-        import os
 
         # Create local directory for dataset
         local_dir = Path(tempfile.gettempdir()) / 'evalscope_datasets' / dataset_name
         local_dir.mkdir(parents=True, exist_ok=True)
 
+        # Ensure lakefs URL ends with / for recursive download of all files
+        if not lakefs_url.endswith('/'):
+            lakefs_url = lakefs_url + '/'
+
         logger.info(f"Downloading LakeFS dataset: {lakefs_url} -> {local_dir}")
 
         try:
             # Use lakectl to download the dataset
-            # lakefs://repo/ref -> download all files from that path
             result = subprocess.run(
-                ['lakectl', 'fs', 'download', '--recursive', lakefs_url, str(local_dir)],
+                ['lakectl', 'fs', 'download', '--recursive', lakefs_url, str(local_dir) + '/'],
                 capture_output=True,
                 text=True,
                 check=True
@@ -415,8 +417,11 @@ class EvalScopeBackend:
             downloaded_files = list(local_dir.rglob('*'))
             logger.info(f"Downloaded {len(downloaded_files)} files to {local_dir}")
 
-            for f in downloaded_files[:10]:  # Log first 10 files
+            for f in downloaded_files[:10]:
                 logger.debug(f"  - {f}")
+
+            if not downloaded_files:
+                raise RuntimeError(f"No files downloaded from {lakefs_url}")
 
             return str(local_dir)
 

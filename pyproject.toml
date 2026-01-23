@@ -67,7 +67,6 @@ build-backend = "setuptools.build_meta"
 [tool.setuptools.packages.find]
 include = ["surogate_eval*"]
 
-
 [tool.setuptools.package-data]
 surogate_eval = ["templates/*.j2", "templates/**/*.j2"]
 

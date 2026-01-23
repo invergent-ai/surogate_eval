@@ -171,7 +171,9 @@ class SurogateEval(SurogateCommand):
                 logger.info(f"Running {len(benchmarks_config)} benchmark(s)")
                 benchmark_results = run_benchmarks(target, benchmarks_config, self._find_target_by_name)
                 if benchmark_results:
-                    target_result["benchmarks"] = benchmark_results
+                    if "benchmarks" not in target_result:
+                        target_result["benchmarks"] = []
+                    target_result["benchmarks"].extend(benchmark_results)
 
         # Run stress testing
         stress_testing = target_config.stress_testing or {}

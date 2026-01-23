@@ -104,7 +104,7 @@ Conversation:
 Provide your evaluation in JSON format:
 {{"coherence_score": <0-10>, "reason": "<brief explanation>", "issues": ["<issue1>", "<issue2>", ...]}}"""
 
-            from surogate.eval.targets.base import TargetRequest
+            from surogate_eval.targets.base import TargetRequest
             request = TargetRequest(prompt=prompt)
             response = self.judge_target.send_request(request)
 
@@ -221,7 +221,7 @@ Conversation:
 Provide your evaluation in JSON format:
 {{"retention_score": <0-10>, "reason": "<brief explanation>", "retained_info": ["<info1>", "<info2>", ...], "missed_info": ["<missed1>", "<missed2>", ...]}}"""
 
-            from surogate.eval.targets.base import TargetRequest
+            from surogate_eval.targets.base import TargetRequest
             request = TargetRequest(prompt=prompt)
             response = self.judge_target.send_request(request)
 
@@ -342,7 +342,7 @@ Assistant's response:
 Provide your evaluation in JSON format:
 {{"quality_score": <0-10>, "reason": "<brief explanation>", "strengths": ["<strength1>", "<strength2>", ...], "weaknesses": ["<weakness1>", "<weakness2>", ...]}}"""
 
-            from surogate.eval.targets.base import TargetRequest
+            from surogate_eval.targets.base import TargetRequest
             request = TargetRequest(prompt=prompt)
             response = self.judge_target.send_request(request)
 

@@ -165,7 +165,7 @@ class CustomEvalBackend:
                 'split': 'test',
                 'num_fewshot': 0,
                 'max_tokens': config.get('max_tokens', 256),
-                'tokenizer': config.get('tokenizer'),
+                'tokenizer': config.get('tokenizer') or target.config.get('tokenizer'),
                 'batch_size': config.get('batch_size', 1),
                 'stop_sequences': config.get('stop_sequences'),
                 'system_prompt': config.get('system_prompt'),

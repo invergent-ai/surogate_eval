@@ -296,6 +296,8 @@ class LMEvalBackend:
             }
 
             tokenizer = config.get('tokenizer') or target.config.get('tokenizer')
+            logger.info(
+                f"DEBUG: tokenizer from config={config.get('tokenizer')}, from target={target.config.get('tokenizer')}, resolved={tokenizer}")
             if tokenizer:
                 model_args_dict['tokenizer'] = tokenizer
 

@@ -126,6 +126,7 @@ class TargetConfig:
     red_teaming: Optional[Dict[str, Any]] = None
     guardrails: Optional[Dict[str, Any]] = None
     comment: Optional[str] = None
+    tokenizer: Optional[str] = None
 
     def __init__(self, cfg: DictDefault):
         # Basic target config
@@ -147,6 +148,7 @@ class TargetConfig:
         self.load_in_8bit = cfg['load_in_8bit']
         self.load_in_4bit = cfg['load_in_4bit']
         self.tensor_parallel_size = cfg['tensor_parallel_size']
+        self.tokenizer = cfg['tokenizer']
 
         # Serving configuration (with defaults matching ServeConfig)
         self.infer_backend = cfg['infer_backend']
@@ -186,6 +188,8 @@ class TargetConfig:
             result['model_path'] = self.model_path
         if self.base_url is not None:
             result['base_url'] = self.base_url
+        if self.tokenizer is not None:
+            result['tokenizer'] = self.tokenizer
         if self.api_key is not None:
             result['api_key'] = self.api_key
         if self.endpoint is not None:

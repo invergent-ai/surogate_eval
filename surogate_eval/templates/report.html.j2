@@ -186,12 +186,77 @@
             font-weight: 600;
         }
 
-        .status-icon {
-            font-size: 12pt;
+        .icon {
+            display: inline-block;
+            width: 16px;
+            height: 16px;
+            line-height: 16px;
+            text-align: center;
+            font-weight: bold;
+            font-family: Arial, sans-serif;
+            margin-right: 4px;
+        }
+
+        .icon-success {
+            color: var(--color-success);
+        }
+
+        .icon-warning {
+            color: var(--color-warning);
+        }
+
+        .icon-error {
+            color: var(--color-error);
+        }
+
+        .icon-info {
+            color: var(--color-info);
         }
 
         .section {
             margin: 20px 0;
+        }
+
+        .section-title {
+            display: flex;
+            align-items: center;
+            gap: 8px;
+        }
+
+        .section-icon {
+            display: inline-flex;
+            align-items: center;
+            justify-content: center;
+            width: 24px;
+            height: 24px;
+            border-radius: 4px;
+            font-size: 12px;
+            font-weight: bold;
+        }
+
+        .section-icon-custom {
+            background: #ede9fe;
+            color: #7c3aed;
+        }
+
+        .section-icon-benchmark {
+            background: #dbeafe;
+            color: #2563eb;
+        }
+
+        .section-icon-stress {
+            background: #fef3c7;
+            color: #d97706;
+        }
+
+        .section-icon-security {
+            background: #fee2e2;
+            color: #dc2626;
+        }
+
+        .section-icon-guardrails {
+            background: #d1fae5;
+            color: #059669;
         }
 
         .evaluation-block {
@@ -222,7 +287,7 @@
     </style>
 </head>
 <body>
-    <h1>📊 Evaluation Report</h1>
+    <h1>Evaluation Report</h1>
 
     <div class="header-meta">
         <p><strong>Project:</strong> {{ project.name | default('N/A') }} (v{{ project.version | default('N/A') }})</p>
@@ -254,7 +319,7 @@
     <div class="target-card">
         <div class="target-header">
             <div>
-                <span class="target-name">🎯 {{ target.name | default('Unknown') }}</span>
+                <span class="target-name">{{ target.name | default('Unknown') }}</span>
                 <div class="target-meta">
                     Type: {{ target.type | default('N/A') }} |
                     Model: {{ target.model | default('N/A') }} |
@@ -296,17 +361,17 @@
                             {% if metric_data.error is defined %}
                             <td class="text-muted">N/A</td>
                             <td class="text-muted">N/A</td>
-                            <td><span class="text-error">❌ Failed</span></td>
+                            <td><span class="icon icon-error">x</span> Failed</td>
                             {% else %}
                             <td class="metric-value">{{ metric_data.avg_score | default(0) | format_score }}</td>
                             <td class="metric-value">{{ metric_data.success_rate | default(0) | format_percent }}</td>
                             <td>
                                 {% if metric_data.success_rate >= 0.8 %}
-                                <span class="text-success">✅ Excellent</span>
+                                <span class="icon icon-success">&#10003;</span> Excellent
                                 {% elif metric_data.success_rate >= 0.6 %}
-                                <span class="text-warning">⚠️ Good</span>
+                                <span class="icon icon-warning">!</span> Good
                                 {% else %}
-                                <span class="text-error">❌ Needs Work</span>
+                                <span class="icon icon-error">x</span> Needs Work
                                 {% endif %}
                             </td>
                             {% endif %}
@@ -327,7 +392,10 @@
 
         {% if custom_benchmarks %}
         <div class="section">
-            <h3>🧪 Custom Evaluation</h3>
+            <h3 class="section-title">
+                <span class="section-icon section-icon-custom">C</span>
+                Custom Evaluation
+            </h3>
             {% for bench in custom_benchmarks %}
             <div class="evaluation-block">
                 <h4>{{ bench.benchmark_name | default(bench.benchmark | default('Custom')) }}</h4>
@@ -371,7 +439,10 @@
 
         {% if standard_benchmarks %}
         <div class="section">
-            <h3>📊 Standard Benchmarks</h3>
+            <h3 class="section-title">
+                <span class="section-icon section-icon-benchmark">B</span>
+                Standard Benchmarks
+            </h3>
             <table>
                 <thead>
                     <tr>
@@ -389,9 +460,9 @@
                         <td>{{ bench.backend | default('unknown') }}</td>
                         <td>
                             {% if bench.status == 'completed' %}
-                            <span class="text-success">✅</span>
+                            <span class="icon icon-success">&#10003;</span>
                             {% else %}
-                            <span class="text-error">❌</span>
+                            <span class="icon icon-error">x</span>
                             {% endif %}
                         </td>
                     </tr>
@@ -405,7 +476,10 @@
         {# Stress Testing #}
         {% if target.stress_testing is defined %}
         <div class="section">
-            <h3>⚡ Stress Testing</h3>
+            <h3 class="section-title">
+                <span class="section-icon section-icon-stress">S</span>
+                Stress Testing
+            </h3>
             <p><strong>Status:</strong> {{ target.stress_testing.status | default('N/A') }}</p>
 
             {% if target.stress_testing.metrics is defined %}
@@ -432,10 +506,13 @@
         {# Red Teaming #}
         {% if target.red_teaming is defined %}
         <div class="section">
-            <h3>🔴 Red Teaming & Security Assessment</h3>
+            <h3 class="section-title">
+                <span class="section-icon section-icon-security">R</span>
+                Red Teaming &amp; Security Assessment
+            </h3>
 
             {% if target.red_teaming.status == 'failed' %}
-            <p><span class="text-error">❌ Failed:</span> {{ target.red_teaming.error | default('Unknown error') }}</p>
+            <p><span class="icon icon-error">x</span> <strong>Failed:</strong> {{ target.red_teaming.error | default('Unknown error') }}</p>
             {% else %}
             {% if target.red_teaming.vulnerabilities %}
             <table>
@@ -482,10 +559,13 @@
         {# Guardrails #}
         {% if target.guardrails is defined %}
         <div class="section">
-            <h3>🛡️ Guardrails Evaluation</h3>
+            <h3 class="section-title">
+                <span class="section-icon section-icon-guardrails">G</span>
+                Guardrails Evaluation
+            </h3>
 
             {% if target.guardrails.status == 'failed' %}
-            <p><span class="text-error">❌ Failed:</span> {{ target.guardrails.error | default('Unknown error') }}</p>
+            <p><span class="icon icon-error">x</span> <strong>Failed:</strong> {{ target.guardrails.error | default('Unknown error') }}</p>
             {% else %}
             {% if target.guardrails.harmful_prompts is defined %}
             {% set harmful = target.guardrails.harmful_prompts %}
@@ -525,11 +605,11 @@
                         <td class="metric-value">{{ rate | format_percent }}</td>
                         <td>
                             {% if rate >= 0.8 %}
-                            <span class="text-success">✅ Strong</span>
+                            <span class="icon icon-success">&#10003;</span> Strong
                             {% elif rate >= 0.6 %}
-                            <span class="text-warning">⚠️ Moderate</span>
+                            <span class="icon icon-warning">!</span> Moderate
                             {% else %}
-                            <span class="text-error">❌ Weak</span>
+                            <span class="icon icon-error">x</span> Weak
                             {% endif %}
                         </td>
                     </tr>

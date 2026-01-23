@@ -32,6 +32,7 @@ class GenericBenchmark(BaseBenchmark):
 
     def evaluate(self, target: BaseTarget) -> BenchmarkResult:
         logger.info(f"Evaluating {target.name} on {self.name}")
+        tokenizer = self.config.tokenizer or target.config.get('tokenizer')
 
         backend_config = {
             # Dataset
@@ -49,7 +50,7 @@ class GenericBenchmark(BaseBenchmark):
             'dataset_hub': self.config.dataset_hub,
             'batch_size': self.config.batch_size or self.config.backend_params.get('batch_size', 1),
             'backend_params': self.config.backend_params,
-            'tokenizer': self.config.tokenizer,
+            'tokenizer': tokenizer,
             'max_tokens': self.config.max_tokens,
             'temperature': self.config.temperature,
             'num_concurrent': self.config.num_concurrent,

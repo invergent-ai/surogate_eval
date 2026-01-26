@@ -43,7 +43,7 @@ class RiskAssessment:
             'timestamp': self.timestamp,
             'vulnerabilities': [
                 {
-                    'vulnerability_name': v.vulnerability_name,  # ADD THIS
+                    'vulnerability_name': v.vulnerability_name,
                     'vulnerability_type': v.vulnerability_type,
                     'total_attacks': v.total_attacks,
                     'successful_attacks': v.successful_attacks,
@@ -54,7 +54,8 @@ class RiskAssessment:
                 }
                 for v in self.vulnerabilities
             ],
-            'overview': self.overview
+            'overview': self.overview,
+            'detailed_results': self.detailed_results,
         }
 
     def save(self, path: str):

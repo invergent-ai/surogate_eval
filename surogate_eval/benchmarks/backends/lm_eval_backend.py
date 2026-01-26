@@ -238,6 +238,15 @@ class LMEvalBackend:
         """Evaluate target using lm-evaluation-harness with custom dataset."""
         logger.info(f"Running lm-eval for benchmark: {benchmark_name}")
 
+        # Resolve LakeFS tokenizer path
+        tokenizer = config.get('tokenizer') or target.config.get('tokenizer')
+        if tokenizer and tokenizer.startswith('lakefs://'):
+            from surogate_eval.datasets import DatasetLoader
+            loader = DatasetLoader()
+            tokenizer = loader._download_from_lakefs(tokenizer)
+            logger.info(f"Resolved LakeFS tokenizer to: {tokenizer}")
+            config['tokenizer'] = tokenizer
+
         source = config.get('source')
         if not source:
             raise ValueError("'source' is required for lm-eval backend")
@@ -273,7 +282,7 @@ class LMEvalBackend:
             model_args_str = f"model={model_name}"
 
             eval_args = {
-                'model': 'openai-completions',  # Changed from openai-chat-completions
+                'model': 'openai-completions',
                 'model_args': model_args_str,
                 'tasks': [task_name],
                 'batch_size': config.get('batch_size') or 1,

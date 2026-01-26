@@ -1,9 +1,44 @@
+# surogate_eval/cli/eval.py
+
+# SSL PATCH - MUST BE FIRST BEFORE ANY OTHER IMPORTS
+import ssl
+import os
+
+ssl._create_default_https_context = ssl._create_unverified_context
+os.environ['CURL_CA_BUNDLE'] = ''
+os.environ['REQUESTS_CA_BUNDLE'] = ''
+os.environ['SSL_CERT_FILE'] = ''
+
+try:
+    import httpx
+    _orig_client_init = httpx.Client.__init__
+    _orig_async_init = httpx.AsyncClient.__init__
+
+    def _patched_client_init(self, *args, **kwargs):
+        kwargs['verify'] = False
+        return _orig_client_init(self, *args, **kwargs)
+
+    def _patched_async_init(self, *args, **kwargs):
+        kwargs['verify'] = False
+        return _orig_async_init(self, *args, **kwargs)
+
+    httpx.Client.__init__ = _patched_client_init
+    httpx.AsyncClient.__init__ = _patched_async_init
+except ImportError:
+    pass
+
+import urllib3
+urllib3.disable_warnings()
+
+# END SSL PATCH
+
 import argparse
 import sys
 
 from surogate_eval.utils.logger import get_logger
 
 logger = get_logger()
+
 
 def prepare_command_parser(parser=None):
     if parser is None:
@@ -14,7 +49,7 @@ def prepare_command_parser(parser=None):
     parser.add_argument('--view', type=str, metavar='FILENAME', help='View specific evaluation result')
     parser.add_argument('--compare', nargs=2, metavar=('FILE1', 'FILE2'), help='Compare two evaluation results')
     parser.add_argument('--results-dir', type=str, default='eval_results',
-                             help='Results directory (default: eval_results)')
+                        help='Results directory (default: eval_results)')
     return parser
 
 
@@ -70,5 +105,3 @@ if __name__ == '__main__':
             config=config,
             args=command_args,
         ).run()
-
-

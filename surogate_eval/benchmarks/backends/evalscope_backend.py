@@ -256,43 +256,257 @@ class EvalScopeBackend:
             dataset_name: str
     ) -> List[Dict[str, Any]]:
         """Load detailed predictions from EvalScope output."""
-        import json  # Add this import
+        import json
 
         detailed_results = []
 
-        predictions_dir = Path(work_dir) / 'predictions' / model_id
-        if not predictions_dir.exists():
-            logger.debug(f"Predictions directory not found: {predictions_dir}")
-            return detailed_results
+        # EvalScope stores scores in reviews directory, not predictions
+        reviews_dir = Path(work_dir) / 'reviews' / model_id
+        if not reviews_dir.exists():
+            logger.debug(f"Reviews directory not found: {reviews_dir}")
+            # Fallback to predictions directory
+            reviews_dir = Path(work_dir) / 'predictions' / model_id
+            if not reviews_dir.exists():
+                logger.debug(f"Predictions directory not found: {reviews_dir}")
+                return detailed_results
 
-        # Look for prediction files matching the dataset
-        for pred_file in predictions_dir.glob(f'{dataset_name}*.jsonl'):
-            logger.debug(f"Loading predictions from: {pred_file}")
+        for review_file in reviews_dir.glob(f'{dataset_name}*.jsonl'):
+            logger.debug(f"Loading reviews from: {review_file}")
             try:
-                with open(pred_file, 'r') as f:
+                with open(review_file, 'r') as f:
                     for line in f:
                         if line.strip():
                             sample = json.loads(line)
+
+                            # Extract score from EvalScope's nested structure
+                            # sample_score.score.value.acc
+                            score = 0.0
+                            sample_score = sample.get('sample_score', {})
+                            if sample_score:
+                                score_obj = sample_score.get('score', {})
+                                if score_obj:
+                                    value = score_obj.get('value', {})
+                                    if isinstance(value, dict):
+                                        # Get 'acc' or first available metric
+                                        score = value.get('acc', 0.0)
+                                        if score == 0.0:
+                                            # Try other common metric names
+                                            for key in ['accuracy', 'correct', 'score']:
+                                                if key in value:
+                                                    score = value[key]
+                                                    break
+                                    elif isinstance(value, (int, float)):
+                                        score = float(value)
+
+                            # Extract input, target, and prediction
+                            input_text = sample.get('input', '')
+                            expected = sample.get('target', '')
+
+                            # Get the model's prediction/output
+                            prediction = ''
+                            extracted = ''
+                            if sample_score:
+                                score_obj = sample_score.get('score', {})
+                                prediction = score_obj.get('prediction', '')
+                                extracted = score_obj.get('extracted_prediction', '')
+
                             detailed_results.append({
-                                'input': sample.get('input', sample.get('prompt', '')),
-                                'expected': sample.get('ideal', sample.get('target', sample.get('reference', ''))),
-                                'output': sample.get('output', sample.get('response', sample.get('prediction', ''))),
-                                'raw_output': sample.get('raw_output', sample.get('raw_response', '')),
-                                'score': sample.get('score', sample.get('correct', 0)),
-                                'success': bool(sample.get('correct', sample.get('score', 0))),
-                                'subset': sample.get('subset', ''),
-                                'metadata': {
-                                    k: v for k, v in sample.items()
-                                    if k not in ('input', 'prompt', 'ideal', 'target', 'reference',
-                                                 'output', 'response', 'prediction', 'raw_output',
-                                                 'raw_response', 'score', 'correct', 'subset')
-                                }
+                                'input': input_text,
+                                'expected': expected,
+                                'output': extracted or prediction[:500],  # Use extracted answer or truncated prediction
+                                'raw_output': prediction,
+                                'score': float(score),
+                                'success': float(score) > 0,
+                                'subset': sample.get('sample_score', {}).get('sample_metadata', {}).get('subject', ''),
+                                'metadata': sample
                             })
+
             except Exception as e:
-                logger.warning(f"Failed to load predictions from {pred_file}: {e}")
+                logger.warning(f"Failed to load reviews from {review_file}: {e}")
+                import traceback
+                logger.debug(traceback.format_exc())
 
         logger.info(f"Loaded {len(detailed_results)} detailed predictions")
         return detailed_results
+
+    def _is_reasoning_model(self, target: BaseTarget) -> bool:
+        """
+        Detect if model uses reasoning/thinking by probing it.
+        Caches result to avoid repeated probes.
+        """
+        cache_key = f"_is_reasoning_{target.name}"
+        if hasattr(self, cache_key):
+            return getattr(self, cache_key)
+
+        logger.info(f"Probing model to detect reasoning mode...")
+
+        try:
+            # Use httpx directly with the correct URL
+            import httpx
+
+            base_url = target.config.get('base_url', '')
+            if not base_url.endswith('/v1'):
+                api_url = f"{base_url}/v1" if not base_url.endswith('/') else f"{base_url}v1"
+            else:
+                api_url = base_url
+
+            model = target.config.get('model', '')
+            api_key = target.config.get('api_key', 'EMPTY')
+
+            with httpx.Client(verify=False, timeout=30) as client:
+                response = client.post(
+                    f"{api_url}/chat/completions",
+                    headers={"Authorization": f"Bearer {api_key}"},
+                    json={
+                        "model": model,
+                        "messages": [{"role": "user", "content": "What is 2+2? Answer briefly."}],
+                        "max_tokens": 150,
+                    }
+                )
+                response.raise_for_status()
+                data = response.json()
+                content = data.get('choices', [{}])[0].get('message', {}).get('content', '')
+
+            logger.debug(f"Probe response: {content[:200]}...")
+
+            is_reasoning = (
+                    '<think>' in content or
+                    '</think>' in content or
+                    '<reasoning>' in content
+            )
+
+            setattr(self, cache_key, is_reasoning)
+
+            if is_reasoning:
+                logger.info(f"Detected reasoning model (uses <think> tags)")
+            else:
+                logger.info(f"Standard model detected (no <think> tags)")
+
+            return is_reasoning
+
+        except Exception as e:
+            logger.warning(f"Could not probe model for reasoning detection: {e}")
+            return False
+
+    def _estimate_max_tokens(
+            self,
+            target: BaseTarget,
+            dataset_name: str,
+            config: Dict[str, Any]
+    ) -> int:
+        """
+        Estimate max_tokens needed based on model behavior and dataset.
+        User-specified max_tokens acts as a cap, not an override.
+        """
+        logger.info(f"Auto-detecting max_tokens for {dataset_name}...")
+
+        # Detect if reasoning model by probing
+        is_reasoning = self._is_reasoning_model(target)
+
+        num_fewshot = config.get('num_fewshot', 5)
+
+        # Base tokens: ~300 per few-shot example + 512 for answer
+        base = 300 * max(1, num_fewshot) + 512
+
+        if is_reasoning:
+            # Reasoning models need 4-6x for thinking + answer
+            estimated = min(base * 5, 8192)
+            logger.info(f"Reasoning model - estimated max_tokens: {estimated}")
+        else:
+            estimated = min(base, 2048)
+            logger.info(f"Standard model - estimated max_tokens: {estimated}")
+
+        # User-specified max_tokens acts as a CAP (upper limit)
+        user_max = config.get('max_tokens')
+        if user_max:
+            if estimated > user_max:
+                logger.warning(
+                    f"Estimated max_tokens ({estimated}) exceeds user cap ({user_max}). "
+                    f"Using cap - model output may be truncated."
+                )
+                return user_max
+            else:
+                logger.debug(f"Estimated max_tokens ({estimated}) within user cap ({user_max})")
+
+        return estimated
+
+    def _estimate_from_samples(
+            self,
+            dataset_name: str,
+            config: Dict[str, Any],
+            tokenizer_name: str = None,
+            is_reasoning: bool = False
+    ) -> int | None:
+        """
+        Estimate tokens by sampling actual dataset prompts.
+        Returns None if sampling fails.
+        """
+        try:
+            from datasets import load_dataset
+
+            # Load a few samples
+            subset = config.get('subset')
+            if isinstance(subset, list):
+                subset = subset[0] if subset else None
+
+            dataset_id = self.BENCHMARK_MAP.get(dataset_name, dataset_name)
+
+            # Try loading from HuggingFace
+            ds = load_dataset(
+                f"cais/{dataset_id}" if dataset_id == 'mmlu' else dataset_id,
+                subset,
+                split='test',
+                trust_remote_code=True
+            )
+
+            samples = list(ds.select(range(min(10, len(ds)))))
+
+            if not samples:
+                return None
+
+            # Get tokenizer
+            tokenizer = None
+            if tokenizer_name:
+                try:
+                    from transformers import AutoTokenizer
+                    tokenizer = AutoTokenizer.from_pretrained(tokenizer_name, trust_remote_code=True)
+                except Exception:
+                    pass
+
+            # Calculate max input tokens across samples
+            max_input_tokens = 0
+            for sample in samples:
+                # Build approximate prompt
+                text = sample.get('question', '') or sample.get('input', '') or str(sample)
+
+                if tokenizer:
+                    tokens = len(tokenizer.encode(text))
+                else:
+                    tokens = len(text) // 4  # Rough estimate
+
+                max_input_tokens = max(max_input_tokens, tokens)
+
+            # Account for few-shot examples (each ~same size as sample)
+            num_fewshot = config.get('num_fewshot', 5)
+            total_input = max_input_tokens * (num_fewshot + 1)
+
+            # Output estimation
+            if is_reasoning:
+                # Thinking: 3x input, Answer: 1x input
+                output_tokens = max_input_tokens * 4
+            else:
+                output_tokens = max(256, max_input_tokens)
+
+            # Add 20% buffer
+            result = int(output_tokens * 1.2)
+
+            # Clamp to reasonable range
+            return max(512, min(result, 8192))
+
+        except Exception as e:
+            logger.debug(f"Sample-based estimation failed: {e}")
+            return None
+
 
     def _parse_results(
             self,
@@ -465,15 +679,16 @@ class EvalScopeBackend:
 
         # Add backend params for concurrency and batching
         backend_params = config.get('backend_params', {})
+        estimated_tokens = self._estimate_max_tokens(target, dataset_name, config)
 
         # Generation config - set defaults or use from backend_params
         if 'generation_config' not in task_cfg_dict:
             task_cfg_dict['generation_config'] = {
                 'batch_size': backend_params.get('generation_batch_size', 1),
-                'max_tokens': config.get('max_tokens') or backend_params.get('max_tokens', 512),
-                'temperature': config.get('temperature') if config.get(
-                    'temperature') is not None else backend_params.get('temperature', 0.0)
+                'max_tokens': estimated_tokens,
+                'temperature': config.get('temperature', 0.0),
             }
+        logger.info(f"Using max_tokens: {estimated_tokens}")
 
         # Batch size for evaluation
         if 'batch_size' in backend_params:

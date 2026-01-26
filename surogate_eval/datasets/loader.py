@@ -24,6 +24,56 @@ class DatasetLoader:
         """Check if path is a LakeFS URI."""
         return filepath.startswith('lakefs://')
 
+    def download_tokenizer_dir(self, lakefs_uri: str) -> str:
+        """
+        Download all tokenizer files from LakeFS to a temp directory.
+
+        Args:
+            lakefs_uri: LakeFS path (can point to a file or directory)
+                        e.g., lakefs://repo/branch/tokenizer.json or lakefs://repo/branch
+
+        Returns:
+            Path to temp directory containing tokenizer files
+        """
+        import shutil
+
+        # Get base path (remove filename if present)
+        if lakefs_uri.endswith('.json') or lakefs_uri.endswith('.txt'):
+            base_path = lakefs_uri.rsplit('/', 1)[0]
+        else:
+            base_path = lakefs_uri
+
+        # Create temp directory for tokenizer files
+        temp_dir = tempfile.mkdtemp(prefix="tokenizer_")
+
+        # Files needed for tokenizer
+        tokenizer_files = [
+            'tokenizer.json',
+            'tokenizer_config.json',
+            'vocab.json',
+            'merges.txt',
+            'special_tokens_map.json',
+            'added_tokens.json',
+        ]
+
+        downloaded = 0
+        for filename in tokenizer_files:
+            try:
+                lakefs_path = f"{base_path}/{filename}"
+                local_path = self._download_from_lakefs(lakefs_path)
+                shutil.copy(local_path, os.path.join(temp_dir, filename))
+                downloaded += 1
+                logger.debug(f"Downloaded tokenizer file: {filename}")
+            except Exception as e:
+                logger.debug(f"Optional tokenizer file {filename} not found: {e}")
+
+        if downloaded == 0:
+            shutil.rmtree(temp_dir)
+            raise FileNotFoundError(f"No tokenizer files found at {base_path}")
+
+        logger.info(f"Downloaded {downloaded} tokenizer files to: {temp_dir}")
+        return temp_dir
+
     def _download_from_lakefs(self, lakefs_uri: str) -> str:
         """
         Download file from LakeFS to local temp path.

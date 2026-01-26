@@ -243,7 +243,7 @@ class LMEvalBackend:
         if tokenizer and tokenizer.startswith('lakefs://'):
             from surogate_eval.datasets import DatasetLoader
             loader = DatasetLoader()
-            tokenizer = loader._download_from_lakefs(tokenizer)
+            tokenizer = loader.download_tokenizer_dir(tokenizer)
             logger.info(f"Resolved LakeFS tokenizer to: {tokenizer}")
             config['tokenizer'] = tokenizer
 

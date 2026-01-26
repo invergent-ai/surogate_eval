@@ -329,182 +329,74 @@ class EvalScopeBackend:
         logger.info(f"Loaded {len(detailed_results)} detailed predictions")
         return detailed_results
 
-    def _is_reasoning_model(self, target: BaseTarget) -> bool:
-        """
-        Detect if model uses reasoning/thinking by probing it.
-        Caches result to avoid repeated probes.
-        """
-        cache_key = f"_is_reasoning_{target.name}"
-        if hasattr(self, cache_key):
-            return getattr(self, cache_key)
-
-        logger.info(f"Probing model to detect reasoning mode...")
-
-        try:
-            # Use httpx directly with the correct URL
-            import httpx
-
-            base_url = target.config.get('base_url', '')
-            if not base_url.endswith('/v1'):
-                api_url = f"{base_url}/v1" if not base_url.endswith('/') else f"{base_url}v1"
-            else:
-                api_url = base_url
-
-            model = target.config.get('model', '')
-            api_key = target.config.get('api_key', 'EMPTY')
-
-            with httpx.Client(verify=False, timeout=30) as client:
-                response = client.post(
-                    f"{api_url}/chat/completions",
-                    headers={"Authorization": f"Bearer {api_key}"},
-                    json={
-                        "model": model,
-                        "messages": [{"role": "user", "content": "What is 2+2? Answer briefly."}],
-                        "max_tokens": 150,
-                    }
-                )
-                response.raise_for_status()
-                data = response.json()
-                content = data.get('choices', [{}])[0].get('message', {}).get('content', '')
-
-            logger.debug(f"Probe response: {content[:200]}...")
-
-            is_reasoning = (
-                    '<think>' in content or
-                    '</think>' in content or
-                    '<reasoning>' in content
-            )
-
-            setattr(self, cache_key, is_reasoning)
-
-            if is_reasoning:
-                logger.info(f"Detected reasoning model (uses <think> tags)")
-            else:
-                logger.info(f"Standard model detected (no <think> tags)")
-
-            return is_reasoning
-
-        except Exception as e:
-            logger.warning(f"Could not probe model for reasoning detection: {e}")
-            return False
-
-    def _estimate_max_tokens(
+    def _get_max_input_tokens(
             self,
-            target: BaseTarget,
             dataset_name: str,
             config: Dict[str, Any]
-    ) -> int:
-        """
-        Estimate max_tokens needed based on model behavior and dataset.
-        User-specified max_tokens acts as a cap, not an override.
-        """
-        logger.info(f"Auto-detecting max_tokens for {dataset_name}...")
-
-        # Detect if reasoning model by probing
-        is_reasoning = self._is_reasoning_model(target)
-
-        num_fewshot = config.get('num_fewshot', 5)
-
-        # Base tokens: ~300 per few-shot example + 512 for answer
-        base = 300 * max(1, num_fewshot) + 512
-
-        if is_reasoning:
-            # Reasoning models need 4-6x for thinking + answer
-            estimated = min(base * 5, 8192)
-            logger.info(f"Reasoning model - estimated max_tokens: {estimated}")
-        else:
-            estimated = min(base, 2048)
-            logger.info(f"Standard model - estimated max_tokens: {estimated}")
-
-        # User-specified max_tokens acts as a CAP (upper limit)
-        user_max = config.get('max_tokens')
-        if user_max:
-            if estimated > user_max:
-                logger.warning(
-                    f"Estimated max_tokens ({estimated}) exceeds user cap ({user_max}). "
-                    f"Using cap - model output may be truncated."
-                )
-                return user_max
-            else:
-                logger.debug(f"Estimated max_tokens ({estimated}) within user cap ({user_max})")
-
-        return estimated
-
-    def _estimate_from_samples(
-            self,
-            dataset_name: str,
-            config: Dict[str, Any],
-            tokenizer_name: str = None,
-            is_reasoning: bool = False
     ) -> int | None:
         """
-        Estimate tokens by sampling actual dataset prompts.
-        Returns None if sampling fails.
+        Sample dataset to find max input token count.
         """
         try:
             from datasets import load_dataset
 
-            # Load a few samples
             subset = config.get('subset')
             if isinstance(subset, list):
                 subset = subset[0] if subset else None
 
-            dataset_id = self.BENCHMARK_MAP.get(dataset_name, dataset_name)
+            # Map to HuggingFace dataset ID
+            hf_dataset_map = {
+                'mmlu': 'cais/mmlu',
+                'arc': 'allenai/ai2_arc',
+                'arc_challenge': 'allenai/ai2_arc',
+                'hellaswag': 'Rowan/hellaswag',
+                'truthfulqa': 'truthfulqa/truthful_qa',
+                'gsm8k': 'openai/gsm8k',
+                'winogrande': 'allenai/winogrande',
+            }
 
-            # Try loading from HuggingFace
-            ds = load_dataset(
-                f"cais/{dataset_id}" if dataset_id == 'mmlu' else dataset_id,
-                subset,
-                split='test',
-                trust_remote_code=True
-            )
+            dataset_id = hf_dataset_map.get(dataset_name.lower(), dataset_name)
 
-            samples = list(ds.select(range(min(10, len(ds)))))
+            logger.debug(f"Loading dataset samples from: {dataset_id} (subset: {subset})")
+
+            # Load samples
+            try:
+                if subset:
+                    ds = load_dataset(dataset_id, subset, split='test', trust_remote_code=True)
+                else:
+                    ds = load_dataset(dataset_id, split='test', trust_remote_code=True)
+            except:
+                # Try without subset
+                ds = load_dataset(dataset_id, split='test', trust_remote_code=True)
+
+            # Sample up to limit or 100 samples for estimation
+            limit = config.get('limit') or 100
+            sample_count = min(limit, len(ds))
+            samples = list(ds.select(range(sample_count)))
 
             if not samples:
                 return None
 
-            # Get tokenizer
-            tokenizer = None
-            if tokenizer_name:
-                try:
-                    from transformers import AutoTokenizer
-                    tokenizer = AutoTokenizer.from_pretrained(tokenizer_name, trust_remote_code=True)
-                except Exception:
-                    pass
-
-            # Calculate max input tokens across samples
-            max_input_tokens = 0
+            # Find max length (rough estimate: 4 chars ≈ 1 token)
+            max_chars = 0
             for sample in samples:
-                # Build approximate prompt
-                text = sample.get('question', '') or sample.get('input', '') or str(sample)
+                # Try common field names
+                text = (
+                        sample.get('question', '') or
+                        sample.get('input', '') or
+                        sample.get('prompt', '') or
+                        sample.get('text', '') or
+                        str(sample)
+                )
+                max_chars = max(max_chars, len(str(text)))
 
-                if tokenizer:
-                    tokens = len(tokenizer.encode(text))
-                else:
-                    tokens = len(text) // 4  # Rough estimate
+            max_tokens = max_chars // 4
+            logger.debug(f"Dataset max input: ~{max_tokens} tokens ({max_chars} chars from {sample_count} samples)")
 
-                max_input_tokens = max(max_input_tokens, tokens)
-
-            # Account for few-shot examples (each ~same size as sample)
-            num_fewshot = config.get('num_fewshot', 5)
-            total_input = max_input_tokens * (num_fewshot + 1)
-
-            # Output estimation
-            if is_reasoning:
-                # Thinking: 3x input, Answer: 1x input
-                output_tokens = max_input_tokens * 4
-            else:
-                output_tokens = max(256, max_input_tokens)
-
-            # Add 20% buffer
-            result = int(output_tokens * 1.2)
-
-            # Clamp to reasonable range
-            return max(512, min(result, 8192))
+            return max_tokens
 
         except Exception as e:
-            logger.debug(f"Sample-based estimation failed: {e}")
+            logger.debug(f"Could not sample dataset: {e}")
             return None
 
 
@@ -679,16 +571,13 @@ class EvalScopeBackend:
 
         # Add backend params for concurrency and batching
         backend_params = config.get('backend_params', {})
-        estimated_tokens = self._estimate_max_tokens(target, dataset_name, config)
 
         # Generation config - set defaults or use from backend_params
         if 'generation_config' not in task_cfg_dict:
             task_cfg_dict['generation_config'] = {
                 'batch_size': backend_params.get('generation_batch_size', 1),
-                'max_tokens': estimated_tokens,
                 'temperature': config.get('temperature', 0.0),
             }
-        logger.info(f"Using max_tokens: {estimated_tokens}")
 
         # Batch size for evaluation
         if 'batch_size' in backend_params:

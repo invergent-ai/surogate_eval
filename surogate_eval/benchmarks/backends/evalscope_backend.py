@@ -470,8 +470,9 @@ class EvalScopeBackend:
         if 'generation_config' not in task_cfg_dict:
             task_cfg_dict['generation_config'] = {
                 'batch_size': backend_params.get('generation_batch_size', 1),
-                'max_tokens': backend_params.get('max_tokens', 512),
-                'temperature': backend_params.get('temperature', 0.0)
+                'max_tokens': config.get('max_tokens') or backend_params.get('max_tokens', 512),
+                'temperature': config.get('temperature') if config.get(
+                    'temperature') is not None else backend_params.get('temperature', 0.0)
             }
 
         # Batch size for evaluation

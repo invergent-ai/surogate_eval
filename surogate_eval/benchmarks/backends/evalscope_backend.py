@@ -298,7 +298,7 @@ class EvalScopeBackend:
             self,
             results: Dict[str, Any],
             benchmark_name: str,
-            detailed_results: List[Dict[str, Any]] = None  # Add this parameter
+            detailed_results: List[Dict[str, Any]] = None
     ) -> Dict[str, Any]:
         """
         Parse EvalScope results into standardized format.
@@ -334,7 +334,7 @@ class EvalScopeBackend:
             'overall_score': overall_score,
             'num_samples': total_samples,
             'task_results': task_results,
-            'detailed_results': detailed_results or [],  # Add this
+            'detailed_results': detailed_results or [],
             'metadata': {
                 'backend': 'evalscope',
                 'benchmark': benchmark_name,
@@ -572,66 +572,6 @@ class EvalScopeBackend:
         # Default to service (API-based)
         return EvalType.SERVICE
 
-    def _parse_results(
-            self,
-            results: Dict[str, Any],
-            benchmark_name: str
-    ) -> Dict[str, Any]:
-        """
-        Parse EvalScope results into standardized format.
-
-        Args:
-            results: Raw EvalScope results from JSON file
-            benchmark_name: Benchmark name
-
-        Returns:
-            Parsed results dictionary
-        """
-        # EvalScope JSON format:
-        # {
-        #   "score": 0.2222,
-        #   "metrics": [{"name": "mean_acc", "score": 0.2222, "num": 9, "categories": [...]}]
-        # }
-
-        task_results = {}
-        overall_score = results.get('score', 0.0)
-
-        # Extract subset scores from metrics
-        metrics = results.get('metrics', [])
-        total_samples = 0
-
-        for metric in metrics:
-            metric_name = metric.get('name', 'unknown')
-            categories = metric.get('categories', [])
-
-            for category in categories:
-                subsets = category.get('subsets', [])
-
-                for subset in subsets:
-                    subset_name = subset.get('name')
-                    subset_score = subset.get('score', 0.0)
-                    subset_num = subset.get('num', 0)
-
-                    if subset_name:
-                        task_results[subset_name] = {
-                            'score': subset_score,
-                            'accuracy': subset_score,
-                            'n_samples': subset_num,
-                        }
-                        total_samples += subset_num
-
-        return {
-            'overall_score': overall_score,
-            'num_samples': total_samples,
-            'task_results': task_results,
-            'metadata': {
-                'backend': 'evalscope',
-                'benchmark': benchmark_name,
-                'num_datasets': len(task_results),
-                'dataset_name': results.get('dataset_name', benchmark_name),
-                'model_name': results.get('model_name', 'unknown'),
-            }
-        }
 
     @staticmethod
     def list_available_benchmarks() -> List[str]:

@@ -256,6 +256,8 @@ class EvalScopeBackend:
             dataset_name: str
     ) -> List[Dict[str, Any]]:
         """Load detailed predictions from EvalScope output."""
+        import json  # Add this import
+
         detailed_results = []
 
         predictions_dir = Path(work_dir) / 'predictions' / model_id
@@ -296,7 +298,7 @@ class EvalScopeBackend:
             self,
             results: Dict[str, Any],
             benchmark_name: str,
-            detailed_results: List[Dict[str, Any]] = None
+            detailed_results: List[Dict[str, Any]] = None  # Add this parameter
     ) -> Dict[str, Any]:
         """
         Parse EvalScope results into standardized format.
@@ -332,7 +334,7 @@ class EvalScopeBackend:
             'overall_score': overall_score,
             'num_samples': total_samples,
             'task_results': task_results,
-            'detailed_results': detailed_results or [],
+            'detailed_results': detailed_results or [],  # Add this
             'metadata': {
                 'backend': 'evalscope',
                 'benchmark': benchmark_name,

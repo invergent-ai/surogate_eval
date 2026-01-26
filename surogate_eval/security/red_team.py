@@ -311,24 +311,43 @@ class RedTeamRunner:
         vulnerability_results = []
         test_cases = dt_risk_assessment.test_cases if hasattr(dt_risk_assessment, 'test_cases') else []
 
+        # Build detailed results for each test case
+        detailed_results = []
+        for idx, test_case in enumerate(test_cases):
+            detailed_results.append({
+                'idx': idx,
+                'vulnerability': str(test_case.vulnerability) if hasattr(test_case, 'vulnerability') else 'unknown',
+                'vulnerability_type': str(test_case.vulnerability_type.value) if hasattr(test_case,
+                                                                                         'vulnerability_type') and hasattr(
+                    test_case.vulnerability_type, 'value') else str(
+                    getattr(test_case, 'vulnerability_type', 'unknown')),
+                'attack_method': str(test_case.attack_method) if hasattr(test_case, 'attack_method') else 'unknown',
+                'input': test_case.input if hasattr(test_case, 'input') else '',
+                'actual_output': test_case.actual_output if hasattr(test_case, 'actual_output') else '',
+                'expected_output': test_case.expected_output if hasattr(test_case, 'expected_output') else '',
+                'score': test_case.score if hasattr(test_case, 'score') else 0.0,
+                'success': (test_case.score < 1.0) if hasattr(test_case, 'score') else False,
+                # Attack succeeded if not blocked
+                'reason': test_case.reason if hasattr(test_case, 'reason') else None,
+            })
+
         # Group by vulnerability type
         vuln_groups = {}
         for test_case in test_cases:
             vuln_type = test_case.vulnerability_type if hasattr(test_case, 'vulnerability_type') else 'unknown'
-            vuln_name = test_case.vulnerability if hasattr(test_case, 'vulnerability') else 'unknown'  # ADD THIS
+            vuln_name = test_case.vulnerability if hasattr(test_case, 'vulnerability') else 'unknown'
 
-            # Convert enum to string if needed
             if hasattr(vuln_type, 'value'):
                 vuln_type = vuln_type.value
 
             if vuln_type not in vuln_groups:
-                vuln_groups[vuln_type] = {'cases': [], 'vulnerability_name': vuln_name}  # STORE NAME
+                vuln_groups[vuln_type] = {'cases': [], 'vulnerability_name': vuln_name}
             vuln_groups[vuln_type]['cases'].append(test_case)
 
         # Create vulnerability results
         for vuln_type, data in vuln_groups.items():
             cases = data['cases']
-            vuln_name = data['vulnerability_name']  # GET NAME
+            vuln_name = data['vulnerability_name']
             total = len(cases)
 
             blocked = sum(1 for c in cases if hasattr(c, 'score') and c.score == 1.0)
@@ -347,7 +366,7 @@ class RedTeamRunner:
 
             vulnerability_results.append(
                 VulnerabilityResult(
-                    vulnerability_name=vuln_name,  # ADD THIS FIELD
+                    vulnerability_name=vuln_name,
                     vulnerability_type=vuln_type,
                     total_attacks=total,
                     successful_attacks=succeeded,
@@ -362,7 +381,8 @@ class RedTeamRunner:
             target_name=self.target.name,
             vulnerabilities=vulnerability_results,
             overview=overview,
-            test_cases=test_cases
+            test_cases=test_cases,
+            detailed_results=detailed_results,
         )
 
     def _get_attack_breakdown(self, test_cases: List[Any]) -> Dict[str, int]:

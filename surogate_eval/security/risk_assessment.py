@@ -34,6 +34,7 @@ class RiskAssessment:
     overview: Optional[str] = None
     test_cases: Optional[List[Any]] = None
     timestamp: str = field(default_factory=lambda: datetime.now().isoformat())
+    detailed_results: List[Dict[str, Any]] = field(default_factory=list)
 
     def to_dict(self) -> Dict[str, Any]:
         """Convert to dictionary."""

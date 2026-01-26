@@ -174,14 +174,6 @@ class EvalScopeBackend:
     ) -> Dict[str, Any]:
         """
         Evaluate target using EvalScope benchmark with retry logic.
-
-        Args:
-            target: Target to evaluate
-            benchmark_name: Name of benchmark
-            config: Evaluation configuration
-
-        Returns:
-            Evaluation results
         """
         logger.info(f"Running EvalScope evaluation for benchmark: {benchmark_name}")
 
@@ -222,8 +214,11 @@ class EvalScopeBackend:
                     logger.warning(f"Results file not found: {results_file}")
                     results = {}
 
+                # Load detailed predictions
+                detailed_results = self._load_predictions(work_dir, model_id, evalscope_dataset)
+
                 # Parse results
-                parsed_results = self._parse_results(results, benchmark_name)
+                parsed_results = self._parse_results(results, benchmark_name, detailed_results)
 
                 logger.success(f"EvalScope evaluation completed for: {benchmark_name}")
                 return parsed_results
@@ -253,6 +248,99 @@ class EvalScopeBackend:
         # If we get here, all retries failed
         logger.error(f"All {max_retries} attempts failed for benchmark: {benchmark_name}")
         raise last_error
+
+    def _load_predictions(
+            self,
+            work_dir: str,
+            model_id: str,
+            dataset_name: str
+    ) -> List[Dict[str, Any]]:
+        """Load detailed predictions from EvalScope output."""
+        detailed_results = []
+
+        predictions_dir = Path(work_dir) / 'predictions' / model_id
+        if not predictions_dir.exists():
+            logger.debug(f"Predictions directory not found: {predictions_dir}")
+            return detailed_results
+
+        # Look for prediction files matching the dataset
+        for pred_file in predictions_dir.glob(f'{dataset_name}*.jsonl'):
+            logger.debug(f"Loading predictions from: {pred_file}")
+            try:
+                with open(pred_file, 'r') as f:
+                    for line in f:
+                        if line.strip():
+                            sample = json.loads(line)
+                            detailed_results.append({
+                                'input': sample.get('input', sample.get('prompt', '')),
+                                'expected': sample.get('ideal', sample.get('target', sample.get('reference', ''))),
+                                'output': sample.get('output', sample.get('response', sample.get('prediction', ''))),
+                                'raw_output': sample.get('raw_output', sample.get('raw_response', '')),
+                                'score': sample.get('score', sample.get('correct', 0)),
+                                'success': bool(sample.get('correct', sample.get('score', 0))),
+                                'subset': sample.get('subset', ''),
+                                'metadata': {
+                                    k: v for k, v in sample.items()
+                                    if k not in ('input', 'prompt', 'ideal', 'target', 'reference',
+                                                 'output', 'response', 'prediction', 'raw_output',
+                                                 'raw_response', 'score', 'correct', 'subset')
+                                }
+                            })
+            except Exception as e:
+                logger.warning(f"Failed to load predictions from {pred_file}: {e}")
+
+        logger.info(f"Loaded {len(detailed_results)} detailed predictions")
+        return detailed_results
+
+    def _parse_results(
+            self,
+            results: Dict[str, Any],
+            benchmark_name: str,
+            detailed_results: List[Dict[str, Any]] = None
+    ) -> Dict[str, Any]:
+        """
+        Parse EvalScope results into standardized format.
+        """
+        task_results = {}
+        overall_score = results.get('score', 0.0)
+
+        # Extract subset scores from metrics
+        metrics = results.get('metrics', [])
+        total_samples = 0
+
+        for metric in metrics:
+            metric_name = metric.get('name', 'unknown')
+            categories = metric.get('categories', [])
+
+            for category in categories:
+                subsets = category.get('subsets', [])
+
+                for subset in subsets:
+                    subset_name = subset.get('name')
+                    subset_score = subset.get('score', 0.0)
+                    subset_num = subset.get('num', 0)
+
+                    if subset_name:
+                        task_results[subset_name] = {
+                            'score': subset_score,
+                            'accuracy': subset_score,
+                            'n_samples': subset_num,
+                        }
+                        total_samples += subset_num
+
+        return {
+            'overall_score': overall_score,
+            'num_samples': total_samples,
+            'task_results': task_results,
+            'detailed_results': detailed_results or [],
+            'metadata': {
+                'backend': 'evalscope',
+                'benchmark': benchmark_name,
+                'num_datasets': len(task_results),
+                'dataset_name': results.get('dataset_name', benchmark_name),
+                'model_name': results.get('model_name', 'unknown'),
+            }
+        }
 
     def _prepare_task_config(
             self,

@@ -97,25 +97,43 @@ class CustomEvalBackend:
     def _split_by_eval_type(
             self,
             dataset: Dataset,
-            columns: Dict[str, str]
+            columns: Dict[str, str],
+            config: Dict[str, Any]
     ) -> tuple[List[Dict[str, Any]], List[Dict[str, Any]]]:
-        """Split dataset rows by eval_type."""
+        """Split dataset rows by eval_type based on config."""
         exact_match_rows = []
         judge_rows = []
 
-        eval_type_col = columns.get('eval_type', 'eval_type')
-        has_eval_type = eval_type_col in dataset.column_names
+        eval_type_col = columns.get('eval_type')
+        judge_criteria_col = columns.get('judge_criteria')
+
+        # Determine evaluation mode
+        has_eval_type_col = eval_type_col and eval_type_col in dataset.column_names
+        has_judge_criteria_col = judge_criteria_col is not None
+
+        if has_eval_type_col:
+            # Hybrid mode: per-row eval type
+            mode = 'hybrid'
+        elif has_judge_criteria_col:
+            # Judge only mode
+            mode = 'judge'
+        else:
+            # Exact match only mode
+            mode = 'exact_match'
+
+        logger.info(f"Evaluation mode: {mode}")
 
         for idx, row in enumerate(dataset):
             row_dict = dict(row)
             row_dict['_original_idx'] = idx
 
-            if has_eval_type:
+            if mode == 'hybrid':
                 eval_type = self._get_column_value(row, columns, 'eval_type', 'exact_match')
-            else:
-                eval_type = 'exact_match'
-
-            if eval_type == 'judge':
+                if eval_type == 'judge':
+                    judge_rows.append(row_dict)
+                else:
+                    exact_match_rows.append(row_dict)
+            elif mode == 'judge':
                 judge_rows.append(row_dict)
             else:
                 exact_match_rows.append(row_dict)
@@ -369,7 +387,8 @@ class CustomEvalBackend:
             raise ValueError(f"Column '{answer_col}' not found in dataset")
 
         # Split by eval_type
-        exact_match_rows, judge_rows = self._split_by_eval_type(dataset, columns)
+        # Split by eval_type
+        exact_match_rows, judge_rows = self._split_by_eval_type(dataset, columns, config)
 
         # Get judge target if configured
         judge_target = config.get('backend_params', {}).get('judge_target')

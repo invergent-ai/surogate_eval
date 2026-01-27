@@ -109,16 +109,13 @@ class CustomEvalBackend:
 
         # Determine evaluation mode
         has_eval_type_col = eval_type_col and eval_type_col in dataset.column_names
-        has_judge_criteria_col = judge_criteria_col is not None
+        has_judge_target = config.get('backend_params', {}).get('judge_target') is not None
 
         if has_eval_type_col:
-            # Hybrid mode: per-row eval type
             mode = 'hybrid'
-        elif has_judge_criteria_col:
-            # Judge only mode
+        elif has_judge_target:
             mode = 'judge'
         else:
-            # Exact match only mode
             mode = 'exact_match'
 
         logger.info(f"Evaluation mode: {mode}")

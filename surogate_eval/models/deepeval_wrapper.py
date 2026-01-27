@@ -36,11 +36,7 @@ class DeepEvalTargetWrapper(DeepEvalBaseLLM):
         return is_openai
 
     def generate(self, prompt: str, schema: Optional[BaseModel] = None) -> Union[str, BaseModel]:
-        logger.info(f"=== DeepEvalTargetWrapper.generate CALLED ===")
-        logger.info(f"Schema: {schema is not None}")
-        logger.info(f"Prompt length: {len(prompt)}")
         logger.info(f"Prompt preview: {prompt[:300]}...")
-
         params = {}
         if schema:
             is_openai = self._is_openai_api()

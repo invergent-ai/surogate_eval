@@ -104,19 +104,8 @@ class CustomEvalBackend:
         exact_match_rows = []
         judge_rows = []
 
-        eval_type_col = columns.get('eval_type')
-        judge_criteria_col = columns.get('judge_criteria')
-
-        # Determine evaluation mode
-        has_eval_type_col = eval_type_col and eval_type_col in dataset.column_names
-        has_judge_target = config.get('backend_params', {}).get('judge_target') is not None
-
-        if has_eval_type_col:
-            mode = 'hybrid'
-        elif has_judge_target:
-            mode = 'judge'
-        else:
-            mode = 'exact_match'
+        # Get eval_type from config (sent by frontend)
+        mode = config.get('eval_type', 'exact_match')
 
         logger.info(f"Evaluation mode: {mode}")
 
@@ -125,14 +114,15 @@ class CustomEvalBackend:
             row_dict['_original_idx'] = idx
 
             if mode == 'hybrid':
-                eval_type = self._get_column_value(row, columns, 'eval_type', 'exact_match')
-                if eval_type == 'judge':
+                # Per-row eval type from column
+                row_eval_type = self._get_column_value(row, columns, 'eval_type', 'exact_match')
+                if row_eval_type == 'judge':
                     judge_rows.append(row_dict)
                 else:
                     exact_match_rows.append(row_dict)
             elif mode == 'judge':
                 judge_rows.append(row_dict)
-            else:
+            else:  # exact_match
                 exact_match_rows.append(row_dict)
 
         logger.info(f"Split dataset: {len(exact_match_rows)} exact_match, {len(judge_rows)} judge")

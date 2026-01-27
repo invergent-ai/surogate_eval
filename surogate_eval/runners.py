@@ -298,6 +298,7 @@ def _run_single_benchmark(
             log_samples=bench_config.get("log_samples", True),
             judge_model=bench_config.get("judge_model"),
             judge_criteria=bench_config.get("judge_criteria"),
+            eval_type=bench_config.get("eval_type", "exact_match"),
         )
 
         benchmark = BenchmarkRegistry.create_benchmark(config)

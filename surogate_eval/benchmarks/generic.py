@@ -58,6 +58,7 @@ class GenericBenchmark(BaseBenchmark):
             'system_prompt': self.config.system_prompt,
             'judge_model': self.config.judge_model,
             'judge_criteria': self.config.judge_criteria,
+            'eval_type': self.config.eval_type,
         }
 
         if self.config.backend_params.get('judge_target'):

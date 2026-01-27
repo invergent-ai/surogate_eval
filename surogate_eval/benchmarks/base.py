@@ -51,6 +51,7 @@ class BenchmarkConfig:
     system_prompt: Optional[str] = None
     judge_model: Optional[Dict[str, Any]] = None
     judge_criteria: Optional[str] = None
+    eval_type: str = 'exact_match'
 
 
 @dataclass

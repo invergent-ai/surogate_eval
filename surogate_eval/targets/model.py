@@ -72,7 +72,6 @@ class APIModelTarget(BaseTarget):
         import time
 
         start_time = time.time()
-        logger.info(f"=== APIModelTarget.send_request CALLED ===")
         logger.info(f"Base URL: {self.base_url}")
         logger.info(f"Model: {self.model}")
 

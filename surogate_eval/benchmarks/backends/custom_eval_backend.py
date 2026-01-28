@@ -94,6 +94,62 @@ class CustomEvalBackend:
             return default
         return value
 
+    def _normalize_output(self, output: str, expected: str) -> str:
+        """Normalize model output for comparison."""
+        import re
+
+        try:
+            from bs4 import BeautifulSoup
+            import markdown
+
+            # Convert markdown to HTML, then extract plain text
+            html = markdown.markdown(output)
+            text = BeautifulSoup(html, 'html.parser').get_text(separator=' ')
+        except ImportError:
+            # Fallback: basic regex cleanup
+            text = output
+            text = re.sub(r'\*\*([^*]+)\*\*', r'\1', text)
+            text = re.sub(r'\*([^*]+)\*', r'\1', text)
+            text = re.sub(r'`([^`]+)`', r'\1', text)
+            text = re.sub(r'#{1,6}\s*', '', text)
+            text = re.sub(r'\[([^\]]+)\]\([^)]+\)', r'\1', text)
+
+        # Normalize whitespace
+        text = re.sub(r'\s+', ' ', text).strip()
+
+        # For short expected answers, extract matching pattern
+        expected_clean = expected.strip()
+
+        # Email
+        if '@' in expected_clean and len(expected_clean) < 100:
+            match = re.search(r'[\w\.-]+@[\w\.-]+\.\w+', text)
+            if match:
+                return match.group(0)
+
+        # Percentage
+        if re.match(r'^\d+%$', expected_clean):
+            match = re.search(r'\d+%', text)
+            if match:
+                return match.group(0)
+
+        # Date
+        if re.search(r'\b(Jan|Feb|Mar|Apr|May|Jun|Jul|Aug|Sep|Oct|Nov|Dec)\b', expected_clean, re.I):
+            match = re.search(r'(Jan|Feb|Mar|Apr|May|Jun|Jul|Aug|Sep|Oct|Nov|Dec)[a-z]*\.?\s+\d{1,2},?\s+\d{4}', text,
+                              re.I)
+            if match:
+                return match.group(0)
+
+        # Yes/No questions
+        if expected_clean.lower() in ['yes', 'no']:
+            if re.search(r'\bno\b', text, re.I) and 'not' in text.lower():
+                return 'No'
+            if re.search(r'\byes\b', text, re.I):
+                return 'Yes'
+            if 'is not responsible' in text.lower() or 'are not responsible' in text.lower():
+                return 'No'
+
+        return text
+
     def _split_by_eval_type(
             self,
             dataset: Dataset,
@@ -263,7 +319,12 @@ class CustomEvalBackend:
                 from surogate_eval.targets.base import TargetRequest
                 request = TargetRequest(prompt=instruction)
                 response = target.send_request(request)
-                actual_output = response.content
+                raw_output = response.content
+
+                # Normalize output for comparison
+                normalized_output = self._normalize_output(raw_output, expected)
+                logger.debug(f"Raw: {raw_output[:100]}... -> Normalized: {normalized_output[:100]}...")
+
             except Exception as e:
                 logger.error(f"Inference error for row {original_idx}: {e}")
                 results.append({
@@ -272,6 +333,7 @@ class CustomEvalBackend:
                     'instruction': instruction,
                     'expected': expected,
                     'output': '',
+                    'raw_output': '',
                     'score': 0.0,
                     'success': False,
                     'reason': f'Inference error: {str(e)}',
@@ -279,7 +341,7 @@ class CustomEvalBackend:
                 })
                 continue
 
-            # Run G-Eval
+            # Run G-Eval with normalized output
             try:
                 metric = GEval(
                     name=f"judge_{original_idx}",
@@ -294,7 +356,7 @@ class CustomEvalBackend:
 
                 test_case = LLMTestCase(
                     input=instruction,
-                    actual_output=actual_output,
+                    actual_output=normalized_output,  # Use normalized
                     expected_output=expected,
                 )
 
@@ -305,7 +367,8 @@ class CustomEvalBackend:
                     'eval_type': 'judge',
                     'instruction': instruction,
                     'expected': expected,
-                    'output': actual_output,
+                    'output': normalized_output,  # Store normalized
+                    'raw_output': raw_output,  # Store raw for reference
                     'score': metric.score,
                     'success': metric.score >= 0.5,
                     'reason': getattr(metric, 'reason', None),
@@ -321,7 +384,8 @@ class CustomEvalBackend:
                     'eval_type': 'judge',
                     'instruction': instruction,
                     'expected': expected,
-                    'output': actual_output,
+                    'output': normalized_output,
+                    'raw_output': raw_output,
                     'score': 0.0,
                     'success': False,
                     'reason': f'Judge error: {str(e)}',

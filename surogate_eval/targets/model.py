@@ -124,8 +124,27 @@ class APIModelTarget(BaseTarget):
         else:
             raise ValueError("Either messages or prompt must be provided")
 
+        # Add generation parameters from target config
+        if self.config.get('temperature') is not None:
+            payload['temperature'] = self.config['temperature']
+        if self.config.get('top_p') is not None:
+            payload['top_p'] = self.config['top_p']
+        if self.config.get('top_k') is not None:
+            payload['top_k'] = self.config['top_k']
+        if self.config.get('min_p') is not None:
+            payload['min_p'] = self.config['min_p']
+        if self.config.get('presence_penalty') is not None:
+            payload['presence_penalty'] = self.config['presence_penalty']
+        if self.config.get('max_tokens') is not None:
+            payload['max_tokens'] = self.config['max_tokens']
+
+        # Add chat_template_kwargs only if enable_thinking is explicitly set
+        enable_thinking = self.config.get('enable_thinking')
+        if enable_thinking is not None:
+            payload['chat_template_kwargs'] = {'enable_thinking': enable_thinking}
+
+        # Override with request-level parameters
         if request.parameters:
-            # Handle extra_body for vLLM guided decoding
             extra_body = request.parameters.pop("extra_body", None)
             if extra_body:
                 payload.update(extra_body)

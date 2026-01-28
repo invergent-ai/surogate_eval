@@ -128,6 +128,17 @@ class TargetConfig:
     comment: Optional[str] = None
     tokenizer: Optional[str] = None
 
+    # Generation parameters
+    temperature: Optional[float] = None
+    top_p: Optional[float] = None
+    top_k: Optional[int] = None
+    min_p: Optional[float] = None
+    presence_penalty: Optional[float] = None
+    max_tokens: Optional[int] = None
+    enable_thinking: Optional[bool] = None
+
+
+
     def __init__(self, cfg: DictDefault):
         # Basic target config
         self.name = cfg['name']
@@ -171,6 +182,15 @@ class TargetConfig:
         self.guardrails = cfg['guardrails']
         self.comment = cfg['comment']
 
+        # Generation parameters
+        self.temperature = cfg.get('temperature')
+        self.top_p = cfg.get('top_p')
+        self.top_k = cfg.get('top_k')
+        self.min_p = cfg.get('min_p')
+        self.presence_penalty = cfg.get('presence_penalty')
+        self.max_tokens = cfg.get('max_tokens')
+        self.enable_thinking = cfg.get('enable_thinking')
+
     def to_dict(self) -> Dict[str, Any]:
         """Convert TargetConfig to dictionary for compatibility with TargetFactory."""
         result = {}
@@ -210,6 +230,20 @@ class TargetConfig:
             result['load_in_4bit'] = self.load_in_4bit
         if self.tensor_parallel_size is not None:
             result['tensor_parallel_size'] = self.tensor_parallel_size
+        if self.temperature is not None:
+            result['temperature'] = self.temperature
+        if self.top_p is not None:
+            result['top_p'] = self.top_p
+        if self.top_k is not None:
+            result['top_k'] = self.top_k
+        if self.min_p is not None:
+            result['min_p'] = self.min_p
+        if self.presence_penalty is not None:
+            result['presence_penalty'] = self.presence_penalty
+        if self.max_tokens is not None:
+            result['max_tokens'] = self.max_tokens
+        if self.enable_thinking is not None:
+            result['enable_thinking'] = self.enable_thinking
 
         return result
 

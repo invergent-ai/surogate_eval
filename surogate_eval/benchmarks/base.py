@@ -47,6 +47,11 @@ class BenchmarkConfig:
     batch_size: Optional[int] = None
     max_tokens: Optional[int] = None
     temperature: Optional[float] = None
+    top_p: Optional[float] = None
+    top_k: Optional[int] = None
+    min_p: Optional[float] = None
+    presence_penalty: Optional[float] = None
+    enable_thinking: Optional[bool] = None
     num_concurrent: Optional[int] = None
     system_prompt: Optional[str] = None
     judge_model: Optional[Dict[str, Any]] = None

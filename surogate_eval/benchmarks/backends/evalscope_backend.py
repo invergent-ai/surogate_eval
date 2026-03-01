@@ -633,14 +633,17 @@ class EvalScopeBackend:
             downloaded_files = list(local_dir.rglob('*'))
             logger.info(f"Downloaded {len(downloaded_files)} files to {local_dir}")
 
-            # Detect available splits from filenames
+            # Detect available splits from directory names AND filenames
             available_splits = set()
             for f in downloaded_files:
-                if f.is_file():
+                if f.is_dir():
+                    name = f.name.lower()
+                    if name in ('train', 'test', 'validation', 'val', 'dev'):
+                        available_splits.add(name)
+                elif f.is_file():
                     stem = f.stem.lower()
                     if stem in ('train', 'test', 'validation', 'val', 'dev'):
                         available_splits.add(stem)
-                    logger.debug(f"  - {f}")
 
             if not downloaded_files:
                 raise RuntimeError(f"No files downloaded from {lakefs_url}")

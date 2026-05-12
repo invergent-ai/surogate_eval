@@ -207,11 +207,13 @@ class EvalScopeBackend:
         'bfcl_v3': {'dataset_id': 'modelscope/bfcl_v3'},
         'olympiad_bench': {'dataset_id': 'modelscope/OlympiadBench'},
         'needle_haystack': {'dataset_id': 'modelscope/Needle-in-a-Haystack-Corpus'},
-        'gpqa_diamond': {'dataset_id': 'modelscope/gpqa'},
+        'gpqa_diamond': {'domain': 'www.modelscope.cn'},
         # ── Only on .cn — use .cn domain ──────────────────────────
         'ifeval': {'domain': 'www.modelscope.cn'},
+        'gpqa_diamond': {'domain': 'www.modelscope.cn'},
         'mmlu_redux': {'domain': 'www.modelscope.cn'},
         'musr': {'domain': 'www.modelscope.cn'},
+        'super_gpqa': {'domain': 'www.modelscope.cn'},
         'tool_bench': {'domain': 'www.modelscope.cn'},
         'live_code_bench': {'domain': 'www.modelscope.cn'},
     }

@@ -40,6 +40,12 @@ EVALSCOPE_BENCHMARKS = [
 for benchmark_name in EVALSCOPE_BENCHMARKS:
     BenchmarkRegistry._benchmarks[benchmark_name] = GenericBenchmark
 
+# Register custom adapters (datasets with no native evalscope support)
+try:
+    import surogate_eval.benchmarks.adapters  # noqa: F401
+except ImportError:
+    pass
+
 __all__ = [
     'BaseBenchmark',
     'BenchmarkConfig',

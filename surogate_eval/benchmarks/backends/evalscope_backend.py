@@ -107,6 +107,8 @@ class EvalScopeBackend:
         'swe_bench_verified': 'swe_bench_verified',
         'swe_bench_lite': 'swe_bench_lite',
         'swe_bench_mini': 'swe_bench_verified_mini',
+        'swe_bench_pro': 'swe_bench_pro',
+        'swe_bench_multilingual': 'swe_bench_multilingual',
         'terminal_bench': 'terminal_bench_v2',
         'terminal_bench_v2': 'terminal_bench_v2',
 
@@ -118,6 +120,11 @@ class EvalScopeBackend:
         'tau2_bench': 'tau2_bench',
         'toolbench': 'tool_bench',
         'tool_bench': 'tool_bench',
+        # Custom adapters (surogate_eval.benchmarks.adapters)
+        'deep_planning': 'deep_planning',
+        'wide_search': 'wide_search',
+        'mcp_atlas': 'mcp_atlas',
+        'vita_bench': 'vita_bench',
 
         # ── Instruction following ─────────────────────────────────
         'ifeval': 'ifeval',
@@ -220,6 +227,13 @@ class EvalScopeBackend:
         'swe_bench_verified_mini': {'domain': 'www.modelscope.cn'},
         'humaneval_plus': {'domain': 'www.modelscope.cn'},
         'arc': {'domain': 'www.modelscope.cn'},
+        # Custom adapters — all on .cn
+        'deep_planning': {'domain': 'www.modelscope.cn'},
+        'wide_search': {'domain': 'www.modelscope.cn'},
+        'mcp_atlas': {'domain': 'www.modelscope.cn'},
+        'vita_bench': {'domain': 'www.modelscope.cn'},
+        'swe_bench_pro': {'domain': 'www.modelscope.cn'},
+        'swe_bench_multilingual': {'domain': 'www.modelscope.cn'},
         # Vision — all on .cn
         'mmmu': {'domain': 'www.modelscope.cn'},
         'mmmu_pro': {'domain': 'www.modelscope.cn'},

@@ -1,0 +1,51 @@
+# custom_eval_test.yaml
+project:
+  name: custom-eval-test
+  version: 1.0.0
+  description: Test custom evaluation with mixed exact_match and judge rows
+
+report_format_pdf: true
+
+targets:
+  # Judge model for judge-type evaluations
+  - name: qwen3-vl-judge
+    type: llm
+    provider: openai
+    model: Qwen/Qwen3-VL-30B-A3B-Thinking-FP8
+    base_url: https://app-qwen3-vl-30b-zygzu-router-rujkf.densemax.local/v1
+    api_key: EMPTY
+
+  # Target model to evaluate
+  - name: qwen3-local
+    type: llm
+    provider: openai
+    model: Qwen/Qwen3-0.6B-FP8
+    base_url: https://app-qwen3-06b-ujx67-router-9bufk.densemax.local/v1
+    api_key: EMPTY
+
+    infrastructure:
+      backend: local
+      workers: 2
+
+    evaluations:
+      - name: custom-mixed-evaluation
+        benchmarks:
+          - name: mixed_eval_test
+            backend: custom_eval
+            source: examples/datasets/custom_eval_test.jsonl
+
+            # Column mappings
+            columns:
+              instruction: instruction
+              answer: answer
+              eval_type: eval_type
+              judge_criteria: judge_criteria
+
+            # Evaluation settings
+            limit: 20
+            max_tokens: 256
+
+            # For judge rows (g-eval)
+            judge_model:
+              target: qwen3-vl-judge
+            judge_criteria: "Evaluate if the response correctly answers the question based on the expected answer."

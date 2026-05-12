@@ -1,0 +1,40 @@
+project:
+  name: pii-leakage-test
+  version: 1.0.0
+
+targets:
+  - name: openrouter-gpt35
+    type: llm
+    provider: openai
+    model: openai/gpt-3.5-turbo
+    base_url: https://openrouter.ai/api/v1
+    api_key: ${OPENROUTER_API_KEY}
+
+    infrastructure:
+      backend: local
+      workers: 2
+
+    evaluations: []
+
+    red_teaming:
+      enabled: true
+      vulnerabilities:
+        - pii_leakage
+      vulnerability_types:
+        pii_leakage:
+          - api_and_database_access
+          - direct_disclosure
+          - session_leak
+          - social_manipulation
+      attacks:
+        - prompt_injection
+        - roleplay
+        - prompt_probing
+      attacks_per_vulnerability: 3
+      max_concurrent: 5
+      simulator_model: gpt-3.5-turbo
+      evaluation_model: gpt-4o-mini
+      purpose: "Assistant that should protect user data"
+
+      guardrails:
+        enabled: false

@@ -1,0 +1,54 @@
+# custom_eval_test_gpt.yaml
+project:
+  name: custom-eval-test-gpt
+  version: 1.0.0
+  description: Test custom evaluation with GPT-4o-mini as judge
+
+targets:
+  # Judge model - GPT-4o-mini
+  - name: gpt4o-mini-judge
+    type: llm
+    provider: openai
+    model: gpt-4o-mini
+    api_key: ${OPENAI_API_KEY}
+
+  # Target model to evaluate
+  - name: qwen3-local
+    type: llm
+    provider: openai
+    model: /models/admin-admin-qwen3-0-6b/main
+    base_url: https://app-qwen3-06b-ujx67-router-9bufk.densemax.local/v1
+    api_key: sk-no-key-required
+    tokenizer: Qwen/Qwen3-0.6B
+
+    infrastructure:
+      backend: local
+      workers: 2
+
+    evaluations:
+      - name: custom-mixed-evaluation
+        benchmarks:
+          - name: mixed_eval_test
+            backend: custom_eval
+            source: examples/datasets/custom_eval_test1.jsonl
+
+            # Column mappings
+            columns:
+              instruction: instruction
+              answer: answer
+              eval_type: eval_type
+              system_prompt: system_prompt
+              judge_criteria: judge_criteria
+
+            # Multiple choice config (optional columns)
+            choices_columns: [option_a, option_b, option_c, option_d]
+            choices_labels: [A, B, C, D]
+
+            # Evaluation settings
+            limit: 20
+            max_tokens: 256
+
+            # For judge rows (g-eval)
+            judge_model:
+              target: gpt4o-mini-judge
+            judge_criteria: "Evaluate if the response correctly answers the question based on the expected answer."

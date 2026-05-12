@@ -1,0 +1,10 @@
+{"instruction": "What is 2+2?\nA. 3\nB. 4\nC. 5\nD. 6", "answer": "B", "eval_type": "exact_match"}
+{"instruction": "What is the capital of France?\nA. London\nB. Berlin\nC. Paris\nD. Madrid", "answer": "C", "eval_type": "exact_match"}
+{"instruction": "Which planet is known as the Red Planet?\nA. Venus\nB. Mars\nC. Jupiter\nD. Saturn", "answer": "B", "eval_type": "exact_match"}
+{"instruction": "What is the largest mammal?\nA. Elephant\nB. Giraffe\nC. Blue Whale\nD. Hippopotamus", "answer": "C", "eval_type": "exact_match"}
+{"instruction": "Who wrote Romeo and Juliet?\nA. Charles Dickens\nB. William Shakespeare\nC. Jane Austen\nD. Mark Twain", "answer": "B", "eval_type": "exact_match"}
+{"instruction": "What is 15 * 7?", "answer": "105", "eval_type": "exact_match"}
+{"instruction": "What is the chemical symbol for gold?", "answer": "Au", "eval_type": "exact_match"}
+{"instruction": "How many continents are there?", "answer": "7", "eval_type": "exact_match"}
+{"instruction": "What year did World War II end?", "answer": "1945", "eval_type": "exact_match"}
+{"instruction": "What is the square root of 144?", "answer": "12", "eval_type": "exact_match"}

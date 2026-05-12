@@ -1,0 +1,18 @@
+project:
+  name: mathqa-debug
+  version: 1.0.0
+
+targets:
+  - name: openrouter-gpt35
+    type: llm
+    provider: openai
+    model: openai/gpt-3.5-turbo
+    base_url: https://openrouter.ai/api/v1
+    api_key: ${OPENROUTER_API_KEY}
+
+    evaluations:
+      - name: mathqa-test
+        benchmarks:
+          - name: mathqa
+            num_fewshot: 1
+            limit: 10

@@ -1,0 +1,29 @@
+# mmlu_evalscope_test.yaml
+project:
+  name: mmlu-evalscope-test
+  version: 1.0.0
+  description: MMLU benchmark via EvalScope
+
+targets:
+  - name: qwen3-local
+    type: llm
+    provider: openai
+    model: /models/admin-admin-qwen3-0-6b/main
+    base_url: https://app-qwen3-06b-iyqvr-router-vaac8.densemax.local
+    api_key: EMPTY
+
+    infrastructure:
+      backend: local
+      workers: 2
+
+    evaluations:
+      - name: mmlu-benchmark
+        benchmarks:
+          - name: mmlu
+            num_fewshot: 5
+            limit: 5
+            subset:
+              - abstract_algebra
+            max_tokens: 32000
+            backend_params:
+              max_workers: 4

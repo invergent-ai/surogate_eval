@@ -1,0 +1,21 @@
+project:
+  name: "e2e-smoke-test"
+  version: "1.0.0"
+  description: "Quick end-to-end test using local Ollama"
+
+targets:
+  - name: ollama-llama32
+    type: llm
+    provider: openai
+    model: llama3.2:1b
+    base_url: http://localhost:11434/v1
+    api_key: ollama
+
+    evaluations:
+      - name: "mmlu-smoke"
+        benchmarks:
+          - name: mmlu
+            num_fewshot: 0
+            limit: 3
+            subset:
+              - "abstract_algebra"

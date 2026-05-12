@@ -5,19 +5,19 @@ authors = [{ name = "The Invergent Team" }]
 license = { text = "AGPL-3.0" }
 readme = "README.md"
 description = "Evaluation core for the surogate LLMOps framework"
-requires-python = ">=3.12"
+requires-python = ">=3.12,<3.14"
 
 dependencies = [
-    "evalscope[sandbox]>=1.7.0",
-    "modelscope>=1.36.0",
+    "evalscope[sandbox,ifeval,ifbench,swe_bench]>=1.7.0",
+    "modelscope>=1.34.0,<1.36.0",
     "torch>=2.5.0,<2.10.0",
     "transformers>=4.51.0,<5.0.0",
     "huggingface-hub>=0.28.0,<1.0.0",
-    "datasets>=3.2.0",
+    "datasets>=3.2.0,<4.0.0",
     "pydantic>=2.10.0,<3.0.0",
     "tqdm>=4.67.0",
     "colorama>=0.4.6",
-    "numpy>=2.0.0,<3.0.0",
+    "numpy>=1.26.0,<3.0.0",
     "polars>=1.20.0,<2.0.0",
     "pyyaml>=6.0.2",
     "lakefs>=0.7.0,<1.0.0",

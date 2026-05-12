@@ -1,0 +1,37 @@
+# ro_mmlu_eval.yaml
+project:
+  name: ro-mmlu-evaluation
+  version: 1.0.0
+  description: Romanian MMLU benchmark evaluation
+
+targets:
+  - name: qwen3-local
+    type: llm
+    provider: openai
+    model: Qwen/Qwen3-0.6B-FP8
+    base_url: https://app-qwen3-06b-ujx67-router-9bufk.densemax.local
+    api_key: EMPTY
+    tokenizer: Qwen/Qwen3-0.6B
+
+    infrastructure:
+      backend: local
+      workers: 2
+
+    evaluations:
+      - name: ro-mmlu-benchmark
+        benchmarks:
+          - name: ro_mmlu
+            backend: lm_eval
+            source: OpenLLM-Ro/ro_mmlu
+            task_type: generation
+            system_prompt: "Answer with only the letter (A, B, C, or D). Do not explain or use any formatting."
+            columns:
+              question: instruction
+              answer: answer
+            choices_columns: [ option_a, option_b, option_c, option_d ]
+            choices_labels: [ A, B, C, D ]
+            split: test
+            num_fewshot: 0
+            limit: 100
+            max_tokens: 20
+            tokenizer: Qwen/Qwen3-0.6B

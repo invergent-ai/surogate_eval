@@ -58,9 +58,11 @@ class EvalScopeBackend:
         'arc_challenge': 'arc',
         'hellaswag': 'hellaswag',
         'truthfulqa': 'truthful_qa',
+        'truthful_qa': 'truthful_qa',
         'winogrande': 'winogrande',
         'bbh': 'bbh',
         'gpqa': 'gpqa_diamond',
+        'gpqa_diamond': 'gpqa_diamond',
         'super_gpqa': 'super_gpqa',
         'musr': 'musr',
         'hle': 'hle',
@@ -92,6 +94,7 @@ class EvalScopeBackend:
         'swe_bench_lite': 'swe_bench_lite',
         'swe_bench_mini': 'swe_bench_verified_mini',
         'terminal_bench': 'terminal_bench_v2',
+        'terminal_bench_v2': 'terminal_bench_v2',
 
         # ── Agent & function calling ──────────────────────────────
         'bfcl': 'bfcl_v3',
@@ -159,6 +162,30 @@ class EvalScopeBackend:
         'visulogic': 'visulogic',
         'blink': 'blink',
         'omni_bench': 'omni_bench',
+    }
+
+    # Override ModelScope-only dataset IDs with HuggingFace equivalents.
+    # Applied when dataset_hub='huggingface' to avoid loading AI-ModelScope/*
+    # repos that don't exist on HF.
+    HF_DATASET_OVERRIDES = {
+        'gsm8k': {'dataset_id': 'openai/gsm8k'},
+        'gpqa_diamond': {'dataset_id': 'Idavidrein/gpqa'},
+        'winogrande': {'dataset_id': 'allenai/winogrande'},
+        'drop': {'dataset_id': 'ucinlp/drop'},
+        'humaneval': {'dataset_id': 'openai_humaneval'},
+        'mmmu': {'dataset_id': 'MMMU/MMMU'},
+        'mmmu_pro': {'dataset_id': 'MMMU/MMMU-Pro'},
+        'musr': {'dataset_id': 'TAUR-Lab/MuSR'},
+        'mmlu_redux': {'dataset_id': 'edinburgh-dawg/mmlu-redux'},
+        'needle_haystack': {'dataset_id': 'togethercomputer/Long-Data-Collections'},
+        'live_code_bench': {'dataset_id': 'livecodebench/code_generation_lite'},
+        'alpaca_eval': {'dataset_id': 'tatsu-lab/alpaca_eval'},
+        'arena_hard': {'dataset_id': 'lmarena-ai/arena-hard-auto-v0.1'},
+        'science_qa': {'dataset_id': 'derek-thomas/ScienceQA'},
+        'chinese_simple_qa': {'dataset_id': 'openai/SimpleQA'},
+        'math_500': {'dataset_id': 'HuggingFaceH4/MATH-500'},
+        'iquiz': {'dataset_id': 'ai-benchmark/IQuiz'},
+        'tool_bench': {'dataset_id': 'evalscope/ToolBench-Static'},
     }
 
     # Errors that indicate dataset download issues (retryable)
@@ -574,7 +601,18 @@ class EvalScopeBackend:
 
         # Default to huggingface when no hub is specified — ModelScope is
         # unreliable outside China and frequently hangs on download.
-        task_cfg_dict['dataset_hub'] = dataset_hub or 'huggingface'
+        resolved_hub = dataset_hub or 'huggingface'
+        task_cfg_dict['dataset_hub'] = resolved_hub
+
+        # When using HuggingFace, override ModelScope-only dataset IDs
+        if resolved_hub == 'huggingface' and dataset_name in self.HF_DATASET_OVERRIDES:
+            overrides = self.HF_DATASET_OVERRIDES[dataset_name]
+            if not task_cfg_dict.get('dataset_args'):
+                task_cfg_dict['dataset_args'] = {}
+            if dataset_name not in task_cfg_dict['dataset_args']:
+                task_cfg_dict['dataset_args'][dataset_name] = {}
+            task_cfg_dict['dataset_args'][dataset_name].update(overrides)
+            logger.info(f"Applied HF dataset override for '{dataset_name}': {overrides}")
 
         # Add limit if specified
         if 'limit' in config and config['limit']:

@@ -64,15 +64,24 @@ class EvalScopeBackend:
         'ds1000': 'ds1000',
         'leetcode': 'leetcode',
 
-        # EvalScope-specific benchmarks
+        # Agent benchmarks
         'bfcl': 'bfcl_v3',
         'bfcl_v3': 'bfcl_v3',
         'bfcl_v4': 'bfcl_v4',
         'tau_bench': 'tau_bench',
         'tau2_bench': 'tau2_bench',
-        'longbench': 'longbench',
-        'longbench_write': 'longbench_write',
+        'swe_bench': 'swe_bench',
+        'swe_bench_verified': 'swe_bench',
+        'swe_bench_multilingual': 'swe_bench',
+        'swe_bench_pro': 'swe_bench',
+        'terminal_bench': 'terminal_bench',
         'toolbench': 'tool_bench',
+        'tool_bench': 'tool_bench',
+        'process_bench': 'process_bench',
+
+        # Long-context
+        'longbench': 'longbench_v2',
+        'longbench_write': 'longbench_v2',
 
         # Mathematical benchmarks
         'math': 'competition_math',
@@ -80,11 +89,22 @@ class EvalScopeBackend:
         'aime_2024': 'aime24',
         'aime_2025': 'aime25',
 
-        # Multilingual
+        # Knowledge & reasoning
         'super_gpqa': 'super_gpqa',
+        'gpqa': 'gpqa',
+        'mmlu_pro': 'mmlu_pro',
+        'mmlu_redux': 'mmlu_redux',
+        'musr': 'musr',
+        'hle': 'hle',
+
+        # Instruction following
+        'ifeval': 'ifeval',
+        'ifbench': 'ifbench',
 
         # Code
-        'ifeval': 'ifeval',
+        'live_code_bench': 'live_code_bench',
+        'scicode': 'scicode',
+        'multipl_e': 'multipl_e',
 
         # QA
         'squad': 'squad',

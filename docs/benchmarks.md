@@ -71,6 +71,26 @@
 
 ---
 
+## Vision / Multimodal
+
+| Benchmark | Config name | Description | Samples | Metric | EvalScope |
+|-----------|-------------|-------------|---------|--------|-----------|
+| MMMU | `mmmu` | Expert-level visual QA across 30+ subjects requiring image understanding | 11500 | accuracy | Yes |
+| MMMU-Pro | `mmmu_pro` | Harder MMMU with augmented distractors and vision-centric reasoning | 3000 | accuracy | Yes |
+| MathVista | `mathvista` | Mathematical reasoning over charts, diagrams, geometric figures, and plots | 6141 | accuracy | Yes |
+| ChartQA | `chartqa` | Data extraction and QA from bar, line, and pie charts | 2500 | accuracy | Yes |
+| DocVQA | `docvqa` | Document visual QA over scanned forms, invoices, and reports | 5188 | accuracy | Yes |
+| OCRBench | `ocr_bench` | Text extraction from diverse visual contexts | 1000 | accuracy | Yes |
+| HallusionBench | `hallusion_bench` | Detects visual hallucinations — fabricated content not in images | 1129 | accuracy | Yes |
+| RealWorldQA | `real_world_qa` | Practical visual understanding from real-world photos | 765 | accuracy | Yes |
+| AI2D | `ai2d` | Science diagram understanding and reasoning | 3000 | accuracy | Yes |
+| MMBench | `mm_bench` | Comprehensive multimodal benchmark covering perception and reasoning | 3000 | accuracy | Yes |
+| MMStar | `mm_star` | Curated multimodal benchmark with minimal data leakage | 1500 | accuracy | Yes |
+| TIR-Bench | `tir_bench` | Tool-integrated reasoning with visual inputs | 500 | accuracy | Yes |
+| ZeroBench | `zerobench` | Zero-shot visual QA testing generalization without task-specific training | 1000 | accuracy | Yes |
+
+---
+
 ## Usage
 
 ```yaml

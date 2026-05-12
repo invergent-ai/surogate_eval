@@ -43,72 +43,85 @@ class EvalScopeBackend:
     DEFAULT_MAX_RETRIES = 3
     DEFAULT_RETRY_DELAY = 5  # seconds
 
-    # Map our benchmark names to EvalScope dataset names
+    # Map our benchmark names to EvalScope dataset names.
+    # Verified against evalscope 1.7.0 benchmark registry.
     BENCHMARK_MAP = {
-        # Standard benchmarks
+        # ── Standard knowledge & reasoning ────────────────────────
         'mmlu': 'mmlu',
+        'mmlu_pro': 'mmlu_pro',
+        'mmlu_redux': 'mmlu_redux',
+        'mmmlu': 'mmmlu',
         'cmmlu': 'cmmlu',
         'c_eval': 'ceval',
         'gsm8k': 'gsm8k',
         'arc': 'arc',
         'arc_challenge': 'arc',
-        'arc_easy': 'arc_easy',
         'hellaswag': 'hellaswag',
         'truthfulqa': 'truthful_qa',
         'winogrande': 'winogrande',
         'bbh': 'bbh',
+        'gpqa': 'gpqa_diamond',
+        'super_gpqa': 'super_gpqa',
+        'musr': 'musr',
+        'hle': 'hle',
+        'simple_qa': 'simple_qa',
+        'zebralogic': 'zebralogicbench',
+
+        # ── Math ──────────────────────────────────────────────────
+        'math': 'competition_math',
+        'math_500': 'math_500',
+        'aime': 'aime24',
+        'aime_2024': 'aime24',
+        'aime_2025': 'aime25',
+        'aime_2026': 'aime26',
+        'hmmt25': 'hmmt25',
+        'minerva_math': 'minerva_math',
+        'poly_math': 'poly_math',
+
+        # ── Coding ────────────────────────────────────────────────
         'humaneval': 'humaneval',
         'humaneval_plus': 'humaneval_plus',
         'mbpp': 'mbpp',
         'mbpp_plus': 'mbpp_plus',
-        'ds1000': 'ds1000',
-        'leetcode': 'leetcode',
+        'live_code_bench': 'live_code_bench',
+        'scicode': 'scicode',
+        'multipl_e_humaneval': 'multiple_humaneval',
+        'multipl_e_mbpp': 'multiple_mbpp',
+        'swe_bench': 'swe_bench_verified',
+        'swe_bench_verified': 'swe_bench_verified',
+        'swe_bench_lite': 'swe_bench_lite',
+        'swe_bench_mini': 'swe_bench_verified_mini',
+        'terminal_bench': 'terminal_bench_v2',
 
-        # Agent benchmarks
+        # ── Agent & function calling ──────────────────────────────
         'bfcl': 'bfcl_v3',
         'bfcl_v3': 'bfcl_v3',
         'bfcl_v4': 'bfcl_v4',
         'tau_bench': 'tau_bench',
         'tau2_bench': 'tau2_bench',
-        'swe_bench': 'swe_bench',
-        'swe_bench_verified': 'swe_bench',
-        'swe_bench_multilingual': 'swe_bench',
-        'swe_bench_pro': 'swe_bench',
-        'terminal_bench': 'terminal_bench',
         'toolbench': 'tool_bench',
         'tool_bench': 'tool_bench',
-        'process_bench': 'process_bench',
 
-        # Long-context
-        'longbench': 'longbench_v2',
-        'longbench_write': 'longbench_v2',
-
-        # Mathematical benchmarks
-        'math': 'competition_math',
-        'aime': 'aime24',
-        'aime_2024': 'aime24',
-        'aime_2025': 'aime25',
-
-        # Knowledge & reasoning
-        'super_gpqa': 'super_gpqa',
-        'gpqa': 'gpqa',
-        'mmlu_pro': 'mmlu_pro',
-        'mmlu_redux': 'mmlu_redux',
-        'musr': 'musr',
-        'hle': 'hle',
-
-        # Instruction following
+        # ── Instruction following ─────────────────────────────────
         'ifeval': 'ifeval',
         'ifbench': 'ifbench',
+        'alpaca_eval': 'alpaca_eval',
+        'arena_hard': 'arena_hard',
+        'multi_if': 'multi_if',
 
-        # Code
-        'live_code_bench': 'live_code_bench',
-        'scicode': 'scicode',
-        'multipl_e': 'multipl_e',
+        # ── Long context ──────────────────────────────────────────
+        'longbench': 'longbench_v2',
+        'longbench_v2': 'longbench_v2',
+        'needle_haystack': 'needle_haystack',
+        'frames': 'frames',
 
-        # QA
-        'squad': 'squad',
+        # ── Reasoning ─────────────────────────────────────────────
+        'process_bench': 'process_bench',
+        'coin_flip': 'coin_flip',
         'drop': 'drop',
+
+        # ── QA ────────────────────────────────────────────────────
+        'squad': 'squad',
         'boolq': 'boolq',
         'lambada': 'lambada',
         'logiqa': 'logi_qa',
@@ -120,21 +133,32 @@ class EvalScopeBackend:
         'race': 'race',
         'sciq': 'sciq',
         'pubmedqa': 'pubmedqa',
+        'health_bench': 'health_bench',
 
-        # Multimodal/Vision benchmarks
+        # ── Multimodal / Vision ───────────────────────────────────
         'mmmu': 'mmmu',
         'mmmu_pro': 'mmmu_pro',
         'mathvista': 'math_vista',
         'math_vista': 'math_vista',
+        'math_verse': 'math_verse',
+        'math_vision': 'math_vision',
         'chartqa': 'chartqa',
         'docvqa': 'docvqa',
         'infovqa': 'infovqa',
         'ai2d': 'ai2d',
+        'ocr_bench': 'ocr_bench',
         'seed_bench': 'seed_bench_2_plus',
         'mm_bench': 'mm_bench',
         'mm_star': 'mm_star',
         'pope': 'pope',
         'real_world_qa': 'real_world_qa',
+        'hallusion_bench': 'hallusion_bench',
+        'simple_vqa': 'simple_vqa',
+        'tir_bench': 'tir_bench',
+        'zerobench': 'zerobench',
+        'visulogic': 'visulogic',
+        'blink': 'blink',
+        'omni_bench': 'omni_bench',
     }
 
     # Errors that indicate dataset download issues (retryable)

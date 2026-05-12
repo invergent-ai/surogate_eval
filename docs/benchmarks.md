@@ -10,7 +10,6 @@
 | Terminal-Bench 2.0 | `terminal_bench` | Multi-step terminal tasks — command chaining, file manipulation, sysadmin | 89 | accuracy | Yes |
 | TAU-Bench | `tau_bench` | Task-oriented agent benchmark for multi-step troubleshooting and decision-making | 500 | accuracy | Yes |
 | BFCL v4 | `bfcl_v4` | Holistic agentic function calling — multi-turn tool use, web search, memory | 2000 | accuracy | Yes |
-| MCPMark | `mcp_mark` | MCP tool discovery, invocation, and orchestration across servers | 300 | accuracy | No |
 | MCP-Atlas | `mcp_atlas` | Large-scale MCP evaluation covering diverse server types and tool chaining | 500 | accuracy | No |
 | Tool Decathlon | `tool_decathlon` | Ten categories of tool-use tasks testing breadth of agent capabilities | 400 | accuracy | No |
 | DeepPlanning | `deep_planning` | Complex multi-constraint planning requiring long-horizon reasoning | 350 | accuracy | No |
@@ -25,7 +24,6 @@
 | HumanEval+ | `humaneval_plus` | HumanEval with 80x more tests per problem to catch false positives | 164 | pass@1 | Yes |
 | MBPP | `mbpp` | Mostly Basic Python Problems for code generation evaluation | 500 | pass@1 | Yes |
 | LiveCodeBench v6 | `live_code_bench` | Continuously updated competitive programming — no data contamination | 880 | pass@1 | Yes |
-| NL2Repo | `nl2repo` | Natural language to full repository generation from specifications | 200 | accuracy | No |
 | SciCode | `scicode` | Scientific computing — multi-step research-level coding tasks | 300 | accuracy | Yes |
 | MultiPL-E | `multipl_e` | HumanEval translated to 18+ languages (Rust, Go, Java, TS, etc.) | 164+ | pass@1 | Yes |
 

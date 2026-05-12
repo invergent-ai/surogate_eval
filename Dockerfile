@@ -56,7 +56,6 @@ COPY --from=builder --chown=1001:1001 /app/surogate_eval /app/surogate_eval
 
 # Bundle example configs and datasets so jobs can reference them
 COPY --chown=1001:1001 examples ./examples
-COPY --chown=1001:1001 datasets ./datasets
 
 ENV PATH="/app/.venv/bin:${PATH}" \
     PYTHONDONTWRITEBYTECODE=1 \

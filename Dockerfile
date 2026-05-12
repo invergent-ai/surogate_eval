@@ -55,6 +55,7 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     && rm -rf /var/lib/apt/lists/* \
     && useradd --create-home --uid 1001 surogate
 
+RUN mkdir -p /app && chown 1001:1001 /app
 WORKDIR /app
 
 COPY --from=builder --chown=1001:1001 /app/.venv /app/.venv

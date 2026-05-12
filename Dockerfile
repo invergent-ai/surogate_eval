@@ -80,5 +80,5 @@ VOLUME ["/app/eval_results"]
 
 USER surogate
 
-ENTRYPOINT ["surogate-eval"]
-CMD ["eval", "--help"]
+# No ENTRYPOINT — dstack needs to run shell commands (base64 decode config, then surogate-eval).
+CMD ["surogate-eval", "eval", "--help"]

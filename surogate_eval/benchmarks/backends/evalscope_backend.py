@@ -125,6 +125,7 @@ class EvalScopeBackend:
         'wide_search': 'wide_search',
         'mcp_atlas': 'mcp_atlas',
         'vita_bench': 'vita_bench',
+        'text_to_sql': 'text_to_sql',
 
         # ── Instruction following ─────────────────────────────────
         'ifeval': 'ifeval',
@@ -234,6 +235,7 @@ class EvalScopeBackend:
         'vita_bench': {'domain': 'www.modelscope.cn'},
         'swe_bench_pro': {'domain': 'www.modelscope.cn'},
         'swe_bench_multilingual': {'domain': 'www.modelscope.cn'},
+        'text_to_sql': {'domain': 'www.modelscope.cn'},
         # Vision — all on .cn
         'mmmu': {'domain': 'www.modelscope.cn'},
         'mmmu_pro': {'domain': 'www.modelscope.cn'},

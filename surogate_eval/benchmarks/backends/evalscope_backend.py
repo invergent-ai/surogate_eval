@@ -164,28 +164,28 @@ class EvalScopeBackend:
         'omni_bench': 'omni_bench',
     }
 
-    # Override ModelScope-only dataset IDs with HuggingFace equivalents.
-    # Applied when dataset_hub='huggingface' to avoid loading AI-ModelScope/*
-    # repos that don't exist on HF.
-    HF_DATASET_OVERRIDES = {
-        'gsm8k': {'dataset_id': 'openai/gsm8k'},
-        'gpqa_diamond': {'dataset_id': 'Idavidrein/gpqa'},
-        'winogrande': {'dataset_id': 'allenai/winogrande'},
-        'drop': {'dataset_id': 'ucinlp/drop'},
-        'humaneval': {'dataset_id': 'openai_humaneval'},
-        'mmmu': {'dataset_id': 'MMMU/MMMU'},
-        'mmmu_pro': {'dataset_id': 'MMMU/MMMU-Pro'},
-        'musr': {'dataset_id': 'TAUR-Lab/MuSR'},
-        'mmlu_redux': {'dataset_id': 'edinburgh-dawg/mmlu-redux'},
-        'needle_haystack': {'dataset_id': 'togethercomputer/Long-Data-Collections'},
-        'live_code_bench': {'dataset_id': 'livecodebench/code_generation_lite'},
-        'alpaca_eval': {'dataset_id': 'tatsu-lab/alpaca_eval'},
-        'arena_hard': {'dataset_id': 'lmarena-ai/arena-hard-auto-v0.1'},
-        'science_qa': {'dataset_id': 'derek-thomas/ScienceQA'},
-        'chinese_simple_qa': {'dataset_id': 'openai/SimpleQA'},
-        'math_500': {'dataset_id': 'HuggingFaceH4/MATH-500'},
-        'iquiz': {'dataset_id': 'ai-benchmark/IQuiz'},
-        'tool_bench': {'dataset_id': 'evalscope/ToolBench-Static'},
+    # Override old AI-ModelScope/* dataset IDs with modelscope/* equivalents.
+    # The AI-ModelScope org doesn't exist on modelscope.ai (international).
+    MODELSCOPE_DATASET_OVERRIDES = {
+        'gsm8k': {'dataset_id': 'modelscope/gsm8k'},
+        'gpqa_diamond': {'dataset_id': 'modelscope/gpqa_diamond'},
+        'winogrande': {'dataset_id': 'modelscope/winogrande_val'},
+        'drop': {'dataset_id': 'modelscope/DROP'},
+        'mmmu': {'dataset_id': 'modelscope/MMMU'},
+        'mmmu_pro': {'dataset_id': 'modelscope/MMMU_Pro'},
+        'musr': {'dataset_id': 'modelscope/MuSR'},
+        'mmlu_redux': {'dataset_id': 'modelscope/mmlu-redux-2.0'},
+        'needle_haystack': {'dataset_id': 'modelscope/Needle-in-a-Haystack-Corpus'},
+        'live_code_bench': {'dataset_id': 'modelscope/code_generation_lite'},
+        'alpaca_eval': {'dataset_id': 'modelscope/alpaca_eval'},
+        'arena_hard': {'dataset_id': 'modelscope/arena-hard-auto-v0.1'},
+        'science_qa': {'dataset_id': 'modelscope/ScienceQA'},
+        'chinese_simple_qa': {'dataset_id': 'modelscope/Chinese-SimpleQA'},
+        'math_500': {'dataset_id': 'modelscope/MATH-500'},
+        'iquiz': {'dataset_id': 'modelscope/IQuiz'},
+        'tool_bench': {'dataset_id': 'modelscope/ToolBench-Static'},
+        'bfcl_v3': {'dataset_id': 'modelscope/bfcl_v3'},
+        'olympiad_bench': {'dataset_id': 'modelscope/OlympiadBench'},
     }
 
     # Errors that indicate dataset download issues (retryable)
@@ -599,20 +599,24 @@ class EvalScopeBackend:
 
             logger.info(f"Set custom dataset_id to: {dataset_path}")
 
-        # Default to huggingface when no hub is specified — ModelScope is
-        # unreliable outside China and frequently hangs on download.
-        resolved_hub = dataset_hub or 'huggingface'
+        # Use ModelScope international site (modelscope.ai) as default hub.
+        # The old .cn domain hangs outside China; .ai works globally.
+        import os
+        if 'MODELSCOPE_DOMAIN' not in os.environ:
+            os.environ['MODELSCOPE_DOMAIN'] = 'www.modelscope.ai'
+
+        resolved_hub = dataset_hub or 'modelscope'
         task_cfg_dict['dataset_hub'] = resolved_hub
 
-        # When using HuggingFace, override ModelScope-only dataset IDs
-        if resolved_hub == 'huggingface' and dataset_name in self.HF_DATASET_OVERRIDES:
-            overrides = self.HF_DATASET_OVERRIDES[dataset_name]
+        # Override old AI-ModelScope/* dataset IDs that don't exist on modelscope.ai
+        if resolved_hub == 'modelscope' and dataset_name in self.MODELSCOPE_DATASET_OVERRIDES:
+            overrides = self.MODELSCOPE_DATASET_OVERRIDES[dataset_name]
             if not task_cfg_dict.get('dataset_args'):
                 task_cfg_dict['dataset_args'] = {}
             if dataset_name not in task_cfg_dict['dataset_args']:
                 task_cfg_dict['dataset_args'][dataset_name] = {}
             task_cfg_dict['dataset_args'][dataset_name].update(overrides)
-            logger.info(f"Applied HF dataset override for '{dataset_name}': {overrides}")
+            logger.info(f"Applied ModelScope dataset override for '{dataset_name}': {overrides}")
 
         # Add limit if specified
         if 'limit' in config and config['limit']:

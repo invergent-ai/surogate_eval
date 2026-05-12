@@ -658,11 +658,11 @@ class EvalScopeBackend:
 
             logger.info(f"Set custom dataset_id to: {dataset_path}")
 
-        # Default: modelscope.ai (international). Per-benchmark overrides
-        # can switch to .cn for datasets not yet on .ai.
+        # Default: modelscope.cn — has all datasets. Some benchmarks
+        # override to .ai where the dataset is available internationally.
         import os
         if 'MODELSCOPE_DOMAIN' not in os.environ:
-            os.environ['MODELSCOPE_DOMAIN'] = 'www.modelscope.ai'
+            os.environ['MODELSCOPE_DOMAIN'] = 'www.modelscope.cn'
 
         resolved_hub = dataset_hub or 'modelscope'
         task_cfg_dict['dataset_hub'] = resolved_hub

@@ -13,7 +13,11 @@ import subprocess
 import sys
 from typing import Optional, List, Dict
 import signal
-import torch
+
+try:
+    import torch
+except ImportError:
+    torch = None
 
 from surogate_eval.utils.logger import get_logger
 from surogate_eval.utils.system_info import print_system_diagnostics, get_system_info
@@ -92,10 +96,11 @@ def cli_main():
     system_info = get_system_info()
     print_system_diagnostics(system_info)
 
-    torch.cuda.empty_cache()
+    if torch is not None and torch.cuda.is_available():
+        torch.cuda.empty_cache()
 
     if torchrun_args is None:
-        if torch.cuda.is_available() and torch.cuda.device_count() > 1:
+        if torch is not None and torch.cuda.is_available() and torch.cuda.device_count() > 1:
             os.environ["OMP_NUM_THREADS"] = str(os.cpu_count() // torch.cuda.device_count())
             logger.info(f"Multiple GPUs detected, running on {torch.cuda.device_count()} GPUs")
             cmd_args = [python_cmd, '-m', 'torch.distributed.run', f"--nproc-per-node={torch.cuda.device_count()}", "--standalone", "--nnodes=1", "--node-rank=0", file_path, *command_args]
@@ -131,7 +136,7 @@ def cli_main():
             except ProcessLookupError:
                 pass
 
-        if torch.cuda.is_available():
+        if torch is not None and torch.cuda.is_available():
             torch.cuda.empty_cache()
 
         gc.collect()

@@ -528,8 +528,9 @@ class EvalScopeBackend:
 
             logger.info(f"Set custom dataset_id to: {dataset_path}")
 
-        if dataset_hub:
-            task_cfg_dict['dataset_hub'] = dataset_hub
+        # Default to huggingface when no hub is specified — ModelScope is
+        # unreliable outside China and frequently hangs on download.
+        task_cfg_dict['dataset_hub'] = dataset_hub or 'huggingface'
 
         # Add limit if specified
         if 'limit' in config and config['limit']:

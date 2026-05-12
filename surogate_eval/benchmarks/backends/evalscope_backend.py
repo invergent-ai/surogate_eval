@@ -20,6 +20,20 @@ def _patched_request(self, method, url, **kwargs):
 
 requests.Session.request = _patched_request
 
+# Patch datasets.load_dataset to silently drop trust_remote_code
+# (removed in datasets v4 but evalscope adapters still pass it)
+try:
+    import datasets as _ds
+    _orig_load_dataset = _ds.load_dataset
+    import inspect as _inspect
+    if 'trust_remote_code' not in _inspect.signature(_orig_load_dataset).parameters:
+        def _patched_load_dataset(*args, **kwargs):
+            kwargs.pop('trust_remote_code', None)
+            return _orig_load_dataset(*args, **kwargs)
+        _ds.load_dataset = _patched_load_dataset
+except Exception:
+    pass
+
 from surogate_eval.targets import BaseTarget
 from surogate_eval.utils.logger import get_logger
 
@@ -164,28 +178,42 @@ class EvalScopeBackend:
         'omni_bench': 'omni_bench',
     }
 
-    # Override old AI-ModelScope/* dataset IDs with modelscope/* equivalents.
-    # The AI-ModelScope org doesn't exist on modelscope.ai (international).
-    MODELSCOPE_DATASET_OVERRIDES = {
+    # Dataset overrides: remap dataset IDs and optionally set a different
+    # hub or ModelScope domain per benchmark.
+    #
+    # Keys: evalscope dataset name
+    # Values can include:
+    #   dataset_id  — override the dataset_id
+    #   hub         — 'modelscope' or 'huggingface'
+    #   domain      — 'www.modelscope.ai' or 'www.modelscope.cn'
+    #
+    # Default hub is modelscope with domain .ai (international).
+    # Benchmarks only available on .cn fall back automatically.
+    DATASET_OVERRIDES = {
+        # ── Remap AI-ModelScope/* → modelscope/* for .ai ──────────
         'gsm8k': {'dataset_id': 'modelscope/gsm8k'},
-        'gpqa_diamond': {'dataset_id': 'modelscope/gpqa_diamond'},
+        'humaneval': {'dataset_id': 'modelscope/humaneval'},
+        'truthful_qa': {'dataset_id': 'modelscope/truthful_qa'},
         'winogrande': {'dataset_id': 'modelscope/winogrande_val'},
         'drop': {'dataset_id': 'modelscope/DROP'},
         'mmmu': {'dataset_id': 'modelscope/MMMU'},
         'mmmu_pro': {'dataset_id': 'modelscope/MMMU_Pro'},
-        'musr': {'dataset_id': 'modelscope/MuSR'},
-        'mmlu_redux': {'dataset_id': 'modelscope/mmlu-redux-2.0'},
-        'needle_haystack': {'dataset_id': 'modelscope/Needle-in-a-Haystack-Corpus'},
-        'live_code_bench': {'dataset_id': 'modelscope/code_generation_lite'},
         'alpaca_eval': {'dataset_id': 'modelscope/alpaca_eval'},
         'arena_hard': {'dataset_id': 'modelscope/arena-hard-auto-v0.1'},
         'science_qa': {'dataset_id': 'modelscope/ScienceQA'},
         'chinese_simple_qa': {'dataset_id': 'modelscope/Chinese-SimpleQA'},
         'math_500': {'dataset_id': 'modelscope/MATH-500'},
         'iquiz': {'dataset_id': 'modelscope/IQuiz'},
-        'tool_bench': {'dataset_id': 'modelscope/ToolBench-Static'},
         'bfcl_v3': {'dataset_id': 'modelscope/bfcl_v3'},
         'olympiad_bench': {'dataset_id': 'modelscope/OlympiadBench'},
+        'needle_haystack': {'dataset_id': 'modelscope/Needle-in-a-Haystack-Corpus'},
+        'gpqa_diamond': {'dataset_id': 'modelscope/gpqa'},
+        # ── Only on .cn — use .cn domain ──────────────────────────
+        'ifeval': {'domain': 'www.modelscope.cn'},
+        'mmlu_redux': {'domain': 'www.modelscope.cn'},
+        'musr': {'domain': 'www.modelscope.cn'},
+        'tool_bench': {'domain': 'www.modelscope.cn'},
+        'live_code_bench': {'domain': 'www.modelscope.cn'},
     }
 
     # Errors that indicate dataset download issues (retryable)
@@ -599,8 +627,8 @@ class EvalScopeBackend:
 
             logger.info(f"Set custom dataset_id to: {dataset_path}")
 
-        # Use ModelScope international site (modelscope.ai) as default hub.
-        # The old .cn domain hangs outside China; .ai works globally.
+        # Default: modelscope.ai (international). Per-benchmark overrides
+        # can switch to .cn for datasets not yet on .ai.
         import os
         if 'MODELSCOPE_DOMAIN' not in os.environ:
             os.environ['MODELSCOPE_DOMAIN'] = 'www.modelscope.ai'
@@ -608,15 +636,25 @@ class EvalScopeBackend:
         resolved_hub = dataset_hub or 'modelscope'
         task_cfg_dict['dataset_hub'] = resolved_hub
 
-        # Override old AI-ModelScope/* dataset IDs that don't exist on modelscope.ai
-        if resolved_hub == 'modelscope' and dataset_name in self.MODELSCOPE_DATASET_OVERRIDES:
-            overrides = self.MODELSCOPE_DATASET_OVERRIDES[dataset_name]
-            if not task_cfg_dict.get('dataset_args'):
-                task_cfg_dict['dataset_args'] = {}
-            if dataset_name not in task_cfg_dict['dataset_args']:
-                task_cfg_dict['dataset_args'][dataset_name] = {}
-            task_cfg_dict['dataset_args'][dataset_name].update(overrides)
-            logger.info(f"Applied ModelScope dataset override for '{dataset_name}': {overrides}")
+        # Apply per-benchmark overrides (dataset_id, hub, domain)
+        if dataset_name in self.DATASET_OVERRIDES:
+            overrides = self.DATASET_OVERRIDES[dataset_name]
+
+            if 'domain' in overrides:
+                os.environ['MODELSCOPE_DOMAIN'] = overrides['domain']
+                logger.info(f"Switched ModelScope domain to {overrides['domain']} for '{dataset_name}'")
+
+            if 'hub' in overrides:
+                task_cfg_dict['dataset_hub'] = overrides['hub']
+
+            if 'dataset_id' in overrides:
+                if not task_cfg_dict.get('dataset_args'):
+                    task_cfg_dict['dataset_args'] = {}
+                if dataset_name not in task_cfg_dict['dataset_args']:
+                    task_cfg_dict['dataset_args'][dataset_name] = {}
+                task_cfg_dict['dataset_args'][dataset_name]['dataset_id'] = overrides['dataset_id']
+
+            logger.info(f"Applied dataset override for '{dataset_name}': {overrides}")
 
         # Add limit if specified
         if 'limit' in config and config['limit']:

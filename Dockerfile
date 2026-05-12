@@ -33,6 +33,12 @@ COPY surogate_eval ./surogate_eval
 RUN --mount=type=cache,target=/root/.cache/uv \
     uv sync --frozen --no-dev --extra security
 
+# Install packages with quarantined deps (mistralai) — must use --no-deps
+RUN --mount=type=cache,target=/root/.cache/uv \
+    uv pip install --no-deps \
+      'bfcl-eval==2025.10.27.1' \
+      'git+https://github.com/sierra-research/tau-bench'
+
 # ── runtime ────────────────────────────────────────────────────────
 FROM python:${PYTHON_VERSION}-slim-bookworm AS runtime
 

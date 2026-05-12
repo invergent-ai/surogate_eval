@@ -207,7 +207,6 @@ class EvalScopeBackend:
         'bfcl_v3': {'dataset_id': 'modelscope/bfcl_v3'},
         'olympiad_bench': {'dataset_id': 'modelscope/OlympiadBench'},
         'needle_haystack': {'dataset_id': 'modelscope/Needle-in-a-Haystack-Corpus'},
-        'gpqa_diamond': {'domain': 'www.modelscope.cn'},
         # ── Only on .cn — use .cn domain ──────────────────────────
         'ifeval': {'domain': 'www.modelscope.cn'},
         'gpqa_diamond': {'domain': 'www.modelscope.cn'},
@@ -216,6 +215,20 @@ class EvalScopeBackend:
         'super_gpqa': {'domain': 'www.modelscope.cn'},
         'tool_bench': {'domain': 'www.modelscope.cn'},
         'live_code_bench': {'domain': 'www.modelscope.cn'},
+        'swe_bench_verified': {'domain': 'www.modelscope.cn'},
+        'swe_bench_lite': {'domain': 'www.modelscope.cn'},
+        'swe_bench_verified_mini': {'domain': 'www.modelscope.cn'},
+        'humaneval_plus': {'domain': 'www.modelscope.cn'},
+        'arc': {'domain': 'www.modelscope.cn'},
+        # Vision — all on .cn
+        'mmmu': {'domain': 'www.modelscope.cn'},
+        'mmmu_pro': {'domain': 'www.modelscope.cn'},
+        'math_vista': {'domain': 'www.modelscope.cn'},
+        'chartqa': {'domain': 'www.modelscope.cn'},
+        'docvqa': {'domain': 'www.modelscope.cn'},
+        'ocr_bench': {'domain': 'www.modelscope.cn'},
+        'hallusion_bench': {'domain': 'www.modelscope.cn'},
+        'real_world_qa': {'domain': 'www.modelscope.cn'},
     }
 
     # Errors that indicate dataset download issues (retryable)

@@ -127,6 +127,9 @@ class EvalScopeBackend:
         'vita_bench': 'vita_bench',
         'text_to_sql': 'text_to_sql',
 
+        # ── Chat / multi-turn ─────────────────────────────────────
+        'mt_bench': 'mt_bench',
+
         # ── Instruction following ─────────────────────────────────
         'ifeval': 'ifeval',
         'ifbench': 'ifbench',
@@ -600,11 +603,17 @@ class EvalScopeBackend:
             'work_dir': tempfile.gettempdir(),
         }
 
-        # Enable sandbox for code benchmarks
-        if dataset_name.lower() in CODE_BENCHMARKS:
+        # Enable sandbox for code benchmarks (unless explicitly disabled
+        # via backend_params.use_sandbox=false — needed when running
+        # inside k8s pods where Docker is unavailable).
+        bp = config.get('backend_params', {}) or {}
+        use_sandbox = bp.get('use_sandbox', config.get('use_sandbox', True))
+        if dataset_name.lower() in CODE_BENCHMARKS and use_sandbox:
             task_cfg_dict['use_sandbox'] = True
             task_cfg_dict['sandbox_type'] = 'docker'
             logger.info(f"Enabling sandbox for code benchmark: {dataset_name}")
+        elif dataset_name.lower() in CODE_BENCHMARKS:
+            logger.info(f"Sandbox disabled for code benchmark: {dataset_name} (use_sandbox=false)")
 
         # Add model configuration based on eval type
         if eval_type == EvalType.SERVICE:

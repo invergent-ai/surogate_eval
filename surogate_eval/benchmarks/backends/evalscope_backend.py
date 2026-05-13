@@ -125,7 +125,6 @@ class EvalScopeBackend:
         'wide_search': 'wide_search',
         'mcp_atlas': 'mcp_atlas',
         'vita_bench': 'vita_bench',
-        'text_to_sql': 'text_to_sql',
 
         # ── Chat / multi-turn ─────────────────────────────────────
         'mt_bench': 'mt_bench',
@@ -238,7 +237,7 @@ class EvalScopeBackend:
         'vita_bench': {'domain': 'www.modelscope.cn'},
         'swe_bench_pro': {'domain': 'www.modelscope.cn'},
         'swe_bench_multilingual': {'domain': 'www.modelscope.cn'},
-        'text_to_sql': {'domain': 'www.modelscope.cn'},
+        'mt_bench': {'hub': 'huggingface'},
         # Vision — all on .cn
         'mmmu': {'domain': 'www.modelscope.cn'},
         'mmmu_pro': {'domain': 'www.modelscope.cn'},
@@ -583,6 +582,57 @@ class EvalScopeBackend:
             }
         }
 
+    _mbpp_patched = False
+
+    @classmethod
+    def _patch_mbpp_nosandbox(cls):
+        """Patch MBPP adapter to use subprocess exec instead of raising
+        RuntimeError when use_sandbox=false."""
+        if cls._mbpp_patched:
+            return
+        try:
+            from evalscope.benchmarks.mbpp.mbpp_adapter import MBPPAdapter
+            import subprocess, tempfile
+
+            def _match_score_nosandbox(self, original_prediction, filtered_prediction, reference, task_state):
+                from evalscope.api.dataset import Score
+                score = Score(
+                    extracted_prediction=filtered_prediction,
+                    prediction=original_prediction,
+                )
+                problem = task_state.metadata
+                completion = filtered_prediction
+                for test in task_state.metadata.get('test_list', []):
+                    completion += '\n' + test + '\n'
+
+                passed = False
+                try:
+                    with tempfile.NamedTemporaryFile(mode='w', suffix='.py', delete=False) as f:
+                        f.write(completion)
+                        f.flush()
+                        result = subprocess.run(
+                            ['python3', f.name],
+                            capture_output=True, timeout=30,
+                        )
+                        passed = result.returncode == 0
+                except (subprocess.TimeoutExpired, Exception) as e:
+                    logger.debug(f"MBPP exec failed: {e}")
+                    passed = False
+
+                score.value = {'acc': passed}
+                score.metadata = {
+                    'task_id': problem.get('task_id', ''),
+                    'timeout': getattr(self, 'review_timeout', 30),
+                }
+                score.main_score_name = 'acc'
+                return score
+
+            MBPPAdapter.match_score = _match_score_nosandbox
+            cls._mbpp_patched = True
+            logger.info("Patched MBPP adapter for subprocess execution (no sandbox)")
+        except ImportError:
+            logger.debug("MBPP adapter not available for patching")
+
     def _prepare_task_config(
             self,
             target: BaseTarget,
@@ -614,6 +664,8 @@ class EvalScopeBackend:
             logger.info(f"Enabling sandbox for code benchmark: {dataset_name}")
         elif dataset_name.lower() in CODE_BENCHMARKS:
             logger.info(f"Sandbox disabled for code benchmark: {dataset_name} (use_sandbox=false)")
+            # Patch MBPP to use subprocess exec instead of raising RuntimeError.
+            self._patch_mbpp_nosandbox()
 
         # Add model configuration based on eval type
         if eval_type == EvalType.SERVICE:

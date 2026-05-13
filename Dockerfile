@@ -88,9 +88,9 @@ ENV PATH="/app/.venv/bin:/usr/local/bin:${PATH}" \
     HF_DATASETS_TRUST_REMOTE_CODE=1 \
     HF_ALLOW_CODE_EVAL=1 \
     TRUST_REMOTE_CODE=1 \
-    # Rootless Docker config
-    DOCKER_HOST=unix:///run/user/1001/docker.sock \
-    XDG_RUNTIME_DIR=/run/user/1001
+    # Rootless Docker config — /run/user requires root, use /tmp instead
+    DOCKER_HOST=unix:///tmp/run-user/docker.sock \
+    XDG_RUNTIME_DIR=/tmp/run-user
 
 # Results are written here; mount a volume to persist them
 RUN mkdir -p /app/eval_results && chown 1001:1001 /app/eval_results

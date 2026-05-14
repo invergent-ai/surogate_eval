@@ -180,21 +180,68 @@ def _parse_service_results(
                     with open(meta_path) as f:
                         meta = json.load(f)
 
-                    task_name = meta.get("task", Path(root).name)
-                    passed = meta.get("passed", False)
-                    error = meta.get("error", "")
-                    execution_log = meta.get("execution_log", "")
+                    task_name = meta.get("task_name", meta.get("task", Path(root).name))
+                    # MCPMark nests results under execution_result
+                    exec_result = meta.get("execution_result", {})
+                    if isinstance(exec_result, dict):
+                        passed = exec_result.get("success", False)
+                        error = exec_result.get("error_message", "") or exec_result.get("verification_error", "")
+                    else:
+                        passed = meta.get("passed", False)
+                        error = meta.get("error", "")
+
+                    # Try to find model output from conversation/log files
+                    output_text = ""
+                    task_dir = Path(root)
+                    for log_name in ("conversation.json", "log.json", "messages.json", "output.json"):
+                        log_path = task_dir / log_name
+                        if log_path.exists():
+                            try:
+                                with open(log_path) as lf:
+                                    log_data = json.load(lf)
+                                # Extract last assistant message from conversation
+                                if isinstance(log_data, list):
+                                    for msg in reversed(log_data):
+                                        if isinstance(msg, dict) and msg.get("role") == "assistant" and msg.get("content"):
+                                            output_text = msg["content"]
+                                            break
+                                    if not output_text:
+                                        output_text = json.dumps(log_data[-1], default=str)[:2000] if log_data else ""
+                                elif isinstance(log_data, dict):
+                                    output_text = log_data.get("output", "") or log_data.get("response", "") or json.dumps(log_data, default=str)[:2000]
+                            except (json.JSONDecodeError, OSError):
+                                pass
+                            break
+                    # Fallback: read execution.log, stdout.txt
+                    if not output_text:
+                        for txt_name in ("execution.log", "stdout.txt", "output.txt"):
+                            txt_path = task_dir / txt_name
+                            if txt_path.exists():
+                                try:
+                                    output_text = txt_path.read_text()[:2000]
+                                except OSError:
+                                    pass
+                                break
+
+                    # Build input description from meta
+                    model_cfg = meta.get("model_config", {})
+                    input_desc = f"[{service}] {task_name}"
+                    if model_cfg.get("agent_name"):
+                        input_desc += f" (agent: {model_cfg['agent_name']})"
 
                     results.append({
                         "id": f"{service}/{task_name}",
                         "service": service,
                         "task": task_name,
-                        "input": meta.get("instruction", task_name),
+                        "input": input_desc,
                         "expected": "Task completion verified by verify.py",
-                        "output": execution_log[:2000] if execution_log else "",
+                        "output": output_text[:2000],
                         "score": 1.0 if passed else 0.0,
                         "success": passed,
-                        "reason": error if not passed else "passed",
+                        "reason": error if not passed else (
+                            exec_result.get("verification_output", "passed")
+                            if isinstance(exec_result, dict) else "passed"
+                        ),
                     })
                 except (json.JSONDecodeError, OSError) as e:
                     logger.warning(f"Failed to parse {meta_path}: {e}")

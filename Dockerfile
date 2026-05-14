@@ -43,6 +43,7 @@ RUN --mount=type=cache,target=/root/.cache/uv \
       'bfcl-eval==2025.10.27.1' \
       'git+https://github.com/sierra-research/tau-bench' \
     && uv pip install tree-sitter-java tree-sitter-javascript rank-bm25 \
+      'mistralai<2' \
       anthropic sentence-transformers faiss-cpu cohere \
       google-genai 'mistralai>=1.0.0' boto3 overrides tenacity \
       qwen-agent writerai mpmath html2text google-search-results

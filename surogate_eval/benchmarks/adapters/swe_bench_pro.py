@@ -2,6 +2,7 @@ from typing import Any, Dict
 
 from evalscope.api.benchmark import BenchmarkMeta, DefaultDataAdapter
 from evalscope.api.dataset import Sample
+from evalscope.api.messages import ChatMessageUser
 from evalscope.api.registry import register_benchmark
 from evalscope.constants import Tags
 
@@ -27,7 +28,7 @@ with complex multi-step debugging and refactoring requirements.
         few_shot_num=0,
         train_split=None,
         eval_split='test',
-        prompt_template='{problem_statement}',
+        prompt_template='',
     )
 )
 class SWEBenchProAdapter(DefaultDataAdapter):
@@ -42,4 +43,4 @@ class SWEBenchProAdapter(DefaultDataAdapter):
             'instance_id': record.get('instance_id', ''),
             'repo': record.get('repo', ''),
         }
-        return Sample(input=prompt, target=str(target), metadata=metadata)
+        return Sample(input=[ChatMessageUser(content=prompt)] if prompt else prompt, target=str(target), metadata=metadata)

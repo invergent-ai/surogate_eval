@@ -7,6 +7,33 @@ from pathlib import Path
 
 import requests
 
+# ── tree-sitter compat patch ──────────────────────────────────────
+# bfcl_eval calls Language(tree_sitter_java.language(), "java") (old
+# 2-arg API) but tree-sitter >=0.22 only accepts 1 arg.  Patch
+# Language.__init__ to silently drop the second arg so both APIs work.
+try:
+    import tree_sitter as _ts
+
+    _orig_lang_init = _ts.Language.__init__
+
+    def _compat_lang_init(self, *args, **kwargs):
+        if len(args) == 2 and isinstance(args[1], str):
+            # Old API: Language(ptr, "java") → drop the name
+            return _orig_lang_init(self, args[0], **kwargs)
+        return _orig_lang_init(self, *args, **kwargs)
+
+    _ts.Language.__init__ = _compat_lang_init
+
+    # Also patch Parser.set_language → Parser.language setter.
+    # Old API: parser.set_language(lang)
+    # New API: parser.language = lang
+    if not hasattr(_ts.Parser, 'set_language'):
+        def _set_language(self, lang):
+            self.language = lang
+        _ts.Parser.set_language = _set_language
+except Exception:
+    pass
+
 _original_request = requests.Session.request
 
 
@@ -124,7 +151,7 @@ class EvalScopeBackend:
         'deep_planning': 'deep_planning',
         'wide_search': 'wide_search',
         'mcp_atlas': 'mcp_atlas',
-        'vita_bench': 'vita_bench',
+        'text_to_sql': 'text_to_sql',
 
         # ── Chat / multi-turn ─────────────────────────────────────
         'mt_bench': 'mt_bench',
@@ -217,6 +244,18 @@ class EvalScopeBackend:
         'bfcl_v3': {'dataset_id': 'modelscope/bfcl_v3'},
         'olympiad_bench': {'dataset_id': 'modelscope/OlympiadBench'},
         'needle_haystack': {'dataset_id': 'modelscope/Needle-in-a-Haystack-Corpus'},
+        # ── HuggingFace-only datasets ─────────────────────────────
+        'drop': {'hub': 'huggingface'},
+        'squad': {'hub': 'huggingface'},
+        'triviaqa': {'hub': 'huggingface'},
+        'boolq': {'hub': 'huggingface'},
+        'lambada': {'hub': 'huggingface'},
+        'commonsenseqa': {'hub': 'huggingface'},
+        'piqa': {'hub': 'huggingface'},
+        'race': {'hub': 'huggingface'},
+        'sciq': {'hub': 'huggingface'},
+        'pubmedqa': {'hub': 'huggingface'},
+        'health_bench': {'hub': 'huggingface'},
         # ── Only on .cn — use .cn domain ──────────────────────────
         'ifeval': {'domain': 'www.modelscope.cn'},
         'gpqa_diamond': {'domain': 'www.modelscope.cn'},
@@ -232,12 +271,12 @@ class EvalScopeBackend:
         'arc': {'domain': 'www.modelscope.cn'},
         # Custom adapters — all on .cn
         'deep_planning': {'domain': 'www.modelscope.cn'},
-        'wide_search': {'domain': 'www.modelscope.cn'},
+        'wide_search': {'hub': 'huggingface'},
         'mcp_atlas': {'domain': 'www.modelscope.cn'},
-        'vita_bench': {'domain': 'www.modelscope.cn'},
         'swe_bench_pro': {'domain': 'www.modelscope.cn'},
         'swe_bench_multilingual': {'domain': 'www.modelscope.cn'},
         'mt_bench': {'hub': 'huggingface'},
+        'text_to_sql': {'hub': 'huggingface'},
         # Vision — all on .cn
         'mmmu': {'domain': 'www.modelscope.cn'},
         'mmmu_pro': {'domain': 'www.modelscope.cn'},
@@ -329,6 +368,9 @@ class EvalScopeBackend:
 
                 logger.info(f"Running EvalScope task for dataset: {evalscope_dataset}")
 
+                # Pre-run: apply configurable max_num_steps for tau_bench.
+                self._apply_tau_bench_max_turns(evalscope_dataset, config)
+
                 # Run the task
                 results = run_task(task_cfg=task_config)
 
@@ -402,7 +444,14 @@ class EvalScopeBackend:
                 logger.debug(f"Predictions directory not found: {reviews_dir}")
                 return detailed_results
 
-        for review_file in reviews_dir.glob(f'{dataset_name}*.jsonl'):
+        # Use underscore glob to avoid matching prefixes (e.g. mmmu vs mmmu_pro)
+        matches = list(reviews_dir.glob(f'{dataset_name}_*.jsonl'))
+        if not matches:
+            # Fallback: exact match without subset suffix
+            exact = reviews_dir / f'{dataset_name}.jsonl'
+            if exact.exists():
+                matches = [exact]
+        for review_file in matches:
             logger.debug(f"Loading reviews from: {review_file}")
             try:
                 with open(review_file, 'r') as f:
@@ -413,26 +462,85 @@ class EvalScopeBackend:
                             # Extract score from EvalScope's nested structure
                             # sample_score.score.value.acc
                             score = 0.0
+                            score_details = {}
                             sample_score = sample.get('sample_score', {})
                             if sample_score:
                                 score_obj = sample_score.get('score', {})
                                 if score_obj:
                                     value = score_obj.get('value', {})
                                     if isinstance(value, dict):
-                                        # Get 'acc' or first available metric
-                                        score = value.get('acc', 0.0)
+                                        score_details = value
+                                        # Try main_score_name first (set by evalscope)
+                                        main_name = score_obj.get('main_score_name')
+                                        if main_name and main_name in value:
+                                            score = float(value[main_name])
+                                        else:
+                                            # Get 'acc' or first available metric
+                                            score = value.get('acc', 0.0)
                                         if score == 0.0:
-                                            # Try other common metric names
-                                            for key in ['accuracy', 'correct', 'score']:
+                                            # Try common metric names across benchmarks
+                                            for key in [
+                                                'accuracy', 'correct', 'score',
+                                                'resolved', 'passed', 'pass',
+                                                'is_correct',          # simple_qa, simple_vqa
+                                                'prompt_level_strict', # IFEval/IFBench
+                                                'em', 'exact_match',   # DROP, drivelology
+                                                'f1',                  # DROP, tool_bench
+                                                'winrate',             # alpaca_eval
+                                                'overall_score',       # healthbench
+                                                'eq_bench_score',      # eq_bench
+                                                'total_score',         # mia_bench
+                                            ]:
                                                 if key in value:
-                                                    score = value[key]
+                                                    score = float(value[key])
                                                     break
+                                            # Last resort: average all numeric values
+                                            if score == 0.0 and value:
+                                                nums = [v for v in value.values()
+                                                        if isinstance(v, (int, float))]
+                                                if nums:
+                                                    score = sum(nums) / len(nums)
                                     elif isinstance(value, (int, float)):
                                         score = float(value)
 
                             # Extract input, target, and prediction
                             input_text = sample.get('input', '')
                             expected = sample.get('target', '')
+
+                            # For IFEval-style benchmarks: extract prompt from
+                            # messages or metadata when top-level fields are empty
+                            if not input_text:
+                                msgs = sample.get('messages', [])
+                                for m in msgs:
+                                    if isinstance(m, dict) and m.get('role') == 'user':
+                                        input_text = m.get('content', '')
+                                        break
+                            if not expected or len(expected) > 2000:
+                                # Build a human-readable expected from metadata
+                                meta = sample_score.get('sample_metadata', {})
+
+                                # IFEval/IFBench: instruction constraints
+                                instructions = meta.get('instruction_id_list', [])
+                                kwargs_list = meta.get('kwargs', [])
+                                if instructions:
+                                    parts = []
+                                    for idx, inst in enumerate(instructions):
+                                        kw = kwargs_list[idx] if idx < len(kwargs_list) else {}
+                                        kw_str = ', '.join(
+                                            f'{k}={v}' for k, v in (kw or {}).items()
+                                            if v is not None
+                                        )
+                                        parts.append(f'{inst}({kw_str})' if kw_str else inst)
+                                    expected = ' | '.join(parts)
+
+                                # SWE-bench: show instance_id + repo instead of full patch
+                                elif meta.get('instance_id'):
+                                    instance_id = meta['instance_id']
+                                    repo = meta.get('repo', '')
+                                    difficulty = meta.get('difficulty', '')
+                                    expected = f'{instance_id} ({repo})' + (
+                                        f' [{difficulty}]' if difficulty else ''
+                                    )
 
                             # Get the model's prediction/output
                             prediction = ''
@@ -445,11 +553,12 @@ class EvalScopeBackend:
                             detailed_results.append({
                                 'input': input_text,
                                 'expected': expected,
-                                'output': extracted or prediction[:500],  # Use extracted answer or truncated prediction
+                                'output': extracted or prediction[:500],
                                 'raw_output': prediction,
                                 'score': float(score),
+                                'score_details': score_details,
                                 'success': float(score) > 0,
-                                'subset': sample.get('sample_score', {}).get('sample_metadata', {}).get('subject', ''),
+                                'subset': sample_score.get('sample_metadata', {}).get('subject', ''),
                                 'metadata': sample
                             })
 
@@ -595,7 +704,7 @@ class EvalScopeBackend:
             import subprocess, tempfile
 
             def _match_score_nosandbox(self, original_prediction, filtered_prediction, reference, task_state):
-                from evalscope.api.dataset import Score
+                from evalscope.api.metric import Score
                 score = Score(
                     extracted_prediction=filtered_prediction,
                     prediction=original_prediction,
@@ -632,6 +741,34 @@ class EvalScopeBackend:
             logger.info("Patched MBPP adapter for subprocess execution (no sandbox)")
         except ImportError:
             logger.debug("MBPP adapter not available for patching")
+
+    @staticmethod
+    def _apply_tau_bench_max_turns(dataset_name: str, config: dict) -> None:
+        """Patch tau_bench's agent solve loop with configurable max turns.
+
+        The evalscope tau_bench adapter hardcodes ``max_num_steps=30`` in
+        its monkey-patched ``ToolCallingAgent.solve``.  If the user passed
+        ``backend_params.max_turns``, we re-patch the method to use that
+        value instead.
+        """
+        if dataset_name not in ('tau_bench', 'tau2_bench'):
+            return
+        bp = config.get('backend_params', {}) or {}
+        max_turns = bp.get('max_turns')
+        if max_turns is None:
+            return
+        max_turns = int(max_turns)
+        try:
+            from tau_bench.agents.tool_calling_agent import ToolCallingAgent
+            original_solve = ToolCallingAgent.solve
+
+            def _solve_with_limit(self, env, task_index=None, max_num_steps=max_turns):
+                return original_solve(self, env, task_index=task_index, max_num_steps=max_num_steps)
+
+            ToolCallingAgent.solve = _solve_with_limit
+            logger.info(f"Patched tau_bench max_num_steps to {max_turns}")
+        except ImportError:
+            logger.debug("tau_bench not installed, skipping max_turns patch")
 
     def _prepare_task_config(
             self,
@@ -810,6 +947,55 @@ class EvalScopeBackend:
         if max_workers and max_workers > 1:
             task_cfg_dict['judge_worker_num'] = max_workers
             logger.debug(f"Setting judge_worker_num to {max_workers}")
+
+        # Inject judge model args for benchmarks that use LLM-as-judge.
+        # The judge target is passed via backend_params['judge_target'] by
+        # the runner when a judge_model config is present.
+        judge_target = bp.get('judge_target') or config.get('judge_target')
+        if judge_target and hasattr(judge_target, 'config'):
+            jcfg = judge_target.config
+            judge_url = jcfg.get('base_url', '')
+            judge_model = jcfg.get('model', '')
+            judge_key = jcfg.get('api_key', '')
+
+            # Benchmarks with numeric scoring (1-10) vs binary A/B pattern
+            _NUMERIC_JUDGE_BENCHMARKS = {
+                'mt_bench', 'text_to_sql', 'wide_search', 'tool_decathlon',
+                'deep_planning', 'hallusion_bench',
+            }
+            score_type = 'numeric' if dataset_name in _NUMERIC_JUDGE_BENCHMARKS else 'pattern'
+            task_cfg_dict['judge_model_args'] = {
+                'model_id': judge_model,
+                'api_url': judge_url,
+                'api_key': judge_key,
+                'score_type': score_type,
+            }
+            task_cfg_dict['judge_strategy'] = 'auto'
+            logger.info(f"Injected judge model args for {dataset_name}: model={judge_model}")
+
+            # Benchmarks that need a user simulator (tau_bench, tau2_bench)
+            # or other external model — override their extra_params with
+            # the judge target credentials so they don't use hardcoded defaults.
+            _USER_SIM_BENCHMARKS = {'tau_bench', 'tau2_bench'}
+            if dataset_name in _USER_SIM_BENCHMARKS:
+                if not task_cfg_dict.get('dataset_args'):
+                    task_cfg_dict['dataset_args'] = {}
+                if dataset_name not in task_cfg_dict['dataset_args']:
+                    task_cfg_dict['dataset_args'][dataset_name] = {}
+                ds_args = task_cfg_dict['dataset_args'][dataset_name]
+                if 'extra_params' not in ds_args:
+                    ds_args['extra_params'] = {}
+                ds_args['extra_params']['user_model'] = judge_model
+                ds_args['extra_params']['api_key'] = judge_key
+                ds_args['extra_params']['api_base'] = judge_url
+                # Pass configurable max turns and generation config.
+                max_turns = backend_params.get('max_turns')
+                if max_turns is not None:
+                    ds_args['extra_params']['max_num_steps'] = int(max_turns)
+                gen_cfg = backend_params.get('generation_config')
+                if gen_cfg and isinstance(gen_cfg, dict):
+                    ds_args['extra_params']['generation_config'] = gen_cfg
+                logger.info(f"Injected user simulator config for {dataset_name}: model={judge_model}")
 
         return TaskConfig(**task_cfg_dict)
 

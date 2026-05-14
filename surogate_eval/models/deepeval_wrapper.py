@@ -66,13 +66,19 @@ class DeepEvalTargetWrapper(DeepEvalBaseLLM):
         if response.error:
             logger.error(f"Target returned error: {response.error}")
             if schema:
-                return schema.model_construct()
+                try:
+                    return schema(data=[])
+                except Exception:
+                    return schema.model_construct()
             return ""
 
         if not response.content:
             logger.warning(f"Empty response from target {self.target.name}")
             if schema:
-                return schema.model_construct()
+                try:
+                    return schema(data=[])
+                except Exception:
+                    return schema.model_construct()
             return ""
 
         content = response.content
@@ -107,8 +113,47 @@ class DeepEvalTargetWrapper(DeepEvalBaseLLM):
                     logger.info(f"Extracted JSON: {content[:300]}...")
                     json_result = json.loads(content)
                     return schema(**json_result)
+                except json.JSONDecodeError:
+                    # Truncated JSON — try to repair by closing open structures
+                    try:
+                        repaired = content.rstrip()
+                        # Close any open strings
+                        if repaired.count('"') % 2 != 0:
+                            repaired += '"'
+                        # Close open objects/arrays
+                        opens = sum(1 for c in repaired if c in '{[')
+                        closes = sum(1 for c in repaired if c in '}]')
+                        for _ in range(opens - closes):
+                            if repaired.rstrip().rstrip(',')[-1:] in ('{', '[', '"', ','):
+                                repaired = repaired.rstrip().rstrip(',')
+                            # Determine which bracket to close
+                            for ch in reversed(repaired):
+                                if ch == '{':
+                                    repaired += '}'
+                                    break
+                                elif ch == '[':
+                                    repaired += ']'
+                                    break
+                        json_result = json.loads(repaired)
+                        logger.info(f"Repaired truncated JSON ({len(content)} chars)")
+                        return schema(**json_result)
+                    except Exception:
+                        pass
                 except Exception as ex:
                     logger.error(f"Could not extract JSON from response: {ex}")
+                    # Return an empty but valid schema object.
+                    # schema() may fail if required fields have no defaults,
+                    # so try with common empty defaults first.
+                    for attempt in [
+                        lambda: schema(data=[]),  # SyntheticDataList
+                        lambda: schema(inputs=[]),
+                        lambda: schema(),
+                        lambda: schema.model_construct(data=[]),
+                    ]:
+                        try:
+                            return attempt()
+                        except Exception:
+                            continue
                     return schema.model_construct()
 
         return content

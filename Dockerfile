@@ -28,12 +28,6 @@ COPY pyproject.toml uv.lock README.md ./
 RUN --mount=type=cache,target=/root/.cache/uv \
     uv sync --frozen --no-dev --no-install-project --extra security
 
-# Install quarantined packages (stable, rarely changes)
-RUN --mount=type=cache,target=/root/.cache/uv \
-    uv pip install --no-deps \
-      'bfcl-eval==2025.10.27.1' \
-      'git+https://github.com/sierra-research/tau-bench'
-
 # ── builder: install project code on top of cached deps ───────────
 FROM deps AS builder
 
@@ -42,6 +36,16 @@ ARG VERSION
 COPY surogate_eval ./surogate_eval
 RUN --mount=type=cache,target=/root/.cache/uv \
     uv sync --frozen --no-dev --extra security
+
+# Install quarantined packages (after sync so they don't get overwritten)
+RUN --mount=type=cache,target=/root/.cache/uv \
+    uv pip install --no-deps \
+      'bfcl-eval==2025.10.27.1' \
+      'git+https://github.com/sierra-research/tau-bench' \
+    && uv pip install tree-sitter-java tree-sitter-javascript rank-bm25 \
+      anthropic sentence-transformers faiss-cpu cohere \
+      google-genai 'mistralai>=1.0.0' boto3 overrides tenacity \
+      qwen-agent writerai mpmath html2text google-search-results
 
 # ── runtime ───────────────────────────────────────────────────────
 FROM python:${PYTHON_VERSION}-slim-bookworm AS runtime
@@ -67,9 +71,10 @@ RUN curl -fsSL https://get.docker.com | sh \
 RUN mkdir -p /app && chown 1001:1001 /app
 WORKDIR /app
 
-# Copy venv (big layer — cached via deps stage)
+# Copy full venv from builder (one layer, ~8GB).
+# The deps stage caches the build so rebuilds are fast even if this
+# layer re-pushes on source changes.
 COPY --from=builder /app/.venv /app/.venv
-# Copy source (small layer — changes often)
 COPY --from=builder /app/surogate_eval /app/surogate_eval
 
 # Bundle example configs and datasets so jobs can reference them

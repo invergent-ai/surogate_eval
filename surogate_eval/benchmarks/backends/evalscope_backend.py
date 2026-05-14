@@ -463,11 +463,11 @@ class EvalScopeBackend:
                             # sample_score.score.value.acc
                             score = 0.0
                             score_details = {}
-                            sample_score = sample.get('sample_score', {})
+                            sample_score = sample.get('sample_score') or {}
                             if sample_score:
-                                score_obj = sample_score.get('score', {})
+                                score_obj = sample_score.get('score') or {}
                                 if score_obj:
-                                    value = score_obj.get('value', {})
+                                    value = score_obj.get('value') or {}
                                     if isinstance(value, dict):
                                         score_details = value
                                         # Try main_score_name first (set by evalscope)
@@ -517,7 +517,7 @@ class EvalScopeBackend:
                                         break
                             if not expected or len(expected) > 2000:
                                 # Build a human-readable expected from metadata
-                                meta = sample_score.get('sample_metadata', {})
+                                meta = (sample_score.get('sample_metadata') or {})
 
                                 # IFEval/IFBench: instruction constraints
                                 instructions = meta.get('instruction_id_list', [])
@@ -546,9 +546,9 @@ class EvalScopeBackend:
                             prediction = ''
                             extracted = ''
                             if sample_score:
-                                score_obj = sample_score.get('score', {})
-                                prediction = score_obj.get('prediction', '')
-                                extracted = score_obj.get('extracted_prediction', '')
+                                score_obj = sample_score.get('score') or {}
+                                prediction = score_obj.get('prediction', '') or ''
+                                extracted = score_obj.get('extracted_prediction', '') or ''
 
                             detailed_results.append({
                                 'input': input_text,
@@ -558,7 +558,7 @@ class EvalScopeBackend:
                                 'score': float(score),
                                 'score_details': score_details,
                                 'success': float(score) > 0,
-                                'subset': sample_score.get('sample_metadata', {}).get('subject', ''),
+                                'subset': (sample_score.get('sample_metadata') or {}).get('subject', ''),
                                 'metadata': sample
                             })
 
@@ -923,8 +923,23 @@ class EvalScopeBackend:
             task_cfg_dict['dataset_args'][dataset_name]['subset_list'] = ['default']
             logger.info(f"Retrying with 'default' subset for dataset: {dataset_name}")
 
-        # Add backend params for concurrency and batching
+        # Pass extra_params for benchmarks that support them
+        # (terminal-bench, tau-bench, etc.)
         backend_params = config.get('backend_params', {})
+        _EXTRA_PARAM_KEYS = ('timeout_multiplier', 'max_turns', 'environment_type', 'agent_name')
+        extra_from_bp = {k: backend_params[k] for k in _EXTRA_PARAM_KEYS if k in backend_params}
+        if extra_from_bp:
+            if 'dataset_args' not in task_cfg_dict:
+                task_cfg_dict['dataset_args'] = {}
+            if dataset_name not in task_cfg_dict['dataset_args']:
+                task_cfg_dict['dataset_args'][dataset_name] = {}
+            ds_args = task_cfg_dict['dataset_args'][dataset_name]
+            if 'extra_params' not in ds_args:
+                ds_args['extra_params'] = {}
+            ds_args['extra_params'].update(extra_from_bp)
+            logger.info(f"Passed extra_params for {dataset_name}: {extra_from_bp}")
+
+        # Add backend params for concurrency and batching
 
         # Generation config - set defaults or use from backend_params
         if 'generation_config' not in task_cfg_dict:

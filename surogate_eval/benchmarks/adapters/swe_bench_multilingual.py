@@ -38,11 +38,34 @@ class SWEBenchMultilingualAdapter(DefaultDataAdapter):
         super().__init__(*args, **kwargs)
 
     def record_to_sample(self, record: Dict[str, Any]) -> Sample:
-        prompt = record.get('problem_statement') or record.get('prompt') or record.get('input', '')
-        target = record.get('patch') or record.get('answer') or record.get('expected_output', '')
+        problem = record.get('problem_statement', '')
+        hints = record.get('hints_text', '')
+        repo = record.get('repo', '')
+
+        parts = [
+            "You will be provided with a partial code base and an issue statement "
+            "explaining a problem to resolve. Generate a patch (unified diff format) "
+            "that resolves the issue.\n"
+        ]
+        if problem:
+            parts.append(f"<issue>\n{problem}\n</issue>\n")
+        if hints:
+            parts.append(f"<hints>\n{hints}\n</hints>\n")
+        if repo:
+            parts.append(f"Repository: {repo}\n")
+        parts.append(
+            "Please provide your fix as a unified diff (patch). "
+            "Only output the diff, nothing else."
+        )
+
+        prompt = "\n".join(parts)
+        target = record.get('patch') or ''
         metadata = {
             'instance_id': record.get('instance_id', ''),
-            'repo': record.get('repo', ''),
-            'language': record.get('language', ''),
+            'repo': repo,
         }
-        return Sample(input=[ChatMessageUser(content=prompt)] if prompt else prompt, target=str(target), metadata=metadata)
+        return Sample(
+            input=[ChatMessageUser(content=prompt)],
+            target=str(target),
+            metadata=metadata,
+        )

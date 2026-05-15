@@ -48,11 +48,18 @@ class CustomEvalBackend:
             split: str = 'test',
             limit: Optional[int] = None
     ) -> Dataset:
-        """Load dataset from HuggingFace, LakeFS, or local file."""
+        """Load dataset from HuggingFace, Hub (surogate-hub), LakeFS, or local file."""
         logger.info(f"Loading dataset from: {source}")
 
+        # Handle Hub URLs — hub://{user}/{repo}/{ref}
+        # Downloads all dataset files from the Hub REST API.
+        if source.startswith('hub://'):
+            local_path = self._download_from_hub(source)
+            logger.info(f"Downloaded Hub dataset to: {local_path}")
+            source = local_path
+
         # Handle LakeFS URLs
-        if source.startswith('lakefs://'):
+        elif source.startswith('lakefs://'):
             from surogate_eval.datasets import DatasetLoader
             loader = DatasetLoader()
             local_path = loader._download_from_lakefs(source)
@@ -85,6 +92,79 @@ class CustomEvalBackend:
             logger.info(f"Limited dataset to {limit} rows")
 
         return dataset
+
+    def _download_from_hub(self, hub_uri: str) -> str:
+        """Download a dataset from the surogate-hub REST API.
+
+        URI format: hub://{user}/{repo}/{ref}
+        Env vars: HUBCTL_SERVER_ENDPOINT_URL, HUBCTL_CREDENTIALS_ACCESS_KEY_ID,
+                  HUBCTL_CREDENTIALS_SECRET_ACCESS_KEY
+        """
+        import requests
+        import urllib3
+        urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
+
+        parts = hub_uri.replace('hub://', '').split('/', 2)
+        if len(parts) < 3:
+            raise ValueError(f"Invalid Hub URI: {hub_uri}. Expected hub://user/repo/ref")
+
+        user, repo, ref = parts[0], parts[1], parts[2]
+
+        endpoint = os.environ.get('HUBCTL_SERVER_ENDPOINT_URL')
+        access_key = os.environ.get('HUBCTL_CREDENTIALS_ACCESS_KEY_ID')
+        secret_key = os.environ.get('HUBCTL_CREDENTIALS_SECRET_ACCESS_KEY')
+
+        if not all([endpoint, access_key, secret_key]):
+            raise ValueError(
+                "Hub credentials not configured. Set environment variables: "
+                "HUBCTL_SERVER_ENDPOINT_URL, HUBCTL_CREDENTIALS_ACCESS_KEY_ID, "
+                "HUBCTL_CREDENTIALS_SECRET_ACCESS_KEY"
+            )
+
+        base_url = endpoint.rstrip('/')
+        if '/api/v1' not in base_url:
+            base_url += '/api/v1'
+
+        auth = (access_key, secret_key)
+
+        # List objects to find dataset files
+        list_url = f"{base_url}/repositories/{user}/{repo}/refs/{ref}/objects/ls"
+        resp = requests.get(list_url, auth=auth, verify=False, timeout=30)
+        resp.raise_for_status()
+        objects = resp.json().get('results', [])
+
+        # Find the first dataset file (.jsonl, .json, .csv, .parquet)
+        dataset_extensions = {'.jsonl', '.json', '.csv', '.parquet'}
+        dataset_file = None
+        for obj in objects:
+            obj_path = obj.get('path', '')
+            if Path(obj_path).suffix.lower() in dataset_extensions:
+                dataset_file = obj_path
+                break
+
+        if not dataset_file:
+            raise FileNotFoundError(
+                f"No dataset file found in hub://{user}/{repo}/{ref}. "
+                f"Found: {[o.get('path') for o in objects]}"
+            )
+
+        logger.info(f"Downloading from Hub: {user}/{repo}@{ref} -> {dataset_file}")
+
+        # Download the file
+        get_url = f"{base_url}/repositories/{user}/{repo}/refs/{ref}/objects"
+        resp = requests.get(
+            get_url, auth=auth, verify=False, timeout=120,
+            params={'path': dataset_file},
+        )
+        resp.raise_for_status()
+
+        suffix = Path(dataset_file).suffix
+        temp_file = tempfile.NamedTemporaryFile(delete=False, suffix=suffix)
+        temp_file.write(resp.content)
+        temp_file.close()
+
+        logger.info(f"Downloaded {len(resp.content)} bytes to {temp_file.name}")
+        return temp_file.name
 
     def _get_column_value(self, row: Dict[str, Any], columns: Dict[str, str], key: str, default: Any = None) -> Any:
         """Get column value using column mapping."""
@@ -191,10 +271,35 @@ class CustomEvalBackend:
             config: Dict[str, Any],
             columns: Dict[str, str]
     ) -> List[Dict[str, Any]]:
-        """Evaluate exact_match rows using LM-Eval backend."""
+        """Evaluate exact_match rows.
+
+        Uses lm-eval when a tokenizer is available (local models), otherwise
+        falls back to direct inference + string comparison (API-only models).
+        """
         if not rows:
             return []
 
+        # Use lm-eval only when a tokenizer is explicitly set (local models).
+        # For API-only models, direct inference is more reliable (lm-eval
+        # uses /completions which many providers don't support).
+        tokenizer = config.get('tokenizer') or target.config.get('tokenizer')
+        if tokenizer:
+            try:
+                return self._evaluate_exact_match_lm_eval(rows, target, config, columns, tokenizer)
+            except Exception as e:
+                logger.warning(f"lm-eval exact_match failed, falling back to direct inference: {e}")
+
+        return self._evaluate_exact_match_direct(rows, target, config, columns)
+
+    def _evaluate_exact_match_lm_eval(
+            self,
+            rows: List[Dict[str, Any]],
+            target: BaseTarget,
+            config: Dict[str, Any],
+            columns: Dict[str, str],
+            tokenizer: str,
+    ) -> List[Dict[str, Any]]:
+        """Evaluate exact_match rows using LM-Eval backend."""
         logger.info(f"Evaluating {len(rows)} exact_match rows with lm-eval")
 
         from .lm_eval_backend import LMEvalBackend
@@ -226,7 +331,7 @@ class CustomEvalBackend:
                 'split': 'test',
                 'num_fewshot': 0,
                 'max_tokens': config.get('max_tokens', 256),
-                'tokenizer': config.get('tokenizer') or target.config.get('tokenizer'),
+                'tokenizer': tokenizer,
                 'batch_size': config.get('batch_size', 1),
                 'stop_sequences': config.get('stop_sequences'),
                 'system_prompt': config.get('system_prompt'),
@@ -269,7 +374,7 @@ class CustomEvalBackend:
                 }
                 results.append(result)
 
-            logger.info(f"Completed exact_match: {sum(r['success'] for r in results)}/{len(results)} correct")
+            logger.info(f"Completed exact_match (lm-eval): {sum(r['success'] for r in results)}/{len(results)} correct")
             return results
 
         finally:
@@ -277,6 +382,80 @@ class CustomEvalBackend:
                 os.unlink(temp_path)
             except Exception:
                 pass
+
+    def _evaluate_exact_match_direct(
+            self,
+            rows: List[Dict[str, Any]],
+            target: BaseTarget,
+            config: Dict[str, Any],
+            columns: Dict[str, str]
+    ) -> List[Dict[str, Any]]:
+        """Evaluate exact_match rows via direct inference + string comparison."""
+        logger.info(f"Evaluating {len(rows)} exact_match rows (direct inference)")
+
+        from surogate_eval.targets.base import TargetRequest
+
+        system_prompt = config.get('system_prompt')
+        results = []
+
+        for row in rows:
+            original_idx = row['_original_idx']
+            instruction = self._get_column_value(row, columns, 'instruction', '')
+            expected = self._get_column_value(row, columns, 'answer', '')
+
+            try:
+                if system_prompt:
+                    messages = [
+                        {"role": "system", "content": system_prompt},
+                        {"role": "user", "content": instruction},
+                    ]
+                    request = TargetRequest(messages=messages)
+                else:
+                    request = TargetRequest(prompt=instruction)
+                response = target.send_request(request)
+                raw_output = response.content
+
+                # Normalize output for comparison
+                normalized_output = self._normalize_output(raw_output, expected)
+
+                # Compare normalized output against expected answer
+                expected_clean = expected.strip().lower()
+                output_clean = normalized_output.strip().lower()
+
+                success = (
+                    expected_clean == output_clean
+                    or expected_clean in output_clean
+                    or output_clean.startswith(expected_clean)
+                )
+
+                results.append({
+                    'original_idx': original_idx,
+                    'eval_type': 'exact_match',
+                    'instruction': instruction,
+                    'expected': expected,
+                    'output': normalized_output,
+                    'raw_output': raw_output,
+                    'score': 1.0 if success else 0.0,
+                    'success': success,
+                    'reason': 'Exact match' if success else 'No match',
+                })
+
+            except Exception as e:
+                logger.error(f"Inference error for row {original_idx}: {e}")
+                results.append({
+                    'original_idx': original_idx,
+                    'eval_type': 'exact_match',
+                    'instruction': instruction,
+                    'expected': expected,
+                    'output': '',
+                    'raw_output': '',
+                    'score': 0.0,
+                    'success': False,
+                    'reason': f'Inference error: {str(e)}',
+                })
+
+        logger.info(f"Completed exact_match (direct): {sum(r['success'] for r in results)}/{len(results)} correct")
+        return results
 
     def _evaluate_judge_rows(
             self,
@@ -295,11 +474,14 @@ class CustomEvalBackend:
 
         logger.info(f"Evaluating {len(rows)} judge rows with G-Eval")
 
-        judge_model = None
+        from surogate_eval.models.deepeval_wrapper import DeepEvalTargetWrapper
         if judge_target:
-            from surogate_eval.models.deepeval_wrapper import DeepEvalTargetWrapper
             judge_model = DeepEvalTargetWrapper(judge_target)
             logger.info(f"Using judge target: {judge_target.name}")
+        else:
+            # Fall back to the eval target itself as judge
+            judge_model = DeepEvalTargetWrapper(target)
+            logger.info(f"No judge configured, using target as judge: {target.name}")
 
         default_criteria = config.get(
             'judge_criteria',
@@ -326,7 +508,15 @@ class CustomEvalBackend:
             # Get model output
             try:
                 from surogate_eval.targets.base import TargetRequest
-                request = TargetRequest(prompt=prompt)
+                system_prompt = config.get('system_prompt')
+                if system_prompt:
+                    messages = [
+                        {"role": "system", "content": system_prompt},
+                        {"role": "user", "content": prompt},
+                    ]
+                    request = TargetRequest(messages=messages)
+                else:
+                    request = TargetRequest(prompt=prompt)
                 response = target.send_request(request)
                 raw_output = response.content
 

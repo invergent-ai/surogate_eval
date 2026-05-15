@@ -47,7 +47,8 @@ RUN --mount=type=cache,target=/root/.cache/uv \
       anthropic sentence-transformers faiss-cpu cohere \
       google-genai 'mistralai>=1.0.0' boto3 overrides tenacity \
       qwen-agent writerai mpmath html2text google-search-results \
-      soundfile librosa opencv-python-headless
+      soundfile librosa opencv-python-headless \
+      datamodel-code-generator
 
 # ── runtime ───────────────────────────────────────────────────────
 FROM python:${PYTHON_VERSION}-slim-bookworm AS runtime
@@ -89,13 +90,17 @@ COPY examples ./examples
 ENV PATH="/app/.venv/bin:/usr/local/bin:${PATH}" \
     PYTHONDONTWRITEBYTECODE=1 \
     PYTHONUNBUFFERED=1 \
-    # Telemetry opt-outs
+# Telemetry opt-outs
     DEEPEVAL_TELEMETRY_OPT_OUT=1 \
     DEEPEVAL_FILE_SYSTEM=READ_ONLY \
     # Trust remote code for HF datasets / models
     HF_DATASETS_TRUST_REMOTE_CODE=1 \
     HF_ALLOW_CODE_EVAL=1 \
     TRUST_REMOTE_CODE=1
+
+# Pre-download gpt2 tokenizer so API-only models can use lm-eval
+# without a network fetch at runtime.
+RUN /app/.venv/bin/python -c "from transformers import AutoTokenizer; AutoTokenizer.from_pretrained('gpt2')"
 
 # Results are written here; mount a volume to persist them
 RUN mkdir -p /app/eval_results && chown 1001:1001 /app/eval_results

@@ -245,6 +245,7 @@ class EvalScopeBackend:
         'olympiad_bench': {'dataset_id': 'modelscope/OlympiadBench'},
         'needle_haystack': {'dataset_id': 'modelscope/Needle-in-a-Haystack-Corpus'},
         # ── HuggingFace-only datasets ─────────────────────────────
+        'mmlu_pro': {'hub': 'huggingface'},
         'drop': {'hub': 'huggingface'},
         'squad': {'hub': 'huggingface'},
         'triviaqa': {'hub': 'huggingface'},
@@ -370,6 +371,10 @@ class EvalScopeBackend:
 
                 # Pre-run: apply configurable max_num_steps for tau_bench.
                 self._apply_tau_bench_max_turns(evalscope_dataset, config)
+
+                # Patch MCQ answer extraction to handle models that
+                # don't follow the exact ANSWER: format.
+                self._patch_mcq_extract_answer(evalscope_dataset)
 
                 # Run the task
                 results = run_task(task_cfg=task_config)
@@ -741,6 +746,65 @@ class EvalScopeBackend:
             logger.info("Patched MBPP adapter for subprocess execution (no sandbox)")
         except ImportError:
             logger.debug("MBPP adapter not available for patching")
+
+    # MCQ vision benchmarks that use letter-based answers (A/B/C/D).
+    _MCQ_BENCHMARKS = {
+        'real_world_qa', 'mmmu', 'mmmu_pro', 'mm_bench', 'mm_star',
+        'science_qa', 'a_okvqa', 'ai2d', 'seed_bench_2_plus',
+    }
+
+    @staticmethod
+    def _patch_mcq_extract_answer(dataset_name: str) -> None:
+        """Patch MCQ benchmark adapters with a more robust answer extractor.
+
+        Models often respond with explanations before the answer letter,
+        or omit the ``ANSWER:`` prefix.  This wraps the original
+        ``extract_answer`` to fall back to extracting a standalone
+        letter (A-J) from the end of the response.
+        """
+        import re as _re
+        if dataset_name not in EvalScopeBackend._MCQ_BENCHMARKS:
+            return
+        try:
+            from evalscope.api.registry import BENCHMARK_REGISTRY
+            meta = BENCHMARK_REGISTRY.get(dataset_name)
+            if meta is None:
+                return
+            adapter_cls = meta.data_adapter
+            if adapter_cls is None:
+                return
+
+            original = adapter_cls.extract_answer
+
+            def _robust_extract(self, prediction: str, task_state=None) -> str:
+                # Try original first
+                result = original(self, prediction, task_state)
+                if result:
+                    return result
+                # Fallback: find ANSWER: pattern (case-insensitive)
+                matches = _re.findall(r'(?i)answer\s*[:=]\s*([A-Ja-j])', prediction)
+                if matches:
+                    return matches[-1].strip().lower()
+                # Fallback: \boxed{X} (LaTeX)
+                matches = _re.findall(r'\\boxed\{([A-Ja-j])\}', prediction)
+                if matches:
+                    return matches[-1].lower()
+                # Fallback: last standalone letter on its own line
+                lines = prediction.strip().splitlines()
+                for line in reversed(lines):
+                    line = line.strip().rstrip('.')
+                    if _re.fullmatch(r'[A-Ja-j]', line):
+                        return line.lower()
+                # Fallback: last letter in the response
+                matches = _re.findall(r'\b([A-Ja-j])\b', prediction)
+                if matches:
+                    return matches[-1].lower()
+                return ''
+
+            adapter_cls.extract_answer = _robust_extract
+            logger.info(f"Patched extract_answer for MCQ benchmark: {dataset_name}")
+        except Exception as e:
+            logger.debug(f"Could not patch extract_answer for {dataset_name}: {e}")
 
     @staticmethod
     def _apply_tau_bench_max_turns(dataset_name: str, config: dict) -> None:

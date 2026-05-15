@@ -50,20 +50,33 @@ class DeepEvalTargetWrapper(DeepEvalBaseLLM):
         return self.target
 
     def _is_openai_api(self) -> bool:
-        """Check if target is using OpenAI's API (not local/vLLM)."""
+        """Check if target uses an OpenAI-compatible API (not local/vLLM).
+
+        OpenAI-compatible APIs (OpenAI, OpenRouter, Anthropic proxies)
+        support ``response_format: {type: json_object}`` but NOT
+        ``guided_json``.  Local/vLLM endpoints support ``guided_json``.
+        """
         base_url = self.target.config.get('base_url', '')
         provider = self.target.config.get('provider', '')
 
-        # Check for local endpoints
+        # Cloud API providers that use JSON mode (not guided_json)
+        cloud_indicators = ['api.openai.com', 'openrouter.ai', 'anthropic.com',
+                            'api.together.xyz', 'api.groq.com', 'api.mistral.ai',
+                            'api.cohere.com', 'generativelanguage.googleapis.com']
+        if any(x in base_url for x in cloud_indicators):
+            return True
+
+        # Local endpoints use guided_json
         local_indicators = ['localhost', '127.0.0.1', '0.0.0.0', 'densemax', ':8000', ':8080', ':11434']
-        is_local = any(x in base_url for x in local_indicators)
+        if any(x in base_url for x in local_indicators):
+            return False
 
-        # It's OpenAI if:
-        # 1. Explicitly api.openai.com
-        # 2. Provider is openai AND not a local endpoint
-        is_openai = 'api.openai.com' in base_url or (provider == 'openai' and not is_local and not base_url)
+        # Provider is openai but no base_url — default OpenAI
+        if provider == 'openai' and not base_url:
+            return True
 
-        return is_openai
+        # Unknown — default to JSON mode (safer)
+        return True
 
     def generate(self, prompt: str, schema: Optional[BaseModel] = None) -> Union[str, BaseModel]:
         logger.info(f"Prompt preview: {prompt[:300]}...")

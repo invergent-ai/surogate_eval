@@ -7,6 +7,7 @@ from typing import Any, Dict, List
 from surogate_eval.backend import LocalBackend
 from surogate_eval.config.eval_config import TargetConfig
 from surogate_eval.runners import (
+    _write_progress,
     run_benchmarks,
     run_evaluation,
     run_guardrails_testing_async,
@@ -164,18 +165,22 @@ class SurogateEval(SurogateCommand):
         else:
             logger.warning(f"No evaluations specified for target '{target_name}'")
 
-        # Run benchmarks
-        for eval_config in evaluations:
-            benchmarks_config = eval_config.get("benchmarks", [])
-            if benchmarks_config:
-                logger.info(f"Running {len(benchmarks_config)} benchmark(s)")
-                benchmark_results = run_benchmarks(target, benchmarks_config, self._find_target_by_name)
-                if benchmark_results:
-                    if "benchmarks" not in target_result:
-                        target_result["benchmarks"] = []
-                    target_result["benchmarks"].extend(benchmark_results)
+        # Build unified task list: standard benchmarks + security tests.
+        # All go through the same loop with consistent progress tracking
+        # and per-benchmark result file writing.
+        red_teaming = target_config.red_teaming or {}
+        guardrails_cfg = target_config.guardrails or {}
 
-        # Run stress testing
+        tasks: list[tuple[str, Any]] = []
+        for eval_config in evaluations:
+            for bc in eval_config.get("benchmarks", []):
+                tasks.append(("benchmark", bc))
+        if red_teaming.get("enabled"):
+            tasks.append(("red_teaming", red_teaming))
+        if guardrails_cfg.get("enabled"):
+            tasks.append(("guardrails", guardrails_cfg))
+
+        # Run stress testing (separate — not a scored benchmark)
         stress_testing = target_config.stress_testing or {}
         if stress_testing.get("enabled"):
             logger.info(f"Running stress testing for target '{target_name}'")
@@ -183,31 +188,45 @@ class SurogateEval(SurogateCommand):
             if stress_result:
                 target_result["stress_testing"] = stress_result
 
-        # Run security tests
-        red_teaming = target_config.red_teaming or {}
-        guardrails = target_config.guardrails or {}
+        # Execute all tasks in one loop
+        from surogate_eval.runners import _run_single_benchmark, _write_bench_result
 
-        if red_teaming.get("enabled") or guardrails.get("enabled"):
-            async def run_security_tests():
-                results = {}
-                if red_teaming.get("enabled"):
-                    logger.info(f"Running red teaming for target '{target_name}'")
-                    results["red_teaming"] = await run_red_teaming_async(
-                        target, red_teaming, self._find_target_by_name
-                    )
-                if guardrails.get("enabled"):
-                    logger.info(f"Testing guardrails for target '{target_name}'")
-                    results["guardrails"] = await run_guardrails_testing_async(
-                        target, guardrails, self._find_target_by_name
-                    )
-                return results
+        total = len(tasks)
+        if total:
+            logger.separator(char="─")
+            logger.header(f"Running {total} Benchmark(s)")
+            logger.separator(char="─")
 
-            security_results = asyncio.run(run_security_tests())
+        for idx, (task_type, task_config) in enumerate(tasks):
+            if task_type == "benchmark":
+                name = task_config.get("name", "unknown")
+                _write_progress(name, idx, total)
+                result = _run_single_benchmark(target, task_config, self._find_target_by_name)
+                if result:
+                    if "benchmarks" not in target_result:
+                        target_result["benchmarks"] = []
+                    target_result["benchmarks"].append(result)
+                    _write_bench_result(result)
 
-            if "red_teaming" in security_results:
-                target_result["red_teaming"] = security_results["red_teaming"]
-            if "guardrails" in security_results:
-                target_result["guardrails"] = security_results["guardrails"]
+            elif task_type == "red_teaming":
+                _write_progress("red_teaming", idx, total)
+                logger.info(f"Running red teaming for target '{target_name}'")
+                rt_result = asyncio.run(
+                    run_red_teaming_async(target, task_config, self._find_target_by_name)
+                )
+                target_result["red_teaming"] = rt_result
+                _write_bench_result({"benchmark_name": "red_teaming", **rt_result})
+
+            elif task_type == "guardrails":
+                _write_progress("guardrails", idx, total)
+                logger.info(f"Testing guardrails for target '{target_name}'")
+                gr_result = asyncio.run(
+                    run_guardrails_testing_async(target, task_config, self._find_target_by_name)
+                )
+                target_result["guardrails"] = gr_result
+                _write_bench_result({"benchmark_name": "guardrails", **gr_result})
+
+        _write_progress("done", total, total)
 
         if backend:
             backend.shutdown()

@@ -1,6 +1,7 @@
 """Evaluation runners for different test types."""
 
 import asyncio
+import os
 from typing import Any, Callable, Dict, List, Optional
 
 from surogate_eval.targets import BaseTarget
@@ -247,10 +248,6 @@ def run_benchmarks(
     if not benchmark_configs:
         return []
 
-    logger.separator(char="─")
-    logger.header(f"Running {len(benchmark_configs)} Benchmark(s)")
-    logger.separator(char="─")
-
     results = []
     for bench_config in benchmark_configs:
         result = _run_single_benchmark(target, bench_config, find_target_fn)
@@ -258,6 +255,57 @@ def run_benchmarks(
             results.append(result)
 
     return results
+
+
+def _write_bench_result(result: Dict[str, Any]) -> None:
+    """Write an individual benchmark result to eval_results/bench_{name}.json."""
+    import json as _json
+    from enum import Enum as _Enum
+    from pathlib import Path as _Path
+
+    name = result.get("benchmark_name") or result.get("name", "unknown")
+    try:
+        out = _Path("eval_results")
+        out.mkdir(exist_ok=True)
+        path = out / f"bench_{name}.json"
+
+        def _convert_enum_keys(obj):
+            """Recursively convert enum keys/values to strings."""
+            if isinstance(obj, dict):
+                return {
+                    (k.value if isinstance(k, _Enum) else k): _convert_enum_keys(v)
+                    for k, v in obj.items()
+                }
+            if isinstance(obj, list):
+                return [_convert_enum_keys(i) for i in obj]
+            if isinstance(obj, _Enum):
+                return obj.value
+            return obj
+
+        with open(path, "w") as f:
+            _json.dump(_convert_enum_keys(result), f, indent=2, default=str)
+        logger.info(f"Benchmark result saved: {path}")
+    except Exception as e:
+        logger.warning(f"Failed to write benchmark result for {name}: {e}")
+
+
+def _write_progress(current_benchmark: str, completed: int, total: int) -> None:
+    """Write eval_results/progress.json so the monitor can show live status."""
+    import json as _json
+    from pathlib import Path as _Path
+
+    try:
+        out = _Path("eval_results")
+        out.mkdir(exist_ok=True)
+        path = out / "progress.json"
+        with open(path, "w") as f:
+            _json.dump({
+                "current_benchmark": current_benchmark,
+                "completed": completed,
+                "total": total,
+            }, f)
+    except Exception:
+        pass  # Best-effort
 
 
 def _run_single_benchmark(
@@ -347,7 +395,7 @@ def _run_single_benchmark(
         import traceback
         logger.debug(traceback.format_exc())
 
-        return {"benchmark": benchmark_name, "status": "failed", "error": str(e)}
+        return {"benchmark_name": benchmark_name, "status": "failed", "error": str(e)}
 
 
 def run_stress_testing(
@@ -426,27 +474,38 @@ async def run_red_teaming_async(
     logger.info(f"Running red-team scan for target '{target.name}'")
 
     try:
-        # Resolve simulator_model
-        simulator_model = red_team_config.get("simulator_model", "gpt-4o-mini")
+        # Resolve simulator_model — prefer explicit target ref, fall back
+        # to the target being tested so we never hit bare OpenAI calls.
+        simulator_model = red_team_config.get("simulator_model", None)
         if isinstance(simulator_model, dict) and simulator_model.get("target"):
             sim_target = find_target_fn(simulator_model["target"])
             if sim_target:
                 simulator_model = DeepEvalTargetWrapper(sim_target)
                 logger.info(f"Using target '{simulator_model.get_model_name()}' as simulator model")
             else:
-                logger.warning(f"Simulator target '{simulator_model['target']}' not found, using default")
-                simulator_model = "gpt-4o-mini"
+                logger.warning(f"Simulator target '{simulator_model['target']}' not found, falling back to eval target")
+                simulator_model = DeepEvalTargetWrapper(target)
+        elif isinstance(simulator_model, str) and not os.environ.get("OPENAI_API_KEY"):
+            logger.warning(f"No OPENAI_API_KEY for simulator_model='{simulator_model}', using eval target instead")
+            simulator_model = DeepEvalTargetWrapper(target)
+        elif simulator_model is None:
+            simulator_model = DeepEvalTargetWrapper(target)
 
         # Resolve evaluation_model
-        evaluation_model = red_team_config.get("evaluation_model", "gpt-4o-mini")
+        evaluation_model = red_team_config.get("evaluation_model", None)
         if isinstance(evaluation_model, dict) and evaluation_model.get("target"):
             eval_target = find_target_fn(evaluation_model["target"])
             if eval_target:
                 evaluation_model = DeepEvalTargetWrapper(eval_target)
                 logger.info(f"Using target '{evaluation_model.get_model_name()}' as evaluation model")
             else:
-                logger.warning(f"Evaluation target '{evaluation_model['target']}' not found, using default")
-                evaluation_model = "gpt-4o-mini"
+                logger.warning(f"Evaluation target '{evaluation_model['target']}' not found, falling back to eval target")
+                evaluation_model = DeepEvalTargetWrapper(target)
+        elif isinstance(evaluation_model, str) and not os.environ.get("OPENAI_API_KEY"):
+            logger.warning(f"No OPENAI_API_KEY for evaluation_model='{evaluation_model}', using eval target instead")
+            evaluation_model = DeepEvalTargetWrapper(target)
+        elif evaluation_model is None:
+            evaluation_model = DeepEvalTargetWrapper(target)
 
         config = RedTeamConfig(
             vulnerabilities=red_team_config.get("vulnerabilities", []),
@@ -545,14 +604,18 @@ async def run_guardrails_testing_async(
             ignore_errors=guardrails_config.get("ignore_errors", False),
         )
 
-        # Get judge target if specified
+        # Get judge target for refusal detection — fall back to the
+        # eval target itself so guardrails never fails for lack of a judge.
         judge_target = None
         if config.refusal_judge_model_target:
             judge_target = find_target_fn(config.refusal_judge_model_target)
             if not judge_target:
-                logger.warning(f"Judge target '{config.refusal_judge_model_target}' not found")
+                logger.warning(f"Judge target '{config.refusal_judge_model_target}' not found, using eval target")
             else:
                 logger.info(f"Using target '{judge_target.name}' as refusal judge")
+        if not judge_target:
+            judge_target = target
+            logger.info(f"Using eval target '{target.name}' as refusal judge")
 
         evaluator = GuardrailsEvaluator(target, config, judge_target)
         result = await evaluator.evaluate()

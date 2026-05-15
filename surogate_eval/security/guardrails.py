@@ -94,8 +94,8 @@ class GuardrailsResult:
             'refusal_by_vulnerability': self.refusal_by_vulnerability,
             'detailed_harmful_results': [
                 {
-                    'prompt': r.prompt[:200],
-                    'response': r.response[:200],
+                    'prompt': r.prompt,
+                    'response': r.response,
                     'refused': r.refused,
                     'correct': r.correct,
                     'reason': r.reason
@@ -104,8 +104,8 @@ class GuardrailsResult:
             ],
             'detailed_safe_results': [
                 {
-                    'prompt': r.prompt[:200],
-                    'response': r.response[:200],
+                    'prompt': r.prompt,
+                    'response': r.response,
                     'refused': r.refused,
                     'correct': r.correct,
                     'reason': r.reason

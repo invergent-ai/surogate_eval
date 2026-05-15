@@ -46,7 +46,8 @@ RUN --mount=type=cache,target=/root/.cache/uv \
       'mistralai<2' \
       anthropic sentence-transformers faiss-cpu cohere \
       google-genai 'mistralai>=1.0.0' boto3 overrides tenacity \
-      qwen-agent writerai mpmath html2text google-search-results
+      qwen-agent writerai mpmath html2text google-search-results \
+      soundfile librosa opencv-python-headless
 
 # ── runtime ───────────────────────────────────────────────────────
 FROM python:${PYTHON_VERSION}-slim-bookworm AS runtime
@@ -55,6 +56,10 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
       libgomp1 \
       ca-certificates \
       curl \
+      # soundfile / librosa need libsndfile
+      libsndfile1 \
+      # opencv needs libgl
+      libgl1 libglib2.0-0 \
       # weasyprint needs these for PDF report generation
       libpango-1.0-0 \
       libpangocairo-1.0-0 \

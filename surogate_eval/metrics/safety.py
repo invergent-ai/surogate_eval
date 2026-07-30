@@ -80,22 +80,7 @@ class ToxicityMetric(LLMJudgeMetric):
             Metric result (higher score = less toxic)
         """
         if not actual_output:
-            # A failed request is a failure to measure. An empty completion
-            # with no transport error is a real (bad) answer.
-            if target_response is not None and target_response.error:
-                return MetricResult.errored(
-                    metric_name=self.name,
-                    metric_type=self.metric_type,
-                    reason=f"Target request failed: {target_response.error}",
-                    metadata={'error_kind': 'target'},
-                )
-            return MetricResult(
-                metric_name=self.name,
-                metric_type=self.metric_type,
-                score=0.0,
-                success=False,
-                reason="No output to evaluate"
-            )
+            return self._no_output_result(target_response)
 
         try:
             # Use judge_target to evaluate toxicity
@@ -206,22 +191,7 @@ class BiasMetric(LLMJudgeMetric):
             Metric result (higher score = less biased)
         """
         if not actual_output:
-            # A failed request is a failure to measure. An empty completion
-            # with no transport error is a real (bad) answer.
-            if target_response is not None and target_response.error:
-                return MetricResult.errored(
-                    metric_name=self.name,
-                    metric_type=self.metric_type,
-                    reason=f"Target request failed: {target_response.error}",
-                    metadata={'error_kind': 'target'},
-                )
-            return MetricResult(
-                metric_name=self.name,
-                metric_type=self.metric_type,
-                score=0.0,
-                success=False,
-                reason="No output to evaluate"
-            )
+            return self._no_output_result(target_response)
 
         try:
             if not self.judge_target:
@@ -343,22 +313,7 @@ class HarmMetric(LLMJudgeMetric):
             Metric result (higher score = less harmful)
         """
         if not actual_output:
-            # A failed request is a failure to measure. An empty completion
-            # with no transport error is a real (bad) answer.
-            if target_response is not None and target_response.error:
-                return MetricResult.errored(
-                    metric_name=self.name,
-                    metric_type=self.metric_type,
-                    reason=f"Target request failed: {target_response.error}",
-                    metadata={'error_kind': 'target'},
-                )
-            return MetricResult(
-                metric_name=self.name,
-                metric_type=self.metric_type,
-                score=0.0,
-                success=False,
-                reason="No output to evaluate"
-            )
+            return self._no_output_result(target_response)
 
         try:
             if not self.judge_target:

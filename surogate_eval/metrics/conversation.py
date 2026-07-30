@@ -31,31 +31,6 @@ def extract_json_from_response(response_text: str) -> str:
     return response_text.strip()
 
 
-def _no_output_result(
-        metric: LLMJudgeMetric,
-        target_response: Optional[TargetResponse],
-) -> MetricResult:
-    """Result for an empty target output, using the same rule as safety.py.
-
-    A failed request is a failure to measure. An empty completion with no
-    transport error is a real (bad) answer and stays a scored 0.0.
-    """
-    if target_response is not None and target_response.error:
-        return MetricResult.errored(
-            metric_name=metric.name,
-            metric_type=metric.metric_type,
-            reason=f"Target request failed: {target_response.error}",
-            metadata={'error_kind': 'target'},
-        )
-    return MetricResult(
-        metric_name=metric.name,
-        metric_type=metric.metric_type,
-        score=0.0,
-        success=False,
-        reason="No output to evaluate"
-    )
-
-
 @register_metric(MetricType.CONVERSATION_COHERENCE)
 class ConversationCoherenceMetric(LLMJudgeMetric):
     """Measure coherence in multi-turn conversations using LLM judge."""
@@ -92,7 +67,7 @@ class ConversationCoherenceMetric(LLMJudgeMetric):
             )
 
         if not actual_output:
-            return _no_output_result(self, target_response)
+            return self._no_output_result(target_response)
 
         try:
             if not self.judge_target:
@@ -223,7 +198,7 @@ class ContextRetentionMetric(LLMJudgeMetric):
             )
 
         if not actual_output:
-            return _no_output_result(self, target_response)
+            return self._no_output_result(target_response)
 
         try:
             if not self.judge_target:
@@ -345,7 +320,7 @@ class TurnAnalysisMetric(LLMJudgeMetric):
             )
 
         if not actual_output:
-            return _no_output_result(self, target_response)
+            return self._no_output_result(target_response)
 
         try:
             if not self.judge_target:

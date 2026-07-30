@@ -199,23 +199,7 @@ class DeepEvalAdapter(LLMJudgeMetric):
         try:
             # Check if we have actual output
             if not actual_output:
-                # A failed request is a failure to measure, not a zero. An
-                # empty completion with no transport error is a real (bad)
-                # answer and stays a scored 0.0.
-                if target_response is not None and target_response.error:
-                    return MetricResult.errored(
-                        metric_name=self.name,
-                        metric_type=self.metric_type,
-                        reason=f"Target request failed: {target_response.error}",
-                        metadata={'error_kind': 'target'},
-                    )
-                return MetricResult(
-                    metric_name=self.name,
-                    metric_type=self.metric_type,
-                    score=0.0,
-                    success=False,
-                    reason="No actual output to evaluate"
-                )
+                return self._no_output_result(target_response)
 
             # Check for metric-dataset mismatch
             if isinstance(test_case, TestCase) and self.is_conversational:

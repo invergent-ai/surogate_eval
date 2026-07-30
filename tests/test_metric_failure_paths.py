@@ -8,7 +8,9 @@ MetricResult, no hand-written dicts - and assert on what they return.
 
 from typing import Optional, Union
 
-from surogate_eval.datasets.test_case import MultiTurnTestCase, TestCase
+import pytest
+
+from surogate_eval.datasets.test_case import MultiTurnTestCase, TestCase, Turn
 from surogate_eval.metrics.base import (
     BaseMetric,
     MetricResult,
@@ -205,3 +207,77 @@ def test_evaluate_batch_net_does_not_hide_a_partial_success():
 
     assert (batch.scored_n, batch.errored_n) == (1, 1)
     assert batch.avg_score == 1.0
+
+
+# --- the shared empty-output rule ----------------------------------------
+
+
+#: (module, class, metric type, multi-turn?) for every metric that shares the
+#: empty-output rule. The conversational ones reject a single-turn case before
+#: they ever look at the output, so they get a conversation.
+JUDGED_METRICS = [
+    ("surogate_eval.metrics.safety", "ToxicityMetric", "toxicity", False),
+    ("surogate_eval.metrics.safety", "BiasMetric", "bias", False),
+    ("surogate_eval.metrics.safety", "HarmMetric", "harm", False),
+    (
+        "surogate_eval.metrics.conversation",
+        "ConversationCoherenceMetric",
+        "conversation_coherence",
+        True,
+    ),
+    (
+        "surogate_eval.metrics.conversation",
+        "ContextRetentionMetric",
+        "context_retention",
+        True,
+    ),
+    (
+        "surogate_eval.metrics.conversation",
+        "TurnAnalysisMetric",
+        "turn_analysis",
+        True,
+    ),
+]
+
+
+def judged_metric(module_name, class_name, metric_type):
+    module = __import__(module_name, fromlist=[class_name])
+    return getattr(module, class_name)({"name": class_name, "type": metric_type})
+
+
+def case_for(multi_turn: bool):
+    if multi_turn:
+        return MultiTurnTestCase(turns=[Turn(role="user", content="hi")])
+    return TestCase(input="hi")
+
+
+@pytest.mark.parametrize(
+    "module_name,class_name,metric_type,multi_turn", JUDGED_METRICS
+)
+def test_empty_output_after_a_failed_request_is_errored(
+    module_name, class_name, metric_type, multi_turn
+):
+    metric = judged_metric(module_name, class_name, metric_type)
+
+    result = metric.evaluate(
+        case_for(multi_turn), "", response(content="", error="HTTP 502")
+    )
+
+    assert_errored(result)
+    assert "502" in result.reason
+
+
+@pytest.mark.parametrize(
+    "module_name,class_name,metric_type,multi_turn", JUDGED_METRICS
+)
+def test_genuinely_empty_completion_is_still_a_scored_zero(
+    module_name, class_name, metric_type, multi_turn
+):
+    """The other direction of the same rule: the model answered with nothing."""
+    metric = judged_metric(module_name, class_name, metric_type)
+
+    result = metric.evaluate(case_for(multi_turn), "", response(content=""))
+
+    assert result.status is MetricStatus.scored
+    assert result.score == 0.0
+    assert result.success is False

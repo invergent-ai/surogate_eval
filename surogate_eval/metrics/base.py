@@ -260,3 +260,30 @@ class LLMJudgeMetric(BaseMetric):
     def set_judge_target(self, judge_target):
         """Set the judge target for evaluation."""
         self.judge_target = judge_target
+
+    def _no_output_result(
+            self,
+            target_response: Optional[TargetResponse] = None,
+    ) -> MetricResult:
+        """Result for an empty target output.
+
+        A failed request is a failure to measure. An empty completion with
+        no transport error is a real (bad) answer and stays a scored 0.0.
+
+        Every judged metric needs this same distinction, so it lives here
+        rather than being restated in each of them.
+        """
+        if target_response is not None and target_response.error:
+            return MetricResult.errored(
+                metric_name=self.name,
+                metric_type=self.metric_type,
+                reason=f"Target request failed: {target_response.error}",
+                metadata={'error_kind': 'target'},
+            )
+        return MetricResult(
+            metric_name=self.name,
+            metric_type=self.metric_type,
+            score=0.0,
+            success=False,
+            reason="No output to evaluate",
+        )

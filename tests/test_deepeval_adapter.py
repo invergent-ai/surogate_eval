@@ -1,5 +1,6 @@
 import pytest
 
+from surogate_eval.datasets.test_case import TestCase
 from surogate_eval.errors import JudgeUnavailableError
 from surogate_eval.metrics.base import MetricStatus, MetricType
 from surogate_eval.metrics.adapters.deepeval_adapter import DeepEvalAdapter
@@ -11,8 +12,10 @@ class Boom:
 
     def __init__(self, exc):
         self.exc = exc
+        self.called = False
 
     def measure(self, test_case, _show_indicator=False):
+        self.called = True
         raise self.exc
 
 
@@ -29,16 +32,26 @@ def make_adapter(deepeval_metric):
 
 
 def test_judge_error_is_errored_not_zero():
-    adapter = make_adapter(Boom(JudgeUnavailableError("judge 500")))
-    result = adapter.evaluate(object(), "some model output")
+    boom = Boom(JudgeUnavailableError("judge 500"))
+    adapter = make_adapter(boom)
+    result = adapter.evaluate(TestCase(input="What is 2+2?"), "some model output")
+    assert boom.called is True
     assert result.status is MetricStatus.errored
     assert result.score is None
+    # Must be labelled as a judge failure, not folded into the generic
+    # internal-error branch. If `except Exception` is ever moved ahead of
+    # `except JudgeError`, this is what catches it: both branches return
+    # status=errored/score=None, so only the error_kind tells them apart.
+    assert result.metadata.get("error_kind") == "JudgeUnavailableError"
 
 
 def test_internal_error_is_errored_and_labelled():
-    """A bug in our code must not read as 'the model scored zero'."""
-    adapter = make_adapter(Boom(AttributeError("'Steps' object has no attribute 'steps'")))
-    result = adapter.evaluate(object(), "some model output")
+    """A bug reaching measure() (not our own dispatch code) must still be
+    labelled internal, not mistaken for a judge problem."""
+    boom = Boom(AttributeError("'Steps' object has no attribute 'steps'"))
+    adapter = make_adapter(boom)
+    result = adapter.evaluate(TestCase(input="What is 2+2?"), "some model output")
+    assert boom.called is True
     assert result.status is MetricStatus.errored
     assert result.metadata.get("error_kind") == "internal"
 

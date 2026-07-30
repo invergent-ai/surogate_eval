@@ -180,38 +180,32 @@ class APIModelTarget(BaseTarget):
             metadata=metadata
         )
 
+    def _model_list_paths(self) -> tuple:
+        """Model-listing paths to probe, best candidate first.
+
+        The base URL usually already ends in /v1 (every provider default
+        does), and httpx joins it with the path, so probing /v1/models first
+        asks for /v1/v1/models: a guaranteed wasted round trip on every
+        standard config.
+        """
+        if self.base_url.rstrip('/').endswith('/v1'):
+            return ("/models", "/v1/models")
+        return ("/v1/models", "/models")
+
     def health_check(self) -> bool:
         """Check if API is accessible."""
         try:
             # For localhost/local endpoints - try various health endpoints
             # Check this FIRST before provider-specific logic
             if any(x in self.base_url for x in ['localhost', '127.0.0.1', '0.0.0.0']):
-                # Try /v1/models first (most common for vLLM/OpenAI-compatible)
-                try:
-                    response = self.client.get("/v1/models", timeout=5)
+                for path in self._model_list_paths() + ("/health",):
+                    try:
+                        response = self.client.get(path, timeout=5)
+                    except Exception:
+                        continue
                     if response.status_code == 200:
-                        logger.debug(f"{self.name}: /v1/models endpoint healthy")
+                        logger.debug(f"{self.name}: {path} endpoint healthy")
                         return True
-                except:
-                    pass
-
-                # Try /models
-                try:
-                    response = self.client.get("/models", timeout=5)
-                    if response.status_code == 200:
-                        logger.debug(f"{self.name}: /models endpoint healthy")
-                        return True
-                except:
-                    pass
-
-                # Try /health
-                try:
-                    response = self.client.get("/health", timeout=5)
-                    if response.status_code == 200:
-                        logger.debug(f"{self.name}: /health endpoint healthy")
-                        return True
-                except:
-                    pass
 
                 logger.warning(f"Health check failed for {self.name}. Ensure server is running at {self.base_url}")
                 return False
@@ -226,7 +220,7 @@ class APIModelTarget(BaseTarget):
                 logger.error(f"No API key provided for {self.name}")
                 return False
 
-            for path in ("/v1/models", "/models"):
+            for path in self._model_list_paths():
                 try:
                     response = self.client.get(path, timeout=10)
                 except Exception:

@@ -60,3 +60,28 @@ def test_placeholder_key_is_unhealthy():
     """Belt and braces: the literal ${VAR} form must never pass."""
     target = make_target("${OPENAI_API_KEY}", FakeClient(status_code=401))
     assert target.health_check() is False
+
+
+def test_versioned_base_url_probes_models_first():
+    """base_url already ends in /v1, so /v1/models would ask for /v1/v1/models."""
+    client = FakeClient(status_code=200)
+    target = make_target("sk-real", client)
+    target.base_url = "https://api.openai.com/v1"
+    assert target.health_check() is True
+    assert client.calls == ["/models"]
+
+
+def test_unversioned_base_url_probes_v1_models_first():
+    client = FakeClient(status_code=200)
+    target = make_target("sk-real", client)
+    target.base_url = "https://api.example.com"
+    assert target.health_check() is True
+    assert client.calls == ["/v1/models"]
+
+
+def test_local_target_probes_in_the_same_order():
+    client = FakeClient(status_code=404)
+    target = make_target("", client)
+    target.base_url = "http://localhost:8000/v1"
+    assert target.health_check() is False
+    assert client.calls == ["/models", "/v1/models", "/health"]

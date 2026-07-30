@@ -1,6 +1,7 @@
 # surogate/eval/metrics/adapters/deepeval_adapter.py
 from typing import Dict, Any, Optional, Union
 
+from ...errors import JudgeError
 from ...utils.logger import get_logger
 
 try:
@@ -198,6 +199,16 @@ class DeepEvalAdapter(LLMJudgeMetric):
         try:
             # Check if we have actual output
             if not actual_output:
+                # A failed request is a failure to measure, not a zero. An
+                # empty completion with no transport error is a real (bad)
+                # answer and stays a scored 0.0.
+                if target_response is not None and target_response.error:
+                    return MetricResult.errored(
+                        metric_name=self.name,
+                        metric_type=self.metric_type,
+                        reason=f"Target request failed: {target_response.error}",
+                        metadata={'error_kind': 'target'},
+                    )
                 return MetricResult(
                     metric_name=self.name,
                     metric_type=self.metric_type,
@@ -362,14 +373,32 @@ class DeepEvalAdapter(LLMJudgeMetric):
                 }
             )
 
+        except JudgeError as e:
+            # The judge broke. Reporting 0.0 here is what made a judge
+            # outage indistinguishable from a bad model (E-RUN-1).
+            logger.error(f"Judge failure in metric '{self.name}': {e}")
+            return MetricResult.errored(
+                metric_name=self.name,
+                metric_type=self.metric_type,
+                reason=f"Judge unavailable: {e}",
+                metadata={
+                    'deepeval_type': self.config.get('deepeval_metric_type'),
+                    'error_kind': type(e).__name__,
+                },
+            )
+
         except Exception as e:
+            # Our own bug. Still errored, but labelled so it is not
+            # mistaken for a judge problem when reading results.
             logger.error(f"DeepEval evaluation failed: {e}")
             import traceback
             logger.debug(traceback.format_exc())
-            return MetricResult(
+            return MetricResult.errored(
                 metric_name=self.name,
                 metric_type=self.metric_type,
-                score=0.0,
-                success=False,
-                reason=f"Evaluation error: {str(e)}"
+                reason=f"Internal evaluation error: {e}",
+                metadata={
+                    'deepeval_type': self.config.get('deepeval_metric_type'),
+                    'error_kind': 'internal',
+                },
             )

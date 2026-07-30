@@ -58,12 +58,14 @@ class ConversationCoherenceMetric(LLMJudgeMetric):
             Metric result
         """
         if not isinstance(test_case, MultiTurnTestCase):
-            return MetricResult(
+            # A misconfigured metric never measured anything. Scoring it
+            # 0.0 wrote a configuration mistake into the average as if
+            # the model had answered badly.
+            return MetricResult.errored(
                 metric_name=self.name,
                 metric_type=self.metric_type,
-                score=0.0,
-                success=False,
-                reason="Conversation coherence requires multi-turn test case"
+                reason="Conversation coherence requires multi-turn test case",
+                metadata={'error_kind': 'config'},
             )
 
         if not actual_output:
@@ -189,12 +191,14 @@ class ContextRetentionMetric(LLMJudgeMetric):
             Metric result
         """
         if not isinstance(test_case, MultiTurnTestCase):
-            return MetricResult(
+            # A misconfigured metric never measured anything. Scoring it
+            # 0.0 wrote a configuration mistake into the average as if
+            # the model had answered badly.
+            return MetricResult.errored(
                 metric_name=self.name,
                 metric_type=self.metric_type,
-                score=0.0,
-                success=False,
-                reason="Context retention requires multi-turn test case"
+                reason="Context retention requires multi-turn test case",
+                metadata={'error_kind': 'config'},
             )
 
         if not actual_output:
@@ -311,12 +315,14 @@ class TurnAnalysisMetric(LLMJudgeMetric):
             Metric result with per-turn scores
         """
         if not isinstance(test_case, MultiTurnTestCase):
-            return MetricResult(
+            # A misconfigured metric never measured anything. Scoring it
+            # 0.0 wrote a configuration mistake into the average as if
+            # the model had answered badly.
+            return MetricResult.errored(
                 metric_name=self.name,
                 metric_type=self.metric_type,
-                score=0.0,
-                success=False,
-                reason="Turn analysis requires multi-turn test case"
+                reason="Turn analysis requires multi-turn test case",
+                metadata={'error_kind': 'config'},
             )
 
         if not actual_output:

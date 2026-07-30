@@ -133,8 +133,14 @@ def test_length_heuristics_are_gone():
 
 
 @pytest.mark.parametrize("cls,metric_type", METRICS)
-def test_single_turn_test_case_is_still_rejected(cls, metric_type):
+def test_single_turn_test_case_is_errored_not_scored_zero(cls, metric_type):
+    """A metric fed the wrong shape of test case never measured anything.
+    Same E-RUN-1 class as the deepeval adapter's conversational-metric-on-
+    single-turn-dataset guard: this is a configuration failure, not a
+    measurement, so it must not average a 0.0 into the score."""
     metric = build(cls, metric_type, FakeJudge(content=PARSEABLE))
     result = metric.evaluate(object(), OUTPUT)
-    assert result.status is MetricStatus.scored
+    assert result.status is MetricStatus.errored
     assert result.success is False
+    assert result.score is None
+    assert result.metadata['error_kind'] == 'config'

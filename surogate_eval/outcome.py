@@ -27,8 +27,10 @@ compared against the same ``max_error_rate``, so a stress test whose
 requests failed still fails the run - on its own denominator instead of
 everyone else's.
 
-An emitter picks its channel by which pair of keys it emits. Nothing here
-knows what a "stress test" is; it only knows what an emitter declared.
+An emitter picks its channel(s) by which pair(s) of keys it emits. Nothing
+here knows what a "stress test" is; it only knows what an emitter declared.
+A node that declares both pairs feeds both channels - see ``_collect_counts``
+for how a failure status is charged when that happens.
 """
 
 from typing import Any, Dict, List, NamedTuple
@@ -97,28 +99,38 @@ def _collect_counts(node: Any) -> Counts:
         # node that also carries summary counts. Stated explicitly because
         # the reverse precedence - counts winning and the failure being
         # dropped - is silent, and silence is what this module exists to
-        # prevent. No emitter carries both today.
+        # prevent.
         failed = 1 if node.get('status') in FAILED_STATUSES else 0
 
-        if _has_keys(node, LOAD_COUNT_KEYS):
-            # A load emitter. Its failure marker, if any, is a load failure:
-            # it belongs on the channel the emitter declared, not in the
-            # measurement error rate it was deliberately kept out of.
-            # Checked first so that an emitter reporting both pairs is read
-            # as the load emitter it declared itself to be.
-            return Counts(
-                load_scored=int(node[LOAD_COUNT_KEYS[0]]),
-                load_errored=int(node[LOAD_COUNT_KEYS[1]]) + failed,
-            )
-        if _has_keys(node, MEASUREMENT_COUNT_KEYS):
-            # A summary node carries both the counts and the results that
+        has_load = _has_keys(node, LOAD_COUNT_KEYS)
+        has_measurement = _has_keys(node, MEASUREMENT_COUNT_KEYS)
+
+        if has_load or has_measurement:
+            # A summary node carries both its counts and the results that
             # produced them, so take the counts and do NOT descend, or every
-            # case is counted twice. Checked before the MetricResult rule
+            # unit is counted twice. Checked before the MetricResult rule
             # below because a metric batch carries a ``metric_name`` too.
-            return Counts(
-                scored=int(node[MEASUREMENT_COUNT_KEYS[0]]),
-                errored=int(node[MEASUREMENT_COUNT_KEYS[1]]) + failed,
-            )
+            #
+            # No emitter declares both channels today, but the two checks
+            # used to be an if/elif, so a node that ever did would be read
+            # as load-only and its measurement counts would vanish - the
+            # exact silent drop this module exists to prevent. They are
+            # independent now: a dual-channel node feeds both. Its failure
+            # marker, if any, is charged to every channel the node declared
+            # - a status doesn't say which channel failed, so the fail-
+            # closed choice is to charge both rather than guess one.
+            counts = Counts()
+            if has_load:
+                counts += Counts(
+                    load_scored=int(node[LOAD_COUNT_KEYS[0]]),
+                    load_errored=int(node[LOAD_COUNT_KEYS[1]]) + failed,
+                )
+            if has_measurement:
+                counts += Counts(
+                    scored=int(node[MEASUREMENT_COUNT_KEYS[0]]),
+                    errored=int(node[MEASUREMENT_COUNT_KEYS[1]]) + failed,
+                )
+            return counts
         if 'metric_name' in node and 'status' in node:
             # No production path emits a bare MetricResult dict today: every
             # result is wrapped in a batch. Kept deliberately as a

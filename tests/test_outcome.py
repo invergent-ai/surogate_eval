@@ -1,4 +1,5 @@
 from surogate_eval.metrics.base import BatchMetricResult, MetricResult, MetricType
+from surogate_eval.metrics.stress.stress_tester import StressTestConfig, StressTestResult
 from surogate_eval.outcome import (
     DEFAULT_MAX_ERROR_RATE,
     compute_outcome,
@@ -248,6 +249,52 @@ def test_summary_counts_do_not_swallow_a_failure_status():
     outcome = compute_outcome(consolidated)
     assert outcome["scored"] == 1
     assert outcome["errored"] == 1
+    assert outcome["status"] == "failed"
+
+
+def test_dual_channel_node_contributes_to_both_error_rates():
+    """No emitter carries both key sets today, but nothing here should assume
+    that stays true forever. A node declaring both channels must feed both
+    ``error_rate`` and ``load_error_rate`` - not have one channel silently
+    win and the other's counts vanish.
+
+    The measurement side is a real BatchMetricResult (10 genuine errored
+    results); the load side is a real StressTestResult with a clean run, so
+    only the measurement channel is under test here.
+    """
+    measurement = BatchMetricResult(
+        metric_name="m",
+        metric_type=MetricType.TOXICITY,
+        results=[
+            MetricResult.errored(
+                metric_name="m", metric_type=MetricType.TOXICITY, reason="boom"
+            )
+            for _ in range(10)
+        ],
+    ).to_dict()
+
+    load = StressTestResult(
+        config=StressTestConfig(),
+        total_duration=1.0,
+        total_requests=10,
+        successful_requests=10,
+        failed_requests=0,
+        requests_per_second=10.0,
+        avg_latency_ms=1.0,
+        median_latency_ms=1.0,
+        p95_latency_ms=1.0,
+        p99_latency_ms=1.0,
+        min_latency_ms=1.0,
+        max_latency_ms=1.0,
+    ).to_dict()
+
+    dual_channel_node = {**measurement, **load}
+    consolidated = {"targets": [target(evaluations=[dual_channel_node])]}
+
+    outcome = compute_outcome(consolidated)
+
+    assert outcome["errored"] == 10
+    assert outcome["error_rate"] == 1.0
     assert outcome["status"] == "failed"
 
 

@@ -216,24 +216,36 @@ class APIModelTarget(BaseTarget):
                 logger.warning(f"Health check failed for {self.name}. Ensure server is running at {self.base_url}")
                 return False
 
-            # Special handling for OpenAI and Anthropic APIs (non-localhost)
-            # Only check API key if it's actually needed (remote API)
-            if self.provider in [ModelProvider.OPENAI, ModelProvider.ANTHROPIC]:
-                has_key = bool(self.api_key)
-                if not has_key:
-                    logger.error(f"No API key provided for {self.name}")
-                else:
-                    logger.debug(f"{self.name}: API key present, assuming healthy")
-                return has_key
+            # Remote APIs: probe rather than trust that a credential is
+            # present. A missing or rejected key must read as unhealthy,
+            # not as "assume it works" (E-RUN-2). The old code returned
+            # bool(self.api_key), so an unresolved "${OPENAI_API_KEY}"
+            # literal counted as a valid credential and every request
+            # then 401'd with all judged metrics scoring 0.
+            if not self.api_key:
+                logger.error(f"No API key provided for {self.name}")
+                return False
 
-            # For other remote APIs (OpenRouter, Cohere, etc.)
-            try:
-                response = self.client.get("/models", timeout=10)
-                return response.status_code == 200
-            except:
-                logger.warning(f"Could not verify health for {self.name}")
-                # Be optimistic if we have credentials
-                return bool(self.api_key)
+            for path in ("/v1/models", "/models"):
+                try:
+                    response = self.client.get(path, timeout=10)
+                except Exception:
+                    continue
+                if response.status_code == 200:
+                    logger.debug(f"{self.name}: {path} probe healthy")
+                    return True
+                if response.status_code in (401, 403):
+                    logger.error(
+                        f"{self.name}: credential rejected by {path} "
+                        f"(HTTP {response.status_code})"
+                    )
+                    return False
+
+            logger.error(
+                f"Could not verify {self.name} at {self.base_url}; "
+                "treating as unhealthy"
+            )
+            return False
 
         except Exception as e:
             logger.error(f"Health check error for {self.name}: {e}")
@@ -1192,3 +1204,7 @@ Text to translate:
     def cleanup(self):
         """Cleanup resources."""
         pass  # Translator target is managed separately
+
+
+# Alias for backward compatibility with tests
+ModelTarget = APIModelTarget

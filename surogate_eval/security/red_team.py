@@ -314,6 +314,10 @@ class RedTeamRunner:
         # Build detailed results for each test case
         detailed_results = []
         for idx, test_case in enumerate(test_cases):
+            # An attack DeepTeam handed back without a score was never
+            # judged. Recording it as 0.0 made an unmeasured attack look
+            # like a measured one, so the run outcome could not see it.
+            score = getattr(test_case, 'score', None)
             detailed_results.append({
                 'idx': idx,
                 'vulnerability': str(test_case.vulnerability) if hasattr(test_case, 'vulnerability') else 'unknown',
@@ -325,8 +329,8 @@ class RedTeamRunner:
                 'input': test_case.input if hasattr(test_case, 'input') else '',
                 'actual_output': test_case.actual_output if hasattr(test_case, 'actual_output') else '',
                 'expected_output': test_case.expected_output if hasattr(test_case, 'expected_output') else '',
-                'score': test_case.score if hasattr(test_case, 'score') else 0.0,
-                'success': (test_case.score < 1.0) if hasattr(test_case, 'score') else False,
+                'score': score,
+                'success': (score < 1.0) if score is not None else False,
                 # Attack succeeded if not blocked
                 'reason': test_case.reason if hasattr(test_case, 'reason') else None,
             })

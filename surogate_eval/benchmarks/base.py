@@ -3,8 +3,9 @@
 
 from abc import ABC, abstractmethod
 from dataclasses import dataclass, field
-from typing import Dict, Any, List, Optional, Union, Literal
+from typing import Dict, Any, List, Optional, Tuple, Union, Literal
 
+from surogate_eval.outcome import FAILED_STATUSES
 from surogate_eval.targets import BaseTarget
 from surogate_eval.utils.logger import get_logger
 
@@ -69,12 +70,61 @@ class BenchmarkResult:
     detailed_results: List[Dict[str, Any]] = field(default_factory=list)
     metadata: Dict[str, Any] = field(default_factory=dict)
 
+    def result_counts(self) -> Tuple[int, int]:
+        """Countable units for the run outcome, as ``(scored, errored)``.
+
+        One unit is one benchmark task. Per-sample counting is not usable
+        here: several backends report a task without a trustworthy sample
+        count (lm-eval leaves ``n_samples`` at 0 whenever the harness does
+        not populate it), so counting samples would report a healthy
+        benchmark as having measured nothing - the exact failure this
+        method exists to prevent.
+
+        A task that reports its own ``scored_n``/``errored_n`` (the
+        custom-eval toxicity path) contributes those finer counts instead,
+        so the detail it went to the trouble of producing is not flattened
+        to 1.
+        """
+        scored = errored = 0
+
+        for task in self.task_results.values():
+            if not isinstance(task, dict):
+                scored += 1
+                continue
+
+            if 'scored_n' in task and 'errored_n' in task:
+                scored += int(task['scored_n'])
+                errored += int(task['errored_n'])
+                continue
+
+            if task.get('status') in FAILED_STATUSES:
+                errored += 1
+                continue
+
+            # A task that explicitly saw zero samples measured nothing, and
+            # must not be counted as evidence that it did.
+            if task.get('n_samples', task.get('total')) == 0:
+                continue
+
+            scored += 1
+
+        if scored == 0 and errored == 0:
+            # A benchmark that came back with no task at all measured
+            # nothing. Reported as one errored unit so it fails the run
+            # loudly instead of dissolving into a zero error rate.
+            errored = 1
+
+        return scored, errored
+
     def to_dict(self) -> Dict[str, Any]:
+        scored_n, errored_n = self.result_counts()
         return {
             'benchmark_name': self.benchmark_name,
             'backend': self.backend,
             'overall_score': self.overall_score,
             'num_samples': self.num_samples,
+            'scored_n': scored_n,
+            'errored_n': errored_n,
             'task_results': self.task_results,
             'detailed_results': self.detailed_results,
             'metadata': self.metadata,

@@ -2,7 +2,7 @@
 """Risk assessment for red-teaming results."""
 
 from dataclasses import dataclass, field
-from typing import List, Dict, Any, Optional
+from typing import List, Dict, Any, Optional, Tuple
 from datetime import datetime
 from pathlib import Path
 import json
@@ -36,11 +36,31 @@ class RiskAssessment:
     timestamp: str = field(default_factory=lambda: datetime.now().isoformat())
     detailed_results: List[Dict[str, Any]] = field(default_factory=list)
 
+    def result_counts(self) -> Tuple[int, int]:
+        """Countable units for the run outcome, as ``(scored, errored)``.
+
+        One unit is one attack put to the target. An attack the judge
+        scored is a measurement whether or not the target resisted it -
+        "the model was vulnerable" is a result, not an error. An attack
+        that came back without a score was never judged, so it counts as
+        errored.
+        """
+        if self.detailed_results:
+            errored = sum(1 for case in self.detailed_results if case.get('score') is None)
+            return len(self.detailed_results) - errored, errored
+
+        # No per-attack detail to count: fall back to the per-vulnerability
+        # totals so a scan is still positive evidence that it measured.
+        return sum(v.total_attacks for v in self.vulnerabilities), 0
+
     def to_dict(self) -> Dict[str, Any]:
         """Convert to dictionary."""
+        scored_n, errored_n = self.result_counts()
         return {
             'target_name': self.target_name,
             'timestamp': self.timestamp,
+            'scored_n': scored_n,
+            'errored_n': errored_n,
             'vulnerabilities': [
                 {
                     'vulnerability_name': v.vulnerability_name,

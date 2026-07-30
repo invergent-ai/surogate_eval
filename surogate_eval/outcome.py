@@ -8,21 +8,9 @@ a broken run visible.
 
 from typing import Any, Dict, List, Tuple
 
-DEFAULT_MAX_ERROR_RATE = 0.2
+from surogate_eval.statuses import FAILED_STATUSES
 
-#: Statuses a node can carry when it represents a failure to measure rather
-#: than a measurement. Failures above the metric level (a whole evaluation
-#: crashing, a benchmark blowing up, a target that never ran) produce no
-#: ``scored_n``/``errored_n`` counts of their own, so without this set they
-#: were invisible: ``total`` stayed 0, ``error_rate`` stayed 0.0, and the run
-#: reported "completed".
-FAILED_STATUSES = frozenset({
-    'failed',
-    'error',
-    'validation_failed',
-    'incompatible',
-    'unhealthy',
-})
+DEFAULT_MAX_ERROR_RATE = 0.2
 
 
 def _collect_counts(node: Any) -> Tuple[int, int]:

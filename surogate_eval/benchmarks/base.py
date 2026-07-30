@@ -5,7 +5,7 @@ from abc import ABC, abstractmethod
 from dataclasses import dataclass, field
 from typing import Dict, Any, List, Optional, Tuple, Union, Literal
 
-from surogate_eval.outcome import FAILED_STATUSES
+from surogate_eval.statuses import FAILED_STATUSES
 from surogate_eval.targets import BaseTarget
 from surogate_eval.utils.logger import get_logger
 

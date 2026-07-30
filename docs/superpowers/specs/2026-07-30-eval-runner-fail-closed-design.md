@@ -186,14 +186,20 @@ the result is errored. A genuinely empty completion with no transport error stay
 because an empty answer is a real (bad) answer. The distinction is `target_response.error`, not
 emptiness alone.
 
-### 8. safety.py fails closed
+### 8. safety.py and conversation.py fail closed
 
-Delete `_simple_toxicity_check`, `_simple_bias_check` and `_simple_harm_check`. A judge parse
-failure raises `JudgeParseError` and surfaces as an errored `MetricResult`. The existing outer
-`except Exception` returns errored rather than `score=0.0`.
+Delete `_simple_toxicity_check`, `_simple_bias_check` and `_simple_harm_check`. A judge transport
+failure raises `JudgeUnavailableError` and a parse failure raises `JudgeParseError`; both surface
+as an errored `MetricResult`. The existing outer `except Exception` returns errored rather than
+`score=0.0`.
 
 These heuristics are not a safety net. Toxicity was five keywords, harm was sixteen across four
 categories, and bias was an unconditional pass.
+
+`metrics/conversation.py` carries the identical pattern and gets the identical treatment:
+`_simple_coherence_check`, `_simple_retention_check` and `_simple_turn_analysis` scored 0.7/0.75
+with `success=True` from response length alone, so a judge outage produced a passing
+conversation score.
 
 ## Error handling summary
 

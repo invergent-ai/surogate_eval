@@ -40,12 +40,11 @@ class LatencyMetric(BaseMetric):
             Metric result with latency measurements
         """
         if not target_response or not target_response.timing:
-            return MetricResult(
+            return MetricResult.errored(
                 metric_name=self.name,
                 metric_type=self.metric_type,
-                score=0.0,
-                success=False,
-                reason="No timing data available"
+                reason="No timing data available; latency was never measured",
+                metadata={'error_kind': 'no_timing'},
             )
 
         try:
@@ -94,12 +93,11 @@ class LatencyMetric(BaseMetric):
 
         except Exception as e:
             logger.error(f"Latency measurement failed: {e}")
-            return MetricResult(
+            return MetricResult.errored(
                 metric_name=self.name,
                 metric_type=self.metric_type,
-                score=0.0,
-                success=False,
-                reason=f"Measurement error: {str(e)}"
+                reason=f"Measurement error: {str(e)}",
+                metadata={'error_kind': type(e).__name__},
             )
 
 
@@ -130,24 +128,22 @@ class ThroughputMetric(BaseMetric):
             Metric result with throughput measurements
         """
         if not target_response or not target_response.timing:
-            return MetricResult(
+            return MetricResult.errored(
                 metric_name=self.name,
                 metric_type=self.metric_type,
-                score=0.0,
-                success=False,
-                reason="No timing data available"
+                reason="No timing data available; throughput was never measured",
+                metadata={'error_kind': 'no_timing'},
             )
 
         try:
             total_time = target_response.timing.get('total_time', 0)
 
             if total_time == 0:
-                return MetricResult(
+                return MetricResult.errored(
                     metric_name=self.name,
                     metric_type=self.metric_type,
-                    score=0.0,
-                    success=False,
-                    reason="Zero latency detected (invalid)"
+                    reason="Zero latency detected (invalid); throughput is not computable",
+                    metadata={'error_kind': 'invalid_timing'},
                 )
 
             # Calculate requests per second for this single request
@@ -176,12 +172,11 @@ class ThroughputMetric(BaseMetric):
 
         except Exception as e:
             logger.error(f"Throughput measurement failed: {e}")
-            return MetricResult(
+            return MetricResult.errored(
                 metric_name=self.name,
                 metric_type=self.metric_type,
-                score=0.0,
-                success=False,
-                reason=f"Measurement error: {str(e)}"
+                reason=f"Measurement error: {str(e)}",
+                metadata={'error_kind': type(e).__name__},
             )
 
     def evaluate_batch(
@@ -267,24 +262,22 @@ class TokenGenerationSpeedMetric(BaseMetric):
             Metric result with token generation speed
         """
         if not target_response or not target_response.timing:
-            return MetricResult(
+            return MetricResult.errored(
                 metric_name=self.name,
                 metric_type=self.metric_type,
-                score=0.0,
-                success=False,
-                reason="No timing data available"
+                reason="No timing data available; generation speed was never measured",
+                metadata={'error_kind': 'no_timing'},
             )
 
         try:
             total_time = target_response.timing.get('total_time', 0)
 
             if total_time == 0:
-                return MetricResult(
+                return MetricResult.errored(
                     metric_name=self.name,
                     metric_type=self.metric_type,
-                    score=0.0,
-                    success=False,
-                    reason="Zero latency detected (invalid)"
+                    reason="Zero latency detected (invalid); generation speed is not computable",
+                    metadata={'error_kind': 'invalid_timing'},
                 )
 
             # Try to get token count from response metadata
@@ -348,12 +341,11 @@ class TokenGenerationSpeedMetric(BaseMetric):
 
         except Exception as e:
             logger.error(f"Token generation speed measurement failed: {e}")
-            return MetricResult(
+            return MetricResult.errored(
                 metric_name=self.name,
                 metric_type=self.metric_type,
-                score=0.0,
-                success=False,
-                reason=f"Measurement error: {str(e)}"
+                reason=f"Measurement error: {str(e)}",
+                metadata={'error_kind': type(e).__name__},
             )
 
 

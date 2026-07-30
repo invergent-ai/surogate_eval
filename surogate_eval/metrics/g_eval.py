@@ -240,10 +240,9 @@ class ArenaGEvalMetric(LLMJudgeMetric):
         """Evaluate in arena mode."""
         logger.warning("Arena G-Eval not fully implemented yet")
 
-        return MetricResult(
+        return MetricResult.errored(
             metric_name=self.name,
             metric_type=self.metric_type,
-            score=0.0,
-            success=False,
-            reason="Arena evaluation not implemented"
+            reason="Arena evaluation not implemented",
+            metadata={'error_kind': 'capability'},
         )

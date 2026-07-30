@@ -6,6 +6,9 @@ from enum import Enum
 
 from surogate_eval.datasets import TestCase, MultiTurnTestCase
 from surogate_eval.targets import TargetResponse
+from surogate_eval.utils.logger import get_logger
+
+logger = get_logger()
 
 
 class MetricType(Enum):
@@ -214,7 +217,20 @@ class BaseMetric(ABC):
         results = []
         for i, (test_case, actual_output) in enumerate(zip(test_cases, actual_outputs)):
             target_response = target_responses[i] if target_responses else None
-            result = self.evaluate(test_case, actual_output, target_response)
+            try:
+                result = self.evaluate(test_case, actual_output, target_response)
+            except Exception as e:
+                # Safety net for E-RUN-1: a metric whose own handler misses an
+                # exception must not take the rest of the batch down, and the
+                # case must not disappear. It is recorded as unmeasured so the
+                # run outcome still counts it.
+                logger.error(f"Metric '{self.name}' raised on case {i}: {e}")
+                result = MetricResult.errored(
+                    metric_name=self.name,
+                    metric_type=self.metric_type,
+                    reason=f"Metric raised {type(e).__name__}: {e}",
+                    metadata={'error_kind': type(e).__name__},
+                )
             results.append(result)
 
         return BatchMetricResult(

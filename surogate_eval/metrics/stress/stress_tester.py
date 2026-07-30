@@ -78,21 +78,30 @@ class StressTestResult:
     breaking_point_concurrent: Optional[int] = None
     breaking_point_reason: Optional[str] = None
 
-    def result_counts(self) -> Tuple[int, int]:
-        """Countable units for the run outcome, as ``(scored, errored)``.
+    def load_counts(self) -> Tuple[int, int]:
+        """Countable load units for the run outcome, as ``(passed, failed)``.
 
         One unit is one request put to the target under load. A request that
-        came back is a measurement - it is what every latency and throughput
-        figure here is computed from (``_create_result`` derives its
-        percentiles from the successful requests alone). A request that
-        failed produced no sample, so it is errored.
+        came back is one successful unit of load; a request that failed
+        produced no latency sample and is a failed one.
 
-        Without these counts a stress test emitted nothing countable, and a
-        stress-only target tripped the "healthy target measured nothing"
-        rule and exited 1 after a perfectly good run.
+        These are load counts, not measurement counts, and ``to_dict()``
+        publishes them under the outcome module's load-channel keys. A
+        stress test generates traffic to see how a target holds up; it does
+        not measure the quality of what comes back. Counting its requests as
+        measurements let a default 100-request stress run outvote every
+        metric in the run, so a target with half its metric cases erroring
+        still reported "completed" (error rate 0.045). The outcome module
+        gives the load channel its own error rate against the same
+        threshold, so a stress test that fails still fails the run - it just
+        cannot dilute anybody else's numbers.
+
+        Emitting nothing countable at all is not an option either: a
+        stress-only target would trip the "healthy target produced nothing"
+        rule and exit 1 after a perfectly good run.
         """
         if self.total_requests == 0:
-            # Nothing was sent. Reported as one errored unit so an empty
+            # Nothing was sent. Reported as one failed unit so an empty
             # stress test fails the run loudly instead of dissolving into a
             # zero error rate, matching BenchmarkResult.result_counts().
             return 0, 1
@@ -100,10 +109,13 @@ class StressTestResult:
 
     def to_dict(self) -> Dict[str, Any]:
         """Convert to dictionary."""
-        scored_n, errored_n = self.result_counts()
+        load_scored_n, load_errored_n = self.load_counts()
         return {
-            'scored_n': scored_n,
-            'errored_n': errored_n,
+            # See surogate_eval.outcome: LOAD_COUNT_KEYS. These deliberately
+            # do NOT use scored_n/errored_n, which are the quality-
+            # measurement channel that feeds the run-wide error rate.
+            'load_scored_n': load_scored_n,
+            'load_errored_n': load_errored_n,
             'config': {
                 'num_concurrent': self.config.num_concurrent,
                 'duration_seconds': self.config.duration_seconds,

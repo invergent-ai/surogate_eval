@@ -1,15 +1,27 @@
-"""A stress test that ran is evidence that something was measured.
+"""A stress test is evidence that a target did work - and nothing more.
 
 ``StressTestResult.to_dict()`` used to emit no counts at all, so a
-stress-only target contributed 0/0 to the outcome walk, tripped the "healthy
-target produced zero countable results" rule and exited 1 after a perfectly
-good run.
+stress-only target contributed nothing to the outcome walk, tripped the
+"healthy target produced zero countable results" rule and exited 1 after a
+perfectly good run. Then it emitted its requests as ``scored_n``/
+``errored_n``, which fixed that and broke something worse: a default
+100-request stress test outvoted every metric in the run, so a target with
+half its metric cases erroring came out at a 4.5% error rate and exited 0.
+
+So the requests are load counts now, on their own channel with their own
+error rate: enough to prove the target did work, unable to move the
+quality-measurement error rate, still able to fail the run on their own.
 
 The fixtures here are produced by the real ``StressTester`` against a fake
 target - no socket, no hand-written copy of a shape this repo emits.
 """
 
 from surogate_eval.datasets.test_case import TestCase
+from surogate_eval.metrics.base import (
+    BatchMetricResult,
+    MetricResult,
+    MetricType,
+)
 from surogate_eval.metrics.stress.stress_tester import (
     StressTestConfig,
     StressTester,
@@ -63,23 +75,87 @@ def outcome_for(stress_result):
 def test_successful_stress_only_run_exits_zero():
     result = stress_dict()
 
-    assert result["scored_n"] == result["total_requests"]
-    assert result["errored_n"] == 0
+    assert result["load_scored_n"] == result["total_requests"]
+    assert result["load_errored_n"] == 0
+    # The load channel, and only the load channel.
+    assert "scored_n" not in result and "errored_n" not in result
 
     outcome = outcome_for(result)
     assert outcome["status"] == "completed"
-    assert outcome["scored"] == result["total_requests"]
+    assert outcome["load_scored"] == result["total_requests"]
+    assert outcome["scored"] == 0
     assert exit_code_for(outcome) == 0
 
 
 def test_failing_requests_are_counted_as_errored():
-    """A request that never came back produced no latency sample."""
+    """A request that never came back produced no latency sample.
+
+    The stress test keeps its own pass/fail signal: these failures never
+    touch the measurement error rate, but they exceed the threshold on the
+    load channel and fail the run.
+    """
     result = stress_dict(fail_after=1)
 
-    assert result["errored_n"] == result["failed_requests"]
-    assert result["errored_n"] > 0
+    assert result["load_errored_n"] == result["failed_requests"]
+    assert result["load_errored_n"] > 0
 
     outcome = outcome_for(result)
+    assert outcome["errored"] == 0
+    assert outcome["error_rate"] == 0.0
+    assert outcome["load_error_rate"] > outcome["max_error_rate"]
+    assert outcome["status"] == "failed"
+    assert exit_code_for(outcome) == 1
+
+
+def test_passing_stress_cannot_hide_metric_errors():
+    """The regression this split exists to prevent.
+
+    Five of ten metric cases errored: a 50% error rate, a failed run. Add a
+    perfectly healthy stress test at the runner's default 100 requests and
+    the run used to come out at 4.5% and exit 0 - a passing stress test
+    turning a failing run green.
+
+    Both halves are real objects put through their real ``to_dict()``.
+    """
+    batch = BatchMetricResult(
+        metric_name="toxicity",
+        metric_type=MetricType.TOXICITY,
+        results=[
+            MetricResult(
+                metric_name="toxicity",
+                metric_type=MetricType.TOXICITY,
+                score=0.9,
+                success=True,
+            )
+            for _ in range(5)
+        ] + [
+            MetricResult.errored(
+                metric_name="toxicity",
+                metric_type=MetricType.TOXICITY,
+                reason="judge unavailable",
+            )
+            for _ in range(5)
+        ],
+    ).to_dict()
+
+    stress = stress_dict(num_requests=100)
+    # Asserted off the raw request tallies, not the count keys, so that this
+    # test fails on the dilution itself rather than on a missing key if the
+    # requests ever go back into the measurement channel.
+    assert (stress["total_requests"], stress["failed_requests"]) == (100, 0)
+
+    consolidated = {
+        "targets": [{
+            "name": "t1",
+            "status": "success",
+            "evaluations": [batch],
+            "stress_testing": stress,
+        }]
+    }
+    outcome = compute_outcome(consolidated)
+
+    assert (outcome["scored"], outcome["errored"]) == (5, 5)
+    assert outcome["error_rate"] == 0.5
     assert outcome["status"] == "failed"
     assert exit_code_for(outcome) == 1
 
@@ -104,7 +180,7 @@ def test_stress_test_that_sent_nothing_fails_the_run():
         max_latency_ms=0.0,
     ).to_dict()
 
-    assert (result["scored_n"], result["errored_n"]) == (0, 1)
+    assert (result["load_scored_n"], result["load_errored_n"]) == (0, 1)
     assert exit_code_for(outcome_for(result)) == 1
 
 
@@ -143,5 +219,5 @@ def test_num_requests_zero_terminates_and_sends_nothing():
     assert not thread.is_alive(), "stress run with num_requests=0 did not terminate"
     result = outcome["result"]
     assert result["total_requests"] == 0
-    assert result["scored_n"] == 0
-    assert result["errored_n"] == 1
+    assert result["load_scored_n"] == 0
+    assert result["load_errored_n"] == 1

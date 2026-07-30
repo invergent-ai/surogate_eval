@@ -1,6 +1,6 @@
 # Eval Runner Fail-Closed Implementation Plan
 
-> **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
+> **How to use this plan:** work through the tasks in order; each one is self-contained and ends in a commit. Steps use checkbox (`- [ ]`) syntax so progress can be tracked in place.
 
 **Goal:** Make the eval runner report failure instead of fabricating scores, so a broken judge, a missing credential, or an unreachable target produces an error rather than a confident-looking zero.
 
@@ -19,7 +19,7 @@
 - No test may make a network call. Use fake targets and fake HTTP clients throughout.
 - Tests requiring deepeval need the `security` extra: `uv sync --extra security --extra test`.
 - Commit after every task. Conventional commit format: `type(scope): imperative summary`.
-- Never mention AI assistance in commit messages.
+- Commit messages describe the change and nothing else: no tooling notes, no attribution trailers.
 
 ---
 

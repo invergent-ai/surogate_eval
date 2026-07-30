@@ -94,6 +94,18 @@ class MetricResult:
         }
 
 
+@dataclass(frozen=True)
+class _Aggregates:
+    """Every figure derived from one partition of a batch's results."""
+
+    scored_results: List[MetricResult]
+    scored_n: int
+    errored_n: int
+    error_rate: float
+    avg_score: float
+    success_rate: float
+
+
 @dataclass
 class BatchMetricResult:
     """Results from batch evaluation."""
@@ -102,51 +114,65 @@ class BatchMetricResult:
     metric_type: MetricType
     results: List[MetricResult]
 
+    def _aggregate(self) -> _Aggregates:
+        """Partition the results once and derive everything from that.
+
+        Each property below used to rebuild the filtered list for itself, so
+        a single ``to_dict()`` walked the results five times.
+        """
+        scored = [r for r in self.results if r.status is MetricStatus.scored]
+        total = len(self.results)
+        scored_n = len(scored)
+
+        return _Aggregates(
+            scored_results=scored,
+            scored_n=scored_n,
+            errored_n=total - scored_n,
+            error_rate=((total - scored_n) / total) if total else 0.0,
+            avg_score=(sum(r.score for r in scored) / scored_n) if scored_n else 0.0,
+            success_rate=(
+                sum(1 for r in scored if r.success) / scored_n
+            ) if scored_n else 0.0,
+        )
+
     @property
     def scored_results(self) -> List[MetricResult]:
         """Results that are a measurement rather than a failure."""
-        return [r for r in self.results if r.status is MetricStatus.scored]
+        return self._aggregate().scored_results
 
     @property
     def scored_n(self) -> int:
-        return len(self.scored_results)
+        return self._aggregate().scored_n
 
     @property
     def errored_n(self) -> int:
-        return len(self.results) - self.scored_n
+        return self._aggregate().errored_n
 
     @property
     def error_rate(self) -> float:
-        if not self.results:
-            return 0.0
-        return self.errored_n / len(self.results)
+        return self._aggregate().error_rate
 
     @property
     def avg_score(self) -> float:
         """Average over what we could actually measure."""
-        scored = self.scored_results
-        if not scored:
-            return 0.0
-        return sum(r.score for r in scored) / len(scored)
+        return self._aggregate().avg_score
 
     @property
     def success_rate(self) -> float:
-        scored = self.scored_results
-        if not scored:
-            return 0.0
-        return sum(1 for r in scored if r.success) / len(scored)
+        return self._aggregate().success_rate
 
     def to_dict(self) -> Dict[str, Any]:
         """Convert to dictionary."""
+        aggregates = self._aggregate()
         return {
             'metric_name': self.metric_name,
             'metric_type': self.metric_type.value,
             'num_evaluations': len(self.results),
-            'scored_n': self.scored_n,
-            'errored_n': self.errored_n,
-            'error_rate': self.error_rate,
-            'avg_score': self.avg_score,
-            'success_rate': self.success_rate,
+            'scored_n': aggregates.scored_n,
+            'errored_n': aggregates.errored_n,
+            'error_rate': aggregates.error_rate,
+            'avg_score': aggregates.avg_score,
+            'success_rate': aggregates.success_rate,
             'results': [r.to_dict() for r in self.results]
         }
 

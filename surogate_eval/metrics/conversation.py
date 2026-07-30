@@ -7,6 +7,7 @@ import json
 import re
 
 from ..datasets import MultiTurnTestCase, TestCase
+from ..errors import JudgeParseError, JudgeUnavailableError
 from ..targets import TargetResponse
 from ..utils.logger import get_logger
 
@@ -28,6 +29,31 @@ def extract_json_from_response(response_text: str) -> str:
         return match.group(0).strip()
 
     return response_text.strip()
+
+
+def _no_output_result(
+        metric: LLMJudgeMetric,
+        target_response: Optional[TargetResponse],
+) -> MetricResult:
+    """Result for an empty target output, using the same rule as safety.py.
+
+    A failed request is a failure to measure. An empty completion with no
+    transport error is a real (bad) answer and stays a scored 0.0.
+    """
+    if target_response is not None and target_response.error:
+        return MetricResult.errored(
+            metric_name=metric.name,
+            metric_type=metric.metric_type,
+            reason=f"Target request failed: {target_response.error}",
+            metadata={'error_kind': 'target'},
+        )
+    return MetricResult(
+        metric_name=metric.name,
+        metric_type=metric.metric_type,
+        score=0.0,
+        success=False,
+        reason="No output to evaluate"
+    )
 
 
 @register_metric(MetricType.CONVERSATION_COHERENCE)
@@ -65,10 +91,17 @@ class ConversationCoherenceMetric(LLMJudgeMetric):
                 reason="Conversation coherence requires multi-turn test case"
             )
 
+        if not actual_output:
+            return _no_output_result(self, target_response)
+
         try:
             if not self.judge_target:
-                logger.warning("No judge target set, using simple heuristic")
-                return self._simple_coherence_check(test_case, actual_output)
+                return MetricResult.errored(
+                    metric_name=self.name,
+                    metric_type=self.metric_type,
+                    reason="No judge target set; cannot assess coherence.",
+                    metadata={'error_kind': 'no_judge'},
+                )
 
             window_size = self.config['window_size']
             num_turns = len(test_case.turns)
@@ -108,6 +141,9 @@ Provide your evaluation in JSON format:
             request = TargetRequest(prompt=prompt)
             response = self.judge_target.send_request(request)
 
+            if response.error:
+                raise JudgeUnavailableError(f"judge request failed: {response.error}")
+
             # Parse response
             try:
                 clean_json = extract_json_from_response(response.content)
@@ -122,7 +158,10 @@ Provide your evaluation in JSON format:
 
             except Exception as e:
                 logger.warning(f"Failed to parse coherence response: {e}")
-                return self._simple_coherence_check(test_case, actual_output)
+                logger.debug(f"Raw response: {response.content[:300]}")
+                raise JudgeParseError(
+                    f"judge returned unparseable coherence output: {e}"
+                ) from e
 
             return MetricResult(
                 metric_name=self.name,
@@ -140,24 +179,12 @@ Provide your evaluation in JSON format:
 
         except Exception as e:
             logger.error(f"Coherence evaluation failed: {e}")
-            return self._simple_coherence_check(test_case, actual_output)
-
-    def _simple_coherence_check(self, test_case: MultiTurnTestCase, actual_output: str) -> MetricResult:
-        """Fallback simple coherence heuristic."""
-        # Simple heuristic: longer conversations with responses get decent score
-        num_turns = len(test_case.turns)
-        has_output = len(actual_output.strip()) > 10
-
-        score = 0.7 if has_output and num_turns >= 2 else 0.5
-
-        return MetricResult(
-            metric_name=self.name,
-            metric_type=self.metric_type,
-            score=score,
-            success=True,
-            reason=f"Simple heuristic - {num_turns} turns",
-            metadata={'method': 'heuristic', 'num_turns': num_turns}
-        )
+            return MetricResult.errored(
+                metric_name=self.name,
+                metric_type=self.metric_type,
+                reason=f"Evaluation error: {e}",
+                metadata={'error_kind': type(e).__name__},
+            )
 
 
 @register_metric(MetricType.CONTEXT_RETENTION)
@@ -195,10 +222,17 @@ class ContextRetentionMetric(LLMJudgeMetric):
                 reason="Context retention requires multi-turn test case"
             )
 
+        if not actual_output:
+            return _no_output_result(self, target_response)
+
         try:
             if not self.judge_target:
-                logger.warning("No judge target set, using simple heuristic")
-                return self._simple_retention_check(test_case, actual_output)
+                return MetricResult.errored(
+                    metric_name=self.name,
+                    metric_type=self.metric_type,
+                    reason="No judge target set; cannot assess context retention.",
+                    metadata={'error_kind': 'no_judge'},
+                )
 
             # Build full conversation
             conversation_text = "\n".join([f"{turn.role}: {turn.content}" for turn in test_case.turns])
@@ -225,6 +259,9 @@ Provide your evaluation in JSON format:
             request = TargetRequest(prompt=prompt)
             response = self.judge_target.send_request(request)
 
+            if response.error:
+                raise JudgeUnavailableError(f"judge request failed: {response.error}")
+
             # Parse response
             try:
                 clean_json = extract_json_from_response(response.content)
@@ -240,7 +277,10 @@ Provide your evaluation in JSON format:
 
             except Exception as e:
                 logger.warning(f"Failed to parse retention response: {e}")
-                return self._simple_retention_check(test_case, actual_output)
+                logger.debug(f"Raw response: {response.content[:300]}")
+                raise JudgeParseError(
+                    f"judge returned unparseable context retention output: {e}"
+                ) from e
 
             threshold = self.config['key_info_threshold']
 
@@ -261,21 +301,12 @@ Provide your evaluation in JSON format:
 
         except Exception as e:
             logger.error(f"Context retention evaluation failed: {e}")
-            return self._simple_retention_check(test_case, actual_output)
-
-    def _simple_retention_check(self, test_case: MultiTurnTestCase, actual_output: str) -> MetricResult:
-        """Fallback simple retention heuristic."""
-        # Simple heuristic: assume decent retention if output is substantial
-        score = 0.75 if len(actual_output.strip()) > 20 else 0.5
-
-        return MetricResult(
-            metric_name=self.name,
-            metric_type=self.metric_type,
-            score=score,
-            success=True,
-            reason="Simple heuristic - substantial response",
-            metadata={'method': 'heuristic'}
-        )
+            return MetricResult.errored(
+                metric_name=self.name,
+                metric_type=self.metric_type,
+                reason=f"Evaluation error: {e}",
+                metadata={'error_kind': type(e).__name__},
+            )
 
 
 @register_metric(MetricType.TURN_ANALYSIS)
@@ -313,10 +344,17 @@ class TurnAnalysisMetric(LLMJudgeMetric):
                 reason="Turn analysis requires multi-turn test case"
             )
 
+        if not actual_output:
+            return _no_output_result(self, target_response)
+
         try:
             if not self.judge_target:
-                logger.warning("No judge target set, using simple heuristic")
-                return self._simple_turn_analysis(test_case, actual_output)
+                return MetricResult.errored(
+                    metric_name=self.name,
+                    metric_type=self.metric_type,
+                    reason="No judge target set; cannot assess turn quality.",
+                    metadata={'error_kind': 'no_judge'},
+                )
 
             # Analyze the final assistant turn (the actual_output)
             # Build context from previous turns
@@ -346,6 +384,9 @@ Provide your evaluation in JSON format:
             request = TargetRequest(prompt=prompt)
             response = self.judge_target.send_request(request)
 
+            if response.error:
+                raise JudgeUnavailableError(f"judge request failed: {response.error}")
+
             # Parse response
             try:
                 clean_json = extract_json_from_response(response.content)
@@ -361,7 +402,10 @@ Provide your evaluation in JSON format:
 
             except Exception as e:
                 logger.warning(f"Failed to parse turn analysis response: {e}")
-                return self._simple_turn_analysis(test_case, actual_output)
+                logger.debug(f"Raw response: {response.content[:300]}")
+                raise JudgeParseError(
+                    f"judge returned unparseable turn analysis output: {e}"
+                ) from e
 
             return MetricResult(
                 metric_name=self.name,
@@ -379,25 +423,9 @@ Provide your evaluation in JSON format:
 
         except Exception as e:
             logger.error(f"Turn analysis failed: {e}")
-            return self._simple_turn_analysis(test_case, actual_output)
-
-    def _simple_turn_analysis(self, test_case: MultiTurnTestCase, actual_output: str) -> MetricResult:
-        """Fallback simple turn analysis."""
-        # Simple heuristic based on response length
-        output_len = len(actual_output.strip())
-
-        if output_len > 50:
-            score = 0.75
-        elif output_len > 20:
-            score = 0.6
-        else:
-            score = 0.4
-
-        return MetricResult(
-            metric_name=self.name,
-            metric_type=self.metric_type,
-            score=score,
-            success=score >= 0.5,
-            reason=f"Simple heuristic - response length: {output_len}",
-            metadata={'method': 'heuristic', 'response_length': output_len}
-        )
+            return MetricResult.errored(
+                metric_name=self.name,
+                metric_type=self.metric_type,
+                reason=f"Evaluation error: {e}",
+                metadata={'error_kind': type(e).__name__},
+            )

@@ -4,7 +4,7 @@ import json
 import re
 
 from ..datasets import MultiTurnTestCase, TestCase
-from ..errors import JudgeParseError
+from ..errors import JudgeParseError, JudgeUnavailableError
 from ..targets import TargetResponse
 from ..utils.logger import get_logger
 
@@ -129,7 +129,7 @@ Provide your evaluation in JSON format:
             response = self.judge_target.send_request(request)
 
             if response.error:
-                raise JudgeParseError(f"judge request failed: {response.error}")
+                raise JudgeUnavailableError(f"judge request failed: {response.error}")
 
             # Parse response
             try:
@@ -259,7 +259,7 @@ Provide your evaluation in JSON format:
             response = self.judge_target.send_request(request)
 
             if response.error:
-                raise JudgeParseError(f"judge request failed: {response.error}")
+                raise JudgeUnavailableError(f"judge request failed: {response.error}")
 
             # Parse response
             try:
@@ -397,7 +397,7 @@ Provide your evaluation in JSON format:
             response = self.judge_target.send_request(request)
 
             if response.error:
-                raise JudgeParseError(f"judge request failed: {response.error}")
+                raise JudgeUnavailableError(f"judge request failed: {response.error}")
 
             # Parse response
             try:

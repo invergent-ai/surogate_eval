@@ -6,6 +6,12 @@ from surogate_eval.targets.base import TargetResponse
 
 PROSE = "Honestly this text seems fine to me, nothing concerning here."
 
+# Parses cleanly for all three metrics, so any errored result it produces
+# comes from the transport guard rather than the parse handler.
+PARSEABLE = (
+    '{"toxicity_score": 1, "bias_score": 1, "harm_score": 1, "reason": "fine"}'
+)
+
 
 class FakeJudge:
     def __init__(self, content=PROSE, error=None):
@@ -73,10 +79,13 @@ def test_missing_judge_is_errored(cls, metric_type):
     ],
 )
 def test_judge_transport_error_is_errored(cls, metric_type):
-    judge = FakeJudge(error="HTTP 500")
+    """The content is deliberately parseable: without the transport guard
+    this would score, so the test pins the guard and not the parse handler."""
+    judge = FakeJudge(content=PARSEABLE, error="HTTP 500")
     metric = build(cls, metric_type, judge)
     result = metric.evaluate(object(), TOXIC)
     assert result.status is MetricStatus.errored
+    assert result.metadata['error_kind'] == 'JudgeUnavailableError'
     assert judge.called is True
 
 

@@ -313,10 +313,13 @@ class StressTester:
             futures = []
 
             while True:
-                # Check stop conditions
-                if num_requests and request_count >= num_requests:
+                # Check stop conditions. `num_requests`/`duration_seconds` of 0
+                # are valid, meaningful values (stop immediately) and must not
+                # be treated the same as None (no such limit) by a truthiness
+                # check, or a 0 would never be able to stop the loop.
+                if num_requests is not None and request_count >= num_requests:
                     break
-                if duration_seconds and (time.time() - start_time) >= duration_seconds:
+                if duration_seconds is not None and (time.time() - start_time) >= duration_seconds:
                     break
                 if failures >= max_failures:
                     logger.warning(f"Stopping test: reached max failures ({max_failures})")
@@ -324,7 +327,7 @@ class StressTester:
 
                 # Submit new requests up to concurrency limit
                 while len(futures) < num_concurrent:
-                    if num_requests and request_count >= num_requests:
+                    if num_requests is not None and request_count >= num_requests:
                         break
 
                     test_case = self.test_cases[request_count % len(self.test_cases)]
@@ -366,7 +369,7 @@ class StressTester:
                     futures = [f for f in futures if f not in done_futures]
 
                     # Check duration for infinite requests mode
-                    if not num_requests and duration_seconds:
+                    if num_requests is None and duration_seconds is not None:
                         if (time.time() - start_time) >= duration_seconds:
                             break
 
@@ -475,8 +478,10 @@ class StressTester:
         else:
             avg_latency = median_latency = p95_latency = p99_latency = min_latency = max_latency = 0.0
 
-        # Calculate throughput
-        requests_per_second = len(results) / total_duration
+        # Calculate throughput. A num_requests=0 (or otherwise empty) run
+        # sends nothing and can finish in effectively zero time, so guard
+        # against dividing by a zero duration.
+        requests_per_second = (len(results) / total_duration) if total_duration > 0 else 0.0
 
         # Calculate token statistics
         token_results = [r for r in successful if r['tokens'] is not None]
@@ -501,7 +506,8 @@ class StressTester:
         logger.metric("Throughput", f"{requests_per_second:.2f} req/s")
         logger.metric("Avg Latency", f"{avg_latency:.1f}ms")
         logger.metric("P95 Latency", f"{p95_latency:.1f}ms")
-        logger.metric("Success Rate", f"{len(successful) / len(results):.1%}")
+        if results:
+            logger.metric("Success Rate", f"{len(successful) / len(results):.1%}")
 
         if tokens_per_second:
             logger.metric("Token Throughput", f"{tokens_per_second:.1f} tokens/s")

@@ -268,10 +268,12 @@ class EvalConfig:
     """
     project: Optional[ProjectConfig] = None
     targets: Optional[List[TargetConfig]] = None
+    max_error_rate: Optional[float] = None
 
     def __init__(self, cfg: DictDefault):
         self.project = ProjectConfig(cfg['project']) if cfg['project'] else None
         self.targets = [TargetConfig(t) for t in cfg['targets']] if cfg['targets'] else []
+        self.max_error_rate = cfg['max_error_rate']
         self.__post_init__()
 
     def __post_init__(self):

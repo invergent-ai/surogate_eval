@@ -6,6 +6,7 @@ from typing import Any, Dict, List
 
 from surogate_eval.backend import LocalBackend
 from surogate_eval.config.eval_config import TargetConfig
+from surogate_eval.outcome import DEFAULT_MAX_ERROR_RATE, compute_outcome, exit_code_for
 from surogate_eval.runners import (
     _write_progress,
     run_benchmarks,
@@ -42,8 +43,8 @@ class SurogateEval(SurogateCommand):
         }
         self.targets: List[BaseTarget] = []
 
-    def run(self):
-        """Run the evaluation pipeline."""
+    def run(self) -> int:
+        """Run the evaluation pipeline. Returns a process exit code."""
         from datetime import datetime
 
         logger.banner("SUROGATE EVAL")
@@ -60,8 +61,21 @@ class SurogateEval(SurogateCommand):
         finally:
             self._cleanup()
 
+        configured = self.config.max_error_rate
+        outcome = compute_outcome(
+            self.consolidated_results,
+            DEFAULT_MAX_ERROR_RATE if configured is None else float(configured),
+        )
+        self.consolidated_results["outcome"] = outcome
+
         self._save_consolidated_results()
-        logger.success("Surogate Eval completed")
+
+        if outcome["status"] == "completed":
+            logger.success("Surogate Eval completed")
+        else:
+            logger.error(f"Surogate Eval failed: {outcome['reason']}")
+
+        return exit_code_for(outcome)
 
     def _process_targets(self):
         """Process all targets from config."""

@@ -121,11 +121,24 @@ consolidated_results["outcome"] = {
 `run()` returns an exit code; `cli/eval.py` passes it to `sys.exit`. The run fails (exit 1) when:
 
 - zero targets are healthy (always, regardless of threshold), or
+- any configured target did not complete its evaluations (health check failed, target creation
+  failed, or the evaluation raised), or
+- a healthy target produced no countable results at all, or
 - `error_rate` exceeds `max_error_rate`.
 
 `error_rate` is **run-wide**, not per-metric: `errored_n / (scored_n + errored_n)` summed across
-every `MetricResult` produced by every metric on every target in the run. A run with no results
-at all has `error_rate = 0.0` and is caught by the zero-healthy-targets rule instead.
+every `MetricResult` produced by every metric on every target in the run.
+
+**A run with no results is not covered by the zero-healthy-targets rule.** An earlier version of
+this section claimed it was; that is false. The failures that produce no countable results
+happen *after* a target has passed its health check: an evaluation crashing wholesale, a metric
+raising, a benchmark or red-team or guardrails run failing, or a target with no evaluations
+configured. In every one of those cases the target is healthy, so the zero-healthy-targets rule
+never fires, and `total = 0` divides to `error_rate = 0.0` and reports "completed". Two rules
+close this. First, any node carrying a failure status (`failed`, `error`, `validation_failed`,
+`incompatible`, `unhealthy`) counts as one errored unit, so coarse failures above the metric
+level become countable. Second, a healthy target that produced zero countable results fails the
+run outright: "we measured nothing" is not a success.
 
 `max_error_rate` is configurable at the top level of the eval config, **default 0.2**:
 

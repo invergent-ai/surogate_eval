@@ -135,20 +135,34 @@ class SurogateEval(SurogateCommand):
             try:
                 target_results = self._run_target_evaluations(target, target_config)
                 if target_results:
-                    existing_idx = next(
-                        (i for i, t in enumerate(self.consolidated_results["targets"])
-                         if t.get("name") == target_name),
-                        None,
-                    )
-                    if existing_idx is not None:
-                        self.consolidated_results["targets"][existing_idx] = target_results
-                    else:
-                        self.consolidated_results["targets"].append(target_results)
+                    self._record_target_result(target_results)
 
             except Exception as e:
                 logger.error(f"Failed to run evaluations for target '{target_name}': {e}")
                 import traceback
                 traceback.print_exc()
+                # Record the crash. Without an entry the target is invisible
+                # both in the results file and to the outcome computation, so
+                # a run with another healthy target still reported success.
+                self._record_target_result({
+                    "name": target_name,
+                    "status": "failed",
+                    "error": str(e),
+                    "evaluations": [],
+                })
+
+    def _record_target_result(self, target_results: Dict[str, Any]) -> None:
+        """Insert or replace the consolidated entry for a target."""
+        target_name = target_results.get("name")
+        existing_idx = next(
+            (i for i, t in enumerate(self.consolidated_results["targets"])
+             if t.get("name") == target_name),
+            None,
+        )
+        if existing_idx is not None:
+            self.consolidated_results["targets"][existing_idx] = target_results
+        else:
+            self.consolidated_results["targets"].append(target_results)
 
     def _run_target_evaluations(self, target: BaseTarget, target_config: TargetConfig) -> Dict[str, Any]:
         """Run all evaluations for a single target."""

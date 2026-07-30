@@ -1,6 +1,6 @@
 # surogate/eval/stress/stress_tester.py
 from dataclasses import dataclass, field
-from typing import Dict, Any, List, Optional, Union
+from typing import Dict, Any, List, Optional, Tuple, Union
 import time
 import asyncio
 import statistics
@@ -78,9 +78,32 @@ class StressTestResult:
     breaking_point_concurrent: Optional[int] = None
     breaking_point_reason: Optional[str] = None
 
+    def result_counts(self) -> Tuple[int, int]:
+        """Countable units for the run outcome, as ``(scored, errored)``.
+
+        One unit is one request put to the target under load. A request that
+        came back is a measurement - it is what every latency and throughput
+        figure here is computed from (``_create_result`` derives its
+        percentiles from the successful requests alone). A request that
+        failed produced no sample, so it is errored.
+
+        Without these counts a stress test emitted nothing countable, and a
+        stress-only target tripped the "healthy target measured nothing"
+        rule and exited 1 after a perfectly good run.
+        """
+        if self.total_requests == 0:
+            # Nothing was sent. Reported as one errored unit so an empty
+            # stress test fails the run loudly instead of dissolving into a
+            # zero error rate, matching BenchmarkResult.result_counts().
+            return 0, 1
+        return self.successful_requests, self.failed_requests
+
     def to_dict(self) -> Dict[str, Any]:
         """Convert to dictionary."""
+        scored_n, errored_n = self.result_counts()
         return {
+            'scored_n': scored_n,
+            'errored_n': errored_n,
             'config': {
                 'num_concurrent': self.config.num_concurrent,
                 'duration_seconds': self.config.duration_seconds,

@@ -28,7 +28,8 @@ FAILED_STATUSES = frozenset({
 def _collect_counts(node: Any) -> Tuple[int, int]:
     """Sum (scored, errored) across an arbitrarily nested results tree.
 
-    A ``BatchMetricResult`` dict carries both summary counts and the
+    A summary dict - a metric batch, a benchmark, a red-team assessment, a
+    guardrails result - carries both ``scored_n``/``errored_n`` and the
     individual results that produced them, so when the summary keys are
     present we take those and do NOT descend, or every case is counted
     twice.
@@ -38,18 +39,29 @@ def _collect_counts(node: Any) -> Tuple[int, int]:
     results that also have to be counted.
     """
     if isinstance(node, dict):
+        # A failure status is counted wherever it appears, including on a
+        # node that also carries summary counts. Stated explicitly because
+        # the reverse precedence - counts winning and the failure being
+        # dropped - is silent, and silence is what this module exists to
+        # prevent. No emitter carries both today.
+        failed = 1 if node.get('status') in FAILED_STATUSES else 0
+
         if 'scored_n' in node and 'errored_n' in node:
-            return int(node['scored_n']), int(node['errored_n'])
+            # A summary node carries both the counts and the results that
+            # produced them, so take the counts and do NOT descend, or every
+            # case is counted twice. Checked before the MetricResult rule
+            # below because a metric batch carries a ``metric_name`` too.
+            return int(node['scored_n']), int(node['errored_n']) + failed
         if 'metric_name' in node and 'status' in node:
             # No production path emits a bare MetricResult dict today: every
             # result is wrapped in a batch. Kept deliberately as a
             # fail-closed net so that if one ever does, it is counted rather
-            # than silently ignored - which is the exact failure mode this
-            # module exists to prevent.
+            # than silently ignored. Its own status is the whole signal, so
+            # ``failed`` must not be added on top of it.
             return (1, 0) if node['status'] == 'scored' else (0, 1)
 
         scored = 0
-        errored = 1 if node.get('status') in FAILED_STATUSES else 0
+        errored = failed
         for value in node.values():
             s, e = _collect_counts(value)
             scored += s

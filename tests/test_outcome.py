@@ -1,3 +1,4 @@
+from surogate_eval.metrics.base import BatchMetricResult, MetricResult, MetricType
 from surogate_eval.outcome import (
     DEFAULT_MAX_ERROR_RATE,
     compute_outcome,
@@ -212,6 +213,37 @@ def test_completed_statuses_are_not_counted_as_errors():
     assert outcome["errored"] == 0
     assert outcome["status"] == "completed"
     assert exit_code_for(outcome) == 0
+
+
+def test_summary_counts_do_not_swallow_a_failure_status():
+    """No emitter carries both today. If one ever does, the failure must be
+    counted on top of the counts rather than losing to them - a silently
+    dropped failure is the exact bug this module exists to prevent.
+
+    The counts here come from a real BatchMetricResult, not a hand-written
+    shape; only the extra status is synthetic, because that is the
+    hypothetical being pinned down.
+    """
+    real_batch = BatchMetricResult(
+        metric_name="m",
+        metric_type=MetricType.TOXICITY,
+        results=[
+            MetricResult(
+                metric_name="m",
+                metric_type=MetricType.TOXICITY,
+                score=1.0,
+                success=True,
+            )
+        ],
+    ).to_dict()
+
+    consolidated = {
+        "targets": [target(evaluations=[{**real_batch, "status": "failed"}])]
+    }
+    outcome = compute_outcome(consolidated)
+    assert outcome["scored"] == 1
+    assert outcome["errored"] == 1
+    assert outcome["status"] == "failed"
 
 
 def test_failure_reason_is_populated():

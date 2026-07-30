@@ -35,16 +35,48 @@ class MetricType(Enum):
     CLASSIFICATION = "classification"
 
 
+class MetricStatus(str, Enum):
+    """Whether a result is a measurement or a failure to measure."""
+
+    scored = "scored"
+    errored = "errored"
+
+
 @dataclass
 class MetricResult:
     """Result from a metric evaluation."""
 
     metric_name: str
     metric_type: MetricType
-    score: float  # 0.0 to 1.0
+    score: Optional[float]
     success: bool
     reason: Optional[str] = None
     metadata: Dict[str, Any] = field(default_factory=dict)
+    status: MetricStatus = MetricStatus.scored
+
+    @classmethod
+    def errored(
+            cls,
+            *,
+            metric_name: str,
+            metric_type: MetricType,
+            reason: str,
+            metadata: Optional[Dict[str, Any]] = None,
+    ) -> "MetricResult":
+        """Build a result that records a failure to measure.
+
+        ``score`` is None rather than 0.0 so an error can never be
+        averaged into a score (E-RUN-1).
+        """
+        return cls(
+            metric_name=metric_name,
+            metric_type=metric_type,
+            score=None,
+            success=False,
+            reason=reason,
+            metadata=metadata or {},
+            status=MetricStatus.errored,
+        )
 
     def to_dict(self) -> Dict[str, Any]:
         """Convert to dictionary."""
@@ -53,6 +85,7 @@ class MetricResult:
             'metric_type': self.metric_type.value,
             'score': self.score,
             'success': self.success,
+            'status': self.status.value,
             'reason': self.reason,
             'metadata': self.metadata
         }
@@ -67,18 +100,38 @@ class BatchMetricResult:
     results: List[MetricResult]
 
     @property
-    def avg_score(self) -> float:
-        """Calculate average score."""
+    def scored_results(self) -> List[MetricResult]:
+        """Results that are a measurement rather than a failure."""
+        return [r for r in self.results if r.status is MetricStatus.scored]
+
+    @property
+    def scored_n(self) -> int:
+        return len(self.scored_results)
+
+    @property
+    def errored_n(self) -> int:
+        return len(self.results) - self.scored_n
+
+    @property
+    def error_rate(self) -> float:
         if not self.results:
             return 0.0
-        return sum(r.score for r in self.results) / len(self.results)
+        return self.errored_n / len(self.results)
+
+    @property
+    def avg_score(self) -> float:
+        """Average over what we could actually measure."""
+        scored = self.scored_results
+        if not scored:
+            return 0.0
+        return sum(r.score for r in scored) / len(scored)
 
     @property
     def success_rate(self) -> float:
-        """Calculate success rate."""
-        if not self.results:
+        scored = self.scored_results
+        if not scored:
             return 0.0
-        return sum(1 for r in self.results if r.success) / len(self.results)
+        return sum(1 for r in scored if r.success) / len(scored)
 
     def to_dict(self) -> Dict[str, Any]:
         """Convert to dictionary."""
@@ -86,6 +139,9 @@ class BatchMetricResult:
             'metric_name': self.metric_name,
             'metric_type': self.metric_type.value,
             'num_evaluations': len(self.results),
+            'scored_n': self.scored_n,
+            'errored_n': self.errored_n,
+            'error_rate': self.error_rate,
             'avg_score': self.avg_score,
             'success_rate': self.success_rate,
             'results': [r.to_dict() for r in self.results]

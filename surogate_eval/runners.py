@@ -30,7 +30,12 @@ def run_evaluation(
     """
     from surogate_eval.datasets import DatasetLoader, DatasetValidator
     from surogate_eval.datasets.test_case import TestCase, MultiTurnTestCase
-    from surogate_eval.metrics import MetricRegistry, LLMJudgeMetric
+    from surogate_eval.metrics import (
+        BatchMetricResult,
+        LLMJudgeMetric,
+        MetricRegistry,
+        MetricResult,
+    )
     from surogate_eval.targets.base import TargetRequest
 
     eval_name = eval_config.get("name", "unnamed")
@@ -201,7 +206,29 @@ def run_evaluation(
                 logger.error(f"Metric {metric.name} failed: {e}")
                 import traceback
                 logger.debug(traceback.format_exc())
-                metric_results[metric.name] = {"error": str(e), "status": "failed"}
+
+                # One errored unit per case that went unmeasured. A bare
+                # {"error": ...} dict counted as a single error however many
+                # cases the batch was going to measure, so a 200-case metric
+                # crashing looked no worse than one bad answer.
+                unmeasured = len(metric_test_cases) or 1
+                failed_batch = BatchMetricResult(
+                    metric_name=metric.name,
+                    metric_type=metric.metric_type,
+                    results=[
+                        MetricResult.errored(
+                            metric_name=metric.name,
+                            metric_type=metric.metric_type,
+                            reason=f"Metric batch failed: {e}",
+                            metadata={'error_kind': type(e).__name__},
+                        )
+                        for _ in range(unmeasured)
+                    ],
+                )
+                # ``error`` marks the metric as failed in the report; no
+                # ``status`` alongside it, or the outcome walk would count the
+                # crash once more on top of the per-case counts.
+                metric_results[metric.name] = {**failed_batch.to_dict(), "error": str(e)}
 
         detailed_results_list = [detailed_results[i] for i in sorted(detailed_results.keys())]
 

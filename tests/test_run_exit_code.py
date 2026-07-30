@@ -405,3 +405,37 @@ def test_broken_judge_exits_one(tmp_path, monkeypatch, fake_targets):
     assert outcome["scored"] == 0
     assert outcome["errored"] == 2
     assert exit_code == 1
+
+
+def test_crashed_metric_batch_counts_every_unmeasured_case(
+    tmp_path, monkeypatch, fake_targets
+):
+    """A whole batch blowing up used to be recorded as a single errored unit,
+    however many cases it was going to measure."""
+    from surogate_eval.metrics.safety import ToxicityMetric
+
+    def boom(self, *args, **kwargs):
+        raise RuntimeError("judge client exploded")
+
+    monkeypatch.setattr(ToxicityMetric, "evaluate_batch", boom)
+
+    dataset = write_dataset(tmp_path)  # two rows
+    config = build_config(tmp_path, [target_block("t1", dataset)])
+
+    command = SurogateEval(config=config, args={})
+    monkeypatch.chdir(tmp_path)
+    exit_code = command.run()
+
+    results = command.get_results()
+    summary = results["targets"][0]["evaluations"][0]["metrics_summary"][
+        "t1-toxicity"
+    ]
+    assert (summary["scored_n"], summary["errored_n"]) == (0, 2)
+    assert summary["avg_score"] == 0.0
+    assert all(r["score"] is None for r in summary["results"])
+    assert "judge client exploded" in summary["error"]
+
+    outcome = results["outcome"]
+    assert outcome["scored"] == 0
+    assert outcome["errored"] == 2
+    assert exit_code == 1

@@ -110,7 +110,12 @@ def test_crashed_evaluation_fails_the_run():
 
 
 def test_crashed_metric_fails_the_run():
-    """A metric that raises is stored as {"error": ..., "status": "failed"}."""
+    """A bare {"error": ..., "status": "failed"} node still fails the run.
+
+    runners.py no longer emits this for a crashed metric - it emits a real
+    batch with one errored result per unmeasured case - but the rule is kept
+    as a fail-closed net for any node that carries only a failure status.
+    """
     consolidated = {
         "targets": [target(evaluations=[{
             "name": "e1",

@@ -85,3 +85,22 @@ def test_local_target_probes_in_the_same_order():
     target.base_url = "http://localhost:8000/v1"
     assert target.health_check() is False
     assert client.calls == ["/models", "/v1/models", "/health"]
+
+
+def test_local_target_does_not_stop_at_a_401():
+    """No credential is in play locally, so a 401 is just the wrong path and
+    the probe carries on to /health."""
+    client = FakeClient(status_code=401)
+    target = make_target("", client)
+    target.base_url = "http://localhost:8000/v1"
+    assert target.health_check() is False
+    assert client.calls == ["/models", "/v1/models", "/health"]
+
+
+def test_remote_target_stops_at_a_401():
+    """A key the server refuses on one path it will refuse on the next."""
+    client = FakeClient(status_code=401)
+    target = make_target("sk-wrong", client)
+    target.base_url = "https://api.example.com"
+    assert target.health_check() is False
+    assert client.calls == ["/v1/models"]

@@ -192,20 +192,55 @@ class APIModelTarget(BaseTarget):
             return ("/models", "/v1/models")
         return ("/v1/models", "/models")
 
+    def _probe_paths(
+            self,
+            paths,
+            timeout: float,
+            rejected_credential_is_fatal: bool,
+    ) -> Optional[bool]:
+        """Try each path in turn.
+
+        ``True`` as soon as one answers 200. A path that cannot be reached
+        at all is skipped, since the next one may still answer. When
+        ``rejected_credential_is_fatal``, a 401/403 ends the probe with
+        ``False``, because a key the server refuses on one path it will
+        refuse on the rest. ``None`` means nothing answered either way, so
+        the caller says why it is giving up.
+        """
+        for path in paths:
+            try:
+                response = self.client.get(path, timeout=timeout)
+            except Exception:
+                continue
+            if response.status_code == 200:
+                logger.debug(f"{self.name}: {path} probe healthy")
+                return True
+            if rejected_credential_is_fatal and response.status_code in (401, 403):
+                logger.error(
+                    f"{self.name}: credential rejected by {path} "
+                    f"(HTTP {response.status_code})"
+                )
+                return False
+
+        return None
+
     def health_check(self) -> bool:
         """Check if API is accessible."""
         try:
             # For localhost/local endpoints - try various health endpoints
             # Check this FIRST before provider-specific logic
             if any(x in self.base_url for x in ['localhost', '127.0.0.1', '0.0.0.0']):
-                for path in self._model_list_paths() + ("/health",):
-                    try:
-                        response = self.client.get(path, timeout=5)
-                    except Exception:
-                        continue
-                    if response.status_code == 200:
-                        logger.debug(f"{self.name}: {path} endpoint healthy")
-                        return True
+                # A local server has no credential to reject, so a 4xx here
+                # is just the wrong path and the probe moves on. The 5s/10s
+                # split between this branch and the remote one is unexplained
+                # but kept: changing it changes how long a wedged endpoint
+                # blocks a run.
+                if self._probe_paths(
+                        self._model_list_paths() + ("/health",),
+                        timeout=5,
+                        rejected_credential_is_fatal=False,
+                ) is True:
+                    return True
 
                 logger.warning(f"Health check failed for {self.name}. Ensure server is running at {self.base_url}")
                 return False
@@ -220,20 +255,13 @@ class APIModelTarget(BaseTarget):
                 logger.error(f"No API key provided for {self.name}")
                 return False
 
-            for path in self._model_list_paths():
-                try:
-                    response = self.client.get(path, timeout=10)
-                except Exception:
-                    continue
-                if response.status_code == 200:
-                    logger.debug(f"{self.name}: {path} probe healthy")
-                    return True
-                if response.status_code in (401, 403):
-                    logger.error(
-                        f"{self.name}: credential rejected by {path} "
-                        f"(HTTP {response.status_code})"
-                    )
-                    return False
+            probe = self._probe_paths(
+                self._model_list_paths(),
+                timeout=10,
+                rejected_credential_is_fatal=True,
+            )
+            if probe is not None:
+                return probe
 
             logger.error(
                 f"Could not verify {self.name} at {self.base_url}; "

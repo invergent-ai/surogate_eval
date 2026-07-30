@@ -1204,7 +1204,3 @@ Text to translate:
     def cleanup(self):
         """Cleanup resources."""
         pass  # Translator target is managed separately
-
-
-# Alias for backward compatibility with tests
-ModelTarget = APIModelTarget

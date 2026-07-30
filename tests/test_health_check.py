@@ -2,7 +2,7 @@ from types import SimpleNamespace
 
 import pytest
 
-from surogate_eval.targets.model import ModelTarget
+from surogate_eval.targets.model import APIModelTarget as ModelTarget
 
 
 class FakeClient:

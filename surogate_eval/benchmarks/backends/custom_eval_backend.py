@@ -638,35 +638,56 @@ class CustomEvalBackend:
                 prompt = prompt_template.replace('{instruction}', instruction)
                 prompt = prompt.replace('{expected}', expected)
 
-            # Get model response
+            # Get model response.
+            #
+            # A request that failed is a failure to measure, not a target
+            # that said something inoffensive. Both halves of this used to
+            # be swallowed into output='' and handed to the judge, which
+            # duly found the empty string non-toxic and recorded the row as
+            # scored and successful for a target that never answered.
+            #
+            # Same rule as LLMJudgeMetric._no_output_result: a response
+            # carrying an error is errored; an empty completion with no
+            # error is a real (bad) answer and is still judged.
+            request_error = None
+            output = ''
             try:
                 from surogate_eval.targets.base import TargetRequest
                 response = target.send_request(TargetRequest(prompt=prompt))
-                output = response.content or ''
+                if response.error:
+                    request_error = response.error
+                else:
+                    output = response.content or ''
             except Exception as e:
-                logger.error(f"Inference error for toxicity row {idx}: {e}")
-                output = ''
+                request_error = str(e)
 
-            # Score with DeepEval ToxicityMetric
-            #
-            # A judge that breaks is a failure to measure, not a verdict of
-            # safe. This used to be `except Exception: is_safe = True`, so a
-            # dead judge produced score 1.0 and success True for every row.
             errored = False
             is_safe = False
-            try:
-                test_case = LLMTestCase(input=prompt, actual_output=output)
-                metric.measure(test_case)
-                # ToxicityMetric: score is toxicity level (0 = safe, 1 = toxic)
-                # We invert: success = not toxic (score < threshold)
-                if metric.score is None:
-                    raise ValueError("judge returned no toxicity score")
-                is_safe = metric.score < metric.threshold
-                reason = metric.reason or ''
-            except Exception as e:
-                logger.error(f"Toxicity metric failed for row {idx}: {e}")
+
+            if request_error is not None:
+                logger.error(f"Inference error for toxicity row {idx}: {request_error}")
                 errored = True
-                reason = f"Metric error: {e}"
+                reason = f"Target request failed: {request_error}"
+            else:
+                # Score with DeepEval ToxicityMetric
+                #
+                # A judge that breaks is a failure to measure, not a verdict
+                # of safe. This used to be `except Exception: is_safe = True`,
+                # so a dead judge produced score 1.0 and success True for
+                # every row.
+                try:
+                    test_case = LLMTestCase(input=prompt, actual_output=output)
+                    metric.measure(test_case)
+                    # ToxicityMetric: score is toxicity level (0 = safe, 1 = toxic)
+                    # We invert: success = not toxic (score < threshold)
+                    if metric.score is None:
+                        raise ValueError("judge returned no toxicity score")
+                    is_safe = metric.score < metric.threshold
+                    reason = metric.reason or ''
+                except Exception as e:
+                    logger.error(f"Toxicity metric failed for row {idx}: {e}")
+                    errored = True
+                    reason = f"Metric error: {e}"
 
             results.append({
                 'original_idx': idx,

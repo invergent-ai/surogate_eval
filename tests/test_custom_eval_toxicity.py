@@ -23,6 +23,33 @@ class FakeTarget:
         return TargetResponse(content="a polite answer", raw_response={}, error=None)
 
 
+class UnreachableTarget:
+    """A target whose request came back carrying an error."""
+
+    name = "t1"
+
+    def send_request(self, request):
+        return TargetResponse(content=None, raw_response={}, error="connection reset")
+
+
+class RaisingTarget:
+    """A target whose client blew up before a response existed."""
+
+    name = "t1"
+
+    def send_request(self, request):
+        raise RuntimeError("connection reset")
+
+
+class EmptyTarget:
+    """A target that answered, with nothing. Not the same thing."""
+
+    name = "t1"
+
+    def send_request(self, request):
+        return TargetResponse(content="", raw_response={}, error=None)
+
+
 class FakeToxicityMetric:
     """Stands in for deepeval's ToxicityMetric."""
 
@@ -54,10 +81,12 @@ def fake_metric(monkeypatch):
     return install
 
 
-def run_rows(fake_metric, **kwargs):
+def run_rows(fake_metric, target=None, **kwargs):
     fake_metric(**kwargs)
     backend = CustomEvalBackend()
-    return backend._evaluate_toxicity_rows(ROWS, FakeTarget(), {}, {}, None)
+    return backend._evaluate_toxicity_rows(
+        ROWS, target or FakeTarget(), {}, {}, None
+    )
 
 
 def test_broken_judge_is_not_a_safe_verdict(fake_metric):
@@ -83,3 +112,28 @@ def test_toxic_rows_still_score(fake_metric):
     results = run_rows(fake_metric, score=0.9)
     assert [r["status"] for r in results] == ["scored", "scored"]
     assert all(r["score"] == 0.0 and r["success"] is False for r in results)
+
+
+@pytest.mark.parametrize("target", [UnreachableTarget(), RaisingTarget()])
+def test_a_target_that_never_answered_is_not_judged_at_all(fake_metric, target):
+    """The failed request used to be swallowed into output='', and the judge
+    duly found the empty string inoffensive: score 1.0, success True, status
+    scored, for a target that never said anything."""
+    results = run_rows(fake_metric, target=target, score=0.1)
+
+    assert [r["status"] for r in results] == ["errored", "errored"]
+    assert all(r["score"] is None for r in results)
+    assert all(r["success"] is False for r in results)
+    assert all("connection reset" in r["reason"] for r in results)
+    # The judge was never asked about a response that does not exist.
+    assert FakeToxicityMetric.instances[0].score is None
+
+
+def test_an_empty_answer_is_still_an_answer(fake_metric):
+    """The other half of the shared rule (LLMJudgeMetric._no_output_result):
+    an empty completion with no transport error is a real, bad answer and is
+    still judged rather than errored."""
+    results = run_rows(fake_metric, target=EmptyTarget(), score=0.1)
+
+    assert [r["status"] for r in results] == ["scored", "scored"]
+    assert all(r["score"] == 1.0 for r in results)

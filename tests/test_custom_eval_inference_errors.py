@@ -6,6 +6,10 @@ failed or raising `send_request` and record it as a scored 0.0 row - the
 same confusion `_evaluate_toxicity_rows` was fixed for elsewhere on this
 branch, and the same fake zero that gets averaged into the benchmark score.
 No network: the targets and the G-Eval judge are both fakes.
+
+The same rule covers the two failures that are not the target's: a row that
+cannot be compared and a judge that breaks. Both are failures to measure,
+so both produce one errored row and leave the rest of the benchmark alone.
 """
 
 import pytest
@@ -89,6 +93,56 @@ def test_exact_match_healthy_target_still_scores():
 
     assert [r["status"] for r in results] == ["scored", "scored"]
     assert results[0]["success"] is True  # "something" matches row 0's answer
+
+
+# --- rows that cannot be compared ------------------------------------------
+
+NUMERIC_ROWS = [
+    {"instruction": "What is 6 * 7?", "answer": 42, "_original_idx": 0},
+    {"instruction": "Say something", "answer": "something", "_original_idx": 1},
+]
+
+
+def test_exact_match_row_that_cannot_be_compared_errors_only_that_row():
+    """A numeric ``answer`` column is inferred as int64, so ``expected``
+    arrives as an int and ``_normalize_output`` calls ``.strip()`` on it.
+    Left outside the protected region the AttributeError escaped the row
+    loop and the whole benchmark - every row already measured with it."""
+    backend = CustomEvalBackend()
+    results = backend._evaluate_exact_match_rows(NUMERIC_ROWS, FakeTarget(), {}, {})
+
+    assert [r["status"] for r in results] == ["errored", "scored"]
+    assert results[0]["score"] is None
+    assert results[0]["success"] is False
+    # The healthy row is still measured: "something" matches row 1's answer.
+    assert results[1]["score"] == 1.0
+
+
+def test_numeric_answer_column_benchmark_still_reports_counts(tmp_path):
+    """End to end through ``evaluate()`` with a numeric answer column, the
+    shape any numeric-QA dataset has. The benchmark must come back with its
+    counts, not raise and be flattened into a status-only failure node."""
+    import json
+
+    dataset_path = tmp_path / "numeric.jsonl"
+    rows = [
+        {"instruction": "What is 6 * 7?", "answer": 42},
+        {"instruction": "What is 1 + 1?", "answer": 2},
+    ]
+    with open(dataset_path, "w") as f:
+        for row in rows:
+            f.write(json.dumps(row) + "\n")
+
+    backend = CustomEvalBackend()
+    result = backend.evaluate(
+        FakeTarget(),
+        "numeric_bench",
+        {"source": str(dataset_path), "eval_type": "exact_match"},
+    )
+
+    em = result["task_results"]["exact_match"]
+    assert (em["scored_n"], em["errored_n"]) == (0, 2)
+    assert all(r["score"] is None for r in result["detailed_results"])
 
 
 # --- judge -------------------------------------------------------------

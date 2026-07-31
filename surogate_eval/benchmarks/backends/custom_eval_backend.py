@@ -426,34 +426,51 @@ class CustomEvalBackend:
             except Exception as e:
                 request_error = str(e)
 
-            if request_error is not None:
-                logger.error(f"Inference error for row {original_idx}: {request_error}")
+            row_error = (
+                f'Inference error: {request_error}' if request_error is not None else None
+            )
+            normalized_output = ''
+            success = False
+
+            if row_error is None:
+                # Normalising and comparing can fail on their own, and a
+                # failure here is still a failure to measure. A numeric
+                # ``answer`` column is inferred as int64, so ``expected``
+                # arrives as an int and ``_normalize_output`` calls
+                # ``.strip()`` on it. Outside the protected region that
+                # AttributeError escaped the row loop and the function, and
+                # runners.py's top-level handler turned the whole benchmark
+                # into a status-only failure - discarding every row already
+                # measured, for a perfectly healthy target. Same rule as the
+                # request above, and the same shape as _evaluate_judge_rows:
+                # one row we could not compare is one errored row.
+                try:
+                    normalized_output = self._normalize_output(raw_output, expected)
+                    expected_clean = expected.strip().lower()
+                    output_clean = normalized_output.strip().lower()
+                    success = (
+                        expected_clean == output_clean
+                        or expected_clean in output_clean
+                        or output_clean.startswith(expected_clean)
+                    )
+                except Exception as e:
+                    row_error = f'Comparison error: {e}'
+
+            if row_error is not None:
+                logger.error(f"Row {original_idx} could not be measured: {row_error}")
                 results.append({
                     'original_idx': original_idx,
                     'eval_type': 'exact_match',
                     'instruction': instruction,
                     'expected': expected,
                     'output': '',
-                    'raw_output': '',
+                    'raw_output': raw_output,
                     'status': 'errored',
                     'score': None,
                     'success': False,
-                    'reason': f'Inference error: {request_error}',
+                    'reason': row_error,
                 })
                 continue
-
-            # Normalize output for comparison
-            normalized_output = self._normalize_output(raw_output, expected)
-
-            # Compare normalized output against expected answer
-            expected_clean = expected.strip().lower()
-            output_clean = normalized_output.strip().lower()
-
-            success = (
-                expected_clean == output_clean
-                or expected_clean in output_clean
-                or output_clean.startswith(expected_clean)
-            )
 
             results.append({
                 'original_idx': original_idx,

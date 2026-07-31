@@ -75,7 +75,19 @@ async def model_callback(input: str, turns: list = None) -> str:
     return "I cannot help with that."
 
 
-def deepteam_batch(attacks=4, poison=POISONED, ignore_errors=None):
+async def failing_model_callback(input: str, turns: list = None) -> str:
+    """The real callback's contract: a target failure raises.
+
+    See ``RedTeamRunner.run``'s ``model_callback`` - there is no error slot
+    in DeepTeam's callback signature, so raising is how a target failure is
+    signalled.
+    """
+    if POISONED in (input or ""):
+        raise RuntimeError("Target request failed: connection reset")
+    return "I cannot help with that."
+
+
+def deepteam_batch(attacks=4, poison=POISONED, ignore_errors=None, callback=None):
     """Run DeepTeam's real per-attack loop over a batch of attacks.
 
     Returns the ``RTTestCase`` list DeepTeam hands back, exactly as
@@ -105,7 +117,7 @@ def deepteam_batch(attacks=4, poison=POISONED, ignore_errors=None):
 
     return asyncio.run(
         red_teamer._a_evaluate_vulnerability_type(
-            model_callback=model_callback,
+            model_callback=callback or model_callback,
             vulnerabilities=[vulnerability],
             vulnerability_type=vulnerability_type,
             simulated_test_cases=simulated,
@@ -303,6 +315,57 @@ def test_a_judge_failure_on_one_harmful_prompt_errors_only_that_prompt(monkeypat
     assert result.harmful_prompts_errored == 1
     assert result.result_counts() == (3, 1)
     assert result.to_dict()["harmful_prompts"]["errored"] == 1
+
+
+class ReadingRefusalJudge:
+    """A refusal judge that can only rule on a response it can read.
+
+    Real judges behave this way: handed "AI Response: None" there is nothing
+    to assess, so the answer comes back without a YES or a NO in it and the
+    evaluator's unclear-answer fallback (``return not is_harmful``) decides
+    for it - which for a harmful prompt means "the target complied".
+    """
+
+    name = "refusal-judge"
+    config = {}
+
+    def send_request(self, request):
+        if "AI Response: None" in request.prompt:
+            return TargetResponse(
+                content="There is no response here to assess.",
+                raw_response={},
+                error=None,
+            )
+        return TargetResponse(content="YES", raw_response={}, error=None)
+
+
+def test_a_target_failure_is_not_a_harmful_prompt_the_model_answered(monkeypatch):
+    """Guardrails half of the callback fix that red-team already has.
+
+    The callback raises on one of four attacks, so DeepTeam marks that case
+    and leaves it without an ``actual_output``. Guardrails read the attribute
+    regardless, judged "AI Response: None", and recorded a fabricated
+    "complied with a harmful attack" verdict - one prompt counted as tested
+    that was never put to the model, and a refusal rate dragged down by an
+    unreachable target.
+    """
+    cases = deepteam_batch(attacks=4, poison=None, callback=failing_model_callback)
+
+    # DeepTeam absorbed the target failure into one case and left it unscored.
+    assert sum(1 for case in cases if case.error is not None) == 1
+    assert sum(1 for case in cases if case.actual_output is None) == 1
+
+    assessment, _ = red_team_dict(cases)
+    evaluator = guardrails_evaluator(monkeypatch, ReadingRefusalJudge(), assessment)
+
+    result = asyncio.run(evaluator.evaluate())
+
+    assert result.harmful_prompts_tested == 3
+    assert result.harmful_prompts_errored == 1
+    assert result.result_counts() == (3, 1)
+    # Every prompt the model actually answered was a refusal. The
+    # unreachable one must not read as a guardrails failure.
+    assert result.refusal_rate == 1.0
 
 
 def test_a_failed_scan_is_counted_instead_of_collapsing_the_evaluation(monkeypatch):

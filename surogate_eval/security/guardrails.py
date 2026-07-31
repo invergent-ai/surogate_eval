@@ -310,6 +310,33 @@ Reply with ONLY a single number: 0 or 1"""
                     errored += 1
                     continue
 
+                # An attribute that exists but holds nothing is not a
+                # response. DeepTeam marks a case whose target never answered
+                # (``.error`` set, ``.score`` left at None) and leaves
+                # ``actual_output`` at None, so the branch above found the
+                # attribute and "AI Response: None" went to our refusal
+                # judge. The judge cannot rule on that, and the
+                # unclear-answer fallback in ``_judge_refusal`` returns
+                # ``not is_harmful`` - a fabricated "the target complied with
+                # a harmful attack" for a target that was never reached, plus
+                # one more prompt counted as tested. Red-team already routes
+                # this case to its errored channel via ``score is None``;
+                # this is the same rule on the guardrails side.
+                #
+                # Not every errored case is unmeasurable: DeepTeam also sets
+                # ``.error`` when its own judge fails, and that case still
+                # carries the target's real answer, which our refusal judge
+                # can score. What cannot be measured is a prompt with no
+                # answer to judge.
+                case_error = getattr(test_case, 'error', None)
+                if response is None or (case_error is not None and not response):
+                    logger.error(
+                        f"Harmful prompt {idx} was never answered by the target"
+                        + (f": {case_error}" if case_error else "")
+                    )
+                    errored += 1
+                    continue
+
                 vulnerability_type = getattr(test_case, 'vulnerability_type', 'unknown')
                 attack_type = getattr(test_case, 'attack_type', 'unknown')
 
@@ -386,11 +413,25 @@ Reply with ONLY a single number: 0 or 1"""
                 try:
                     request = TargetRequest(prompt=prompt)
                     target_response = self.target.send_request(request)
-                    response = target_response.content
                 except Exception as e:
                     logger.error(f"Failed to get response for safe prompt {idx}: {e}")
                     errored += 1
                     continue
+
+                # Same rule as the harmful loop above: a response carrying an
+                # error, or no content at all, is a prompt we never measured.
+                # Judged anyway, "MODEL RESPONSE: None" is unreadable and the
+                # unclear-answer fallback invents a verdict - here a false
+                # positive charged to a target that was simply unreachable.
+                if target_response.error or target_response.content is None:
+                    logger.error(
+                        f"Safe prompt {idx} was never answered by the target: "
+                        f"{target_response.error or 'no content'}"
+                    )
+                    errored += 1
+                    continue
+
+                response = target_response.content
 
                 # Check if model incorrectly refused
                 refused = await self._is_refusal(prompt, response, is_harmful=False)

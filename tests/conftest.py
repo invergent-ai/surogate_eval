@@ -15,9 +15,17 @@ This keeps ``datasets.load_dataset('csv', ...)`` (used by the benchmark tests
 in ``tests/test_run_exit_code.py`` over a local, on-disk CSV) from doing a
 Hub lookup before falling back to the local file. No test may make a network
 call.
+
+``DEEPTEAM_TELEMETRY_OPT_OUT`` is here for the same reason and with the same
+urgency. ``deepteam.telemetry`` runs its opt-out check at import time, and
+without it the import itself resolves and calls api.ipify.org, then wires up
+Sentry and an OTLP exporter. ``surogate_eval.security.red_team`` sets the
+variable, but only once it has been imported - which is too late for any
+test module that reaches deepteam by another route first.
 """
 
 import os
 
 os.environ.setdefault("HF_HUB_OFFLINE", "1")
 os.environ.setdefault("HF_DATASETS_OFFLINE", "1")
+os.environ.setdefault("DEEPTEAM_TELEMETRY_OPT_OUT", "YES")

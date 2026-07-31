@@ -16,12 +16,21 @@ in ``tests/test_run_exit_code.py`` over a local, on-disk CSV) from doing a
 Hub lookup before falling back to the local file. No test may make a network
 call.
 
-``DEEPTEAM_TELEMETRY_OPT_OUT`` is here for the same reason and with the same
-urgency. ``deepteam.telemetry`` runs its opt-out check at import time, and
-without it the import itself resolves and calls api.ipify.org, then wires up
-Sentry and an OTLP exporter. ``surogate_eval.security.red_team`` sets the
-variable, but only once it has been imported - which is too late for any
-test module that reaches deepteam by another route first.
+The telemetry opt-outs are here for the same reason and with the same
+urgency. ``deepteam.telemetry`` and ``deepeval.telemetry`` run their opt-out
+checks at import time, and without them the import itself resolves and calls
+api.ipify.org, then wires up Sentry with a live DSN and an OTLP exporter.
+``surogate_eval.security.red_team`` and ``surogate_eval.eval`` set these
+variables, but only once they have been imported - too late for any test
+module that reaches the library by another route first.
+
+**This file is not early enough for all of it.** ``deepeval`` registers a
+pytest plugin (entry point ``deepeval -> deepeval.plugins.plugin``), so
+pytest imports the package during startup, before it reads any conftest -
+and the telemetry has already run by the time the line below executes. What
+actually stops that is ``addopts = "-p no:deepeval"`` in ``pyproject.toml``,
+which refuses to load the plugin at all. The variable below still matters
+for the test modules that import deepeval themselves, later on.
 """
 
 import os
@@ -29,3 +38,4 @@ import os
 os.environ.setdefault("HF_HUB_OFFLINE", "1")
 os.environ.setdefault("HF_DATASETS_OFFLINE", "1")
 os.environ.setdefault("DEEPTEAM_TELEMETRY_OPT_OUT", "YES")
+os.environ.setdefault("DEEPEVAL_TELEMETRY_OPT_OUT", "YES")

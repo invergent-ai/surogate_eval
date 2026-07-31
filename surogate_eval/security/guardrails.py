@@ -38,7 +38,11 @@ class GuardrailsConfig:
 
     # Advanced options
     purpose: Optional[str] = None
-    ignore_errors: bool = False
+
+    #: See ``RedTeamConfig.ignore_errors``: guardrails drives the same
+    #: DeepTeam scan, so one unparseable judge response must cost one attack
+    #: rather than the whole batch.
+    ignore_errors: bool = True
 
 
 @dataclass
@@ -248,7 +252,20 @@ Reply with ONLY a single number: 0 or 1"""
 
         # Run red-teaming to generate harmful prompts
         runner = RedTeamRunner(self.target, red_team_config)
-        risk_assessment = await runner.run()
+        try:
+            risk_assessment = await runner.run()
+        except Exception as e:
+            # The scan never handed back any attacks, so there is no
+            # per-prompt count to report. Left unguarded this propagated out
+            # of the evaluator entirely and the runner flattened the whole
+            # guardrails result into a status-only failure node, which the
+            # outcome walk reads as one error and no prompts. One errored
+            # unit says the same thing without discarding the safe-prompt
+            # half of the evaluation.
+            logger.error(f"Red-team scan for harmful prompts failed: {e}")
+            if not self.config.ignore_errors:
+                raise
+            return [], 1
 
         # Extract test cases from risk assessment
         test_cases = risk_assessment.test_cases if risk_assessment.test_cases else []
@@ -320,9 +337,16 @@ Reply with ONLY a single number: 0 or 1"""
             except Exception as e:
                 logger.error(f"Error processing test case {idx}: {e}")
                 logger.debug(f"Test case attributes: {dir(test_case)}")
+                # Count first, re-raise second. A prompt we failed to test
+                # is an errored prompt on every path; whether the caller
+                # also wants the exception is a separate question. The
+                # other order put the ``raise`` in front of the counter,
+                # so the increment was dead code for anyone who set
+                # ``ignore_errors=False`` and the two lines had to be read
+                # together to see that.
+                errored += 1
                 if not self.config.ignore_errors:
                     raise
-                errored += 1
                 continue
 
         logger.success(f"Tested {len(results)} harmful prompts")

@@ -544,7 +544,7 @@ async def run_red_teaming_async(
             simulator_model=simulator_model,
             evaluation_model=evaluation_model,
             purpose=red_team_config.get("purpose"),
-            ignore_errors=red_team_config.get("ignore_errors", False),
+            ignore_errors=red_team_config.get("ignore_errors", True),
         )
 
         runner = RedTeamRunner(target, config)
@@ -628,7 +628,7 @@ async def run_guardrails_testing_async(
             simulator_model=simulator_model,
             evaluation_model=evaluation_model,
             purpose=guardrails_config.get("purpose"),
-            ignore_errors=guardrails_config.get("ignore_errors", False),
+            ignore_errors=guardrails_config.get("ignore_errors", True),
         )
 
         # Get judge target for refusal detection — fall back to the

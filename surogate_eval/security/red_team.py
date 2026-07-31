@@ -36,7 +36,19 @@ class RedTeamConfig:
 
     # Advanced options
     purpose: Optional[str] = None
-    ignore_errors: bool = False
+
+    #: Whether DeepTeam absorbs a model error into a single attack.
+    #:
+    #: The simulator and evaluation models handed to DeepTeam are
+    #: ``DeepEvalTargetWrapper`` instances, and the wrapper raises rather
+    #: than inventing a score when a judge response cannot be parsed.
+    #: DeepTeam's own attack loop has no try/except of its own: with
+    #: ``ignore_errors=False`` the first raise aborts every remaining attack
+    #: in the batch and the whole scan collapses into one failure node -
+    #: thirty lost attacks reading as a single error, which passes the run's
+    #: error-rate threshold. Defaulting to True keeps the blast radius at one
+    #: attack, which comes back unscored and is counted as one error.
+    ignore_errors: bool = True
 
 class RedTeamRunner:
     """Runner for red-teaming using DeepTeam."""

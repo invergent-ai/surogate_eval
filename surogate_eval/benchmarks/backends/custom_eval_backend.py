@@ -627,10 +627,13 @@ class CustomEvalBackend:
                 logger.debug(f"Row {original_idx} judge score: {metric.score:.3f}")
 
             except Exception as e:
-                # A judge that breaks is a failure of the judge, not of the
-                # target's answer - out of scope for this pass (which is
-                # about inference errors above), left as-is: still counted
-                # as scored, still averaged in at 0.0.
+                # A judge that breaks is a failure to measure, not a target
+                # that answered badly. Recorded as a scored 0.0 it left
+                # ``errored_n`` at zero while dragging ``avg_score``,
+                # ``accuracy`` and ``overall_score`` down with fake zeroes -
+                # the same confusion ``_evaluate_toxicity_rows`` handles as
+                # errored. The target's answer is kept: what failed is the
+                # judgement of it.
                 logger.error(f"G-Eval failed for row {original_idx}: {e}")
                 results.append({
                     'original_idx': original_idx,
@@ -639,8 +642,8 @@ class CustomEvalBackend:
                     'expected': expected,
                     'output': normalized_output,
                     'raw_output': raw_output,
-                    'status': 'scored',
-                    'score': 0.0,
+                    'status': 'errored',
+                    'score': None,
                     'success': False,
                     'reason': f'Judge error: {str(e)}',
                     'criteria': row_criteria,

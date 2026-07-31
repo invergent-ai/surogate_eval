@@ -205,6 +205,49 @@ def test_judge_empty_answer_is_still_judged(fake_geval):
     assert all(r["score"] == 0.9 for r in results)
 
 
+def test_judge_that_breaks_errors_the_row_instead_of_scoring_it_zero(fake_geval):
+    """A judge that raises is a failure to measure, not a target that
+    answered badly. This branch recorded it as a scored 0.0, so
+    ``errored_n`` stayed at zero while ``avg_score`` and the benchmark's
+    ``overall_score`` were dragged down by fake zeroes.
+    ``_evaluate_toxicity_rows`` already treats a broken judge this way."""
+    results = run_judge_rows(fake_geval, raises=RuntimeError("judge exploded"))
+
+    assert [r["status"] for r in results] == ["errored", "errored"]
+    assert all(r["score"] is None for r in results)
+    assert all(r["success"] is False for r in results)
+    assert all("judge exploded" in r["reason"] for r in results)
+    # The target answered: what failed is the judge, and its answer is kept.
+    assert all(r["raw_output"] == "something" for r in results)
+
+
+def test_judge_errors_are_reported_in_the_summary_counts(monkeypatch, tmp_path):
+    """The counts outcome.py reads must show the judge failure. A scored 0.0
+    left ``errored_n`` at zero, so the run exited 0 on a dead judge."""
+    import json
+
+    FakeGEval.instances.clear()
+    monkeypatch.setattr(
+        ceb, "GEval",
+        lambda **kwargs: FakeGEval(raises=RuntimeError("judge exploded"), **kwargs),
+    )
+
+    dataset_path = tmp_path / "judge.jsonl"
+    with open(dataset_path, "w") as f:
+        for row in [{"instruction": "q1", "answer": "a1"}, {"instruction": "q2", "answer": "a2"}]:
+            f.write(json.dumps(row) + "\n")
+
+    backend = CustomEvalBackend()
+    result = backend.evaluate(
+        FakeTarget(), "judge_bench", {"source": str(dataset_path), "eval_type": "judge"}
+    )
+
+    judge = result["task_results"]["judge"]
+    assert (judge["scored_n"], judge["errored_n"]) == (0, 2)
+    assert judge["avg_score"] == 0.0
+    assert result["overall_score"] == 0.0
+
+
 def test_judge_healthy_target_still_scores(fake_geval):
     results = run_judge_rows(fake_geval, target=FakeTarget(), score=0.9)
 

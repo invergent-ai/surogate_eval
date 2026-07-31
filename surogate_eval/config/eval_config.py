@@ -17,6 +17,7 @@ SUPPORT_MODEL_KEYS = (
     'refusal_judge_model',
     'simulator_model',
     'evaluation_model',
+    'translator',
 )
 
 

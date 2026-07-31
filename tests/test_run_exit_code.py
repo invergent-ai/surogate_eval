@@ -177,6 +177,31 @@ def security_target_block(name, section):
 """
 
 
+def red_team_target_block_with_translator(name, translator_name):
+    """A red-team-only target whose ``red_teaming.translator`` names another
+    target by ``{target: <name>}``, the same reference shape ``judge_model``
+    and friends use. ``run_red_teaming_async`` resolves it through the same
+    ``find_target_fn`` (surogate_eval/runners.py, ~line 578)."""
+    return f"""\
+  - name: {name}
+    type: llm
+    provider: openai
+    model: gpt-4
+    api_key: sk-test
+    evaluations: []
+
+    red_teaming:
+      enabled: true
+      vulnerabilities:
+        - pii_leakage
+      attacks:
+        - prompt_injection
+      attacks_per_vulnerability: 1
+      translator:
+        target: {translator_name}
+"""
+
+
 def build_config(tmp_path, blocks):
     text = "project:\n  name: exit-code-itest\ntargets:\n" + "".join(blocks)
     path = tmp_path / "eval.yaml"
@@ -475,6 +500,57 @@ def test_shipped_example_judges_are_support_targets(monkeypatch, path, judges):
     config = load_config(EvalConfig, str(REPO_ROOT / path))
 
     assert judges <= config.support_target_names()
+
+
+def test_translator_only_target_is_treated_as_support_and_run_exits_zero(
+    tmp_path, monkeypatch, fake_targets, stub_deepteam_scan
+):
+    """A translator declared only so another target's red-team translator can
+    name it is the same "support target" shape as a judge or simulator - it
+    is asked for nothing of its own, so its silence must not fail the run.
+
+    ``SUPPORT_MODEL_KEYS`` (surogate_eval/config/eval_config.py) is what
+    ``support_target_names()`` and the outcome exemption are keyed on; a
+    translator reference that traversal does not know about leaves this
+    target planning no work and named by nobody, which lands it in
+    ``empty_targets`` and fails the run.
+    """
+    stub_deepteam_scan([deepteam_case(score=1.0), deepteam_case(score=0.0)])
+    config = build_config(
+        tmp_path,
+        [
+            red_team_target_block_with_translator("t1", "translator-ro"),
+            support_target_block("translator-ro"),
+        ],
+    )
+
+    command = SurogateEval(config=config, args={})
+    monkeypatch.chdir(tmp_path)
+    exit_code = command.run()
+
+    results = command.get_results()
+    targets = {t["name"]: t for t in results["targets"]}
+    assert targets["translator-ro"]["status"] == "success"
+    assert targets["translator-ro"]["requested_work"] == []
+    assert targets["translator-ro"]["support_target"] is True
+
+    outcome = results["outcome"]
+    assert outcome["status"] == "completed"
+    assert exit_code == 0
+
+
+def test_dangling_translator_target_is_rejected_at_config_load(tmp_path):
+    """A dangling ``judge_model.target`` fails config load with "not found in
+    configured targets" (see ``_validate_target_references``). A dangling
+    ``translator.target`` must be rejected the same way, not accepted and
+    left to degrade into a runtime ``logger.warning`` when the run tries to
+    resolve it.
+    """
+    with pytest.raises(ValueError, match="not found in configured targets"):
+        build_config(
+            tmp_path,
+            [red_team_target_block_with_translator("t1", "nonexistent-translator")],
+        )
 
 
 def test_benchmark_only_run_exits_zero(tmp_path, monkeypatch, fake_targets):

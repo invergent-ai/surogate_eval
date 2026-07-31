@@ -502,8 +502,9 @@ targets:
       # Optional: describe your model
       purpose: "Customer support chatbot"
       
-      # Error handling
-      ignore_errors: false
+      # Error handling. Leave this on: with it off, the first attack
+      # whose judge response cannot be parsed aborts the whole scan.
+      ignore_errors: true
 ```
 
 ### Configuration Options
@@ -520,7 +521,7 @@ targets:
 | `simulator_model` | string | gpt-4o-mini | Model for generating attacks |
 | `evaluation_model` | string | gpt-4o-mini | Model for evaluating results |
 | `purpose` | string | null | Description of target model |
-| `ignore_errors` | bool | false | Continue on errors |
+| `ignore_errors` | bool | true | Keep a failed attack from aborting the scan |
 
 ---
 

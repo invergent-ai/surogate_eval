@@ -2,11 +2,16 @@
 import asyncio
 import os
 from pathlib import Path
-from typing import Any, Dict, List
+from typing import Any, Dict, List, Tuple
 
 from surogate_eval.backend import LocalBackend
 from surogate_eval.config.eval_config import TargetConfig
-from surogate_eval.outcome import DEFAULT_MAX_ERROR_RATE, compute_outcome, exit_code_for
+from surogate_eval.outcome import (
+    DEFAULT_MAX_ERROR_RATE,
+    REQUESTED_WORK_KEY,
+    compute_outcome,
+    exit_code_for,
+)
 from surogate_eval.runners import (
     _write_progress,
     run_benchmarks,
@@ -25,6 +30,11 @@ os.environ["DEEPEVAL_TELEMETRY_OPT_OUT"] = "1"
 os.environ["DEEPEVAL_FILE_SYSTEM"] = "READ_ONLY"
 os.environ["EVALSCOPE_CACHE"] = os.path.join(os.path.expanduser("~"), ".cache", "evalscope")
 os.environ["MODELSCOPE_TRUST_REMOTE_CODE"] = "1"
+
+#: Work kinds dispatched by the shared benchmark loop in
+#: ``_run_target_evaluations`` - one progress entry each. Metric evaluations
+#: and stress testing are planned the same way but dispatched on their own.
+BENCHMARK_LOOP_KINDS = ("benchmark", "red_teaming", "guardrails")
 
 
 class SurogateEval(SurogateCommand):
@@ -164,9 +174,51 @@ class SurogateEval(SurogateCommand):
         else:
             self.consolidated_results["targets"].append(target_results)
 
+    @staticmethod
+    def _plan_work(target_config: TargetConfig) -> List[Tuple[str, Any]]:
+        """Everything this target's config asks us to run, in dispatch order.
+
+        The single answer to "what was this target asked to do?". A target
+        that plans no work - a judge, a simulator, an evaluation model
+        declared only so another target can name it - is a support target:
+        it is never asked to measure anything, so producing nothing is its
+        expected outcome rather than a failed run.
+
+        ``_run_target_evaluations`` dispatches from this list and records it
+        verbatim on the target entry, so ``outcome.py`` decides on a declared
+        fact instead of guessing intent from the results that came back. Any
+        new kind of work has to be planned here to run at all, which is what
+        keeps the record honest without anyone remembering to update it: the
+        list that runs and the list we claim to have asked for are one list.
+        """
+        plan: List[Tuple[str, Any]] = []
+
+        evaluations = target_config.evaluations or []
+        for eval_config in evaluations:
+            plan.append(("evaluation", eval_config))
+        for eval_config in evaluations:
+            for bench_config in eval_config.get("benchmarks", []):
+                plan.append(("benchmark", bench_config))
+
+        red_teaming = target_config.red_teaming or {}
+        if red_teaming.get("enabled"):
+            plan.append(("red_teaming", red_teaming))
+
+        guardrails_cfg = target_config.guardrails or {}
+        if guardrails_cfg.get("enabled"):
+            plan.append(("guardrails", guardrails_cfg))
+
+        stress_testing = target_config.stress_testing or {}
+        if stress_testing.get("enabled"):
+            plan.append(("stress_testing", stress_testing))
+
+        return plan
+
     def _run_target_evaluations(self, target: BaseTarget, target_config: TargetConfig) -> Dict[str, Any]:
         """Run all evaluations for a single target."""
         target_name = target.name
+
+        work = self._plan_work(target_config)
 
         target_result = {
             "name": target_name,
@@ -174,13 +226,17 @@ class SurogateEval(SurogateCommand):
             "model": target.config.get("model", "unknown"),
             "provider": target.config.get("provider", "unknown"),
             "status": "success",
+            # What we asked this target for, taken from the plan dispatched
+            # below rather than restated. An empty list marks a support
+            # target, whose silence outcome.py must not read as a failure.
+            REQUESTED_WORK_KEY: [kind for kind, _ in work],
             "evaluations": [],
         }
 
         backend = self._setup_target_backend(target_config)
 
         # Run evaluations
-        evaluations = target_config.evaluations or []
+        evaluations = [cfg for kind, cfg in work if kind == "evaluation"]
         if evaluations:
             logger.info(f"Running {len(evaluations)} evaluation(s) for target '{target_name}'")
             self.consolidated_results["summary"]["total_evaluations"] += len(evaluations)
@@ -193,26 +249,15 @@ class SurogateEval(SurogateCommand):
         else:
             logger.warning(f"No evaluations specified for target '{target_name}'")
 
-        # Build unified task list: standard benchmarks + security tests.
-        # All go through the same loop with consistent progress tracking
-        # and per-benchmark result file writing.
-        red_teaming = target_config.red_teaming or {}
-        guardrails_cfg = target_config.guardrails or {}
-
-        tasks: list[tuple[str, Any]] = []
-        for eval_config in evaluations:
-            for bc in eval_config.get("benchmarks", []):
-                tasks.append(("benchmark", bc))
-        if red_teaming.get("enabled"):
-            tasks.append(("red_teaming", red_teaming))
-        if guardrails_cfg.get("enabled"):
-            tasks.append(("guardrails", guardrails_cfg))
+        # Standard benchmarks + security tests all go through the same loop
+        # with consistent progress tracking and per-benchmark result file
+        # writing.
+        tasks = [(kind, cfg) for kind, cfg in work if kind in BENCHMARK_LOOP_KINDS]
 
         # Run stress testing (separate — not a scored benchmark)
-        stress_testing = target_config.stress_testing or {}
-        if stress_testing.get("enabled"):
+        for stress_config in [cfg for kind, cfg in work if kind == "stress_testing"]:
             logger.info(f"Running stress testing for target '{target_name}'")
-            stress_result = run_stress_testing(target, stress_testing)
+            stress_result = run_stress_testing(target, stress_config)
             if stress_result:
                 target_result["stress_testing"] = stress_result
 

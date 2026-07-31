@@ -31,6 +31,30 @@ An emitter picks its channel(s) by which pair(s) of keys it emits. Nothing
 here knows what a "stress test" is; it only knows what an emitter declared.
 A node that declares both pairs feeds both channels - see ``_collect_counts``
 for how a failure status is charged when that happens.
+
+Silence, and who is allowed it
+------------------------------
+"A healthy target produced nothing" is a failure only if we asked that
+target to produce something. Not every entry in ``targets:`` is under test.
+A judge, a simulator, an evaluation model is a *support* target: it is
+declared so another target's config can reference it by name, it has no
+``evaluations``/``benchmarks``/``red_teaming``/``guardrails``/stress section
+of its own, and it is never asked to measure anything. Its silence is the
+expected outcome, not a broken run.
+
+That question - what was this target asked to do? - cannot be answered from
+the results. Inferring it from what came back is what made this rule fire on
+three separate healthy runs (benchmark-only, stress-only, judge-only), each
+patched by teaching the walk about one more emitter. So it is not inferred
+here at all: ``eval.py`` writes down its work plan for a target under
+``REQUESTED_WORK_KEY`` at the moment it dispatches that plan, and this module
+reads the declaration. An entry with an empty plan was asked for nothing and
+may be silent; an entry that does not declare at all is assumed to have been
+asked, so a runner that forgets to write the plan down fails loudly rather
+than silencing the rule.
+
+A run in which *no* target was asked for anything is still a failed run: that
+is a config that measures nothing, whatever its targets are.
 """
 
 from typing import Any, Dict, List, NamedTuple
@@ -44,6 +68,10 @@ MEASUREMENT_COUNT_KEYS = ('scored_n', 'errored_n')
 
 #: Keys an emitter uses to declare load-generation counts.
 LOAD_COUNT_KEYS = ('load_scored_n', 'load_errored_n')
+
+#: Key a target entry uses to declare the work its runner dispatched for it.
+#: Written by ``eval.py`` from the same plan it executes.
+REQUESTED_WORK_KEY = 'requested_work'
 
 
 class Counts(NamedTuple):
@@ -79,6 +107,21 @@ def _rate(errored: int, total: int) -> float:
 
 def _has_keys(node: Dict[str, Any], keys) -> bool:
     return all(key in node for key in keys)
+
+
+def _was_asked_to_work(entry: Dict[str, Any]) -> bool:
+    """Was this target dispatched any work at all?
+
+    Reads the plan ``eval.py`` recorded on the entry. Fail-closed on an
+    entry that carries no declaration: an old results file, or a future
+    runner that builds an entry without writing its plan down, is treated
+    as having been asked - the alternative is a missing key quietly
+    exempting a genuinely silent target from the rule below.
+    """
+    requested = entry.get(REQUESTED_WORK_KEY)
+    if requested is None:
+        return True
+    return bool(requested)
 
 
 def _collect_counts(node: Any) -> Counts:
@@ -162,6 +205,7 @@ def compute_outcome(
     """Decide whether a finished run should be reported as failed."""
     targets = consolidated.get('targets') or []
     healthy = [t for t in targets if t.get('status') == 'success']
+    asked = [t for t in targets if _was_asked_to_work(t)]
 
     totals = Counts()
     empty_targets: List[str] = []
@@ -176,12 +220,19 @@ def compute_outcome(
         # into the run-wide error rate it disappears behind a busier target.
         if entry.get('status') in FAILED_STATUSES:
             broken_targets.append(name)
-        # A target that passed its health check and then produced nothing at
-        # all is not a success. "We measured nothing" used to divide to an
-        # error rate of 0.0 and exit 0. Load counts answer this question -
-        # a stress-only target did do work - even though they are excluded
-        # from the error rate below.
-        elif entry.get('status') == 'success' and target_counts.evidence == 0:
+        # A target that passed its health check, was asked to produce
+        # something and then produced nothing at all is not a success. "We
+        # measured nothing" used to divide to an error rate of 0.0 and exit
+        # 0. Load counts answer this question - a stress-only target did do
+        # work - even though they are excluded from the error rate below.
+        #
+        # A target that was asked for nothing is exempt: see "Silence, and
+        # who is allowed it" above. Being asked for nothing is checked here,
+        # per target, and again run-wide below, because a config in which
+        # nobody was asked for anything measures nothing and must fail.
+        elif (entry.get('status') == 'success'
+                and target_counts.evidence == 0
+                and _was_asked_to_work(entry)):
             empty_targets.append(name)
 
     error_rate = _rate(totals.errored, totals.measured)
@@ -204,6 +255,11 @@ def compute_outcome(
         reason = (
             'No results were produced for target(s) '
             f'{", ".join(empty_targets)}; nothing was measured.'
+        )
+    elif not asked:
+        status = 'failed'
+        reason = (
+            'No target was asked to run anything; nothing was measured.'
         )
     elif error_rate > max_error_rate:
         status = 'failed'

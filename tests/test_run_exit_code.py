@@ -51,7 +51,7 @@ def write_dataset(tmp_path):
     return path
 
 
-def target_block(name, dataset, with_evaluations=True):
+def target_block(name, dataset, with_evaluations=True, judge=None):
     block = f"""\
   - name: {name}
     type: llm
@@ -68,9 +68,44 @@ def target_block(name, dataset, with_evaluations=True):
           - name: {name}-toxicity
             type: toxicity
             judge_model:
-              target: {name}
+              target: {judge or name}
 """
     return block
+
+
+def support_target_block(name):
+    """A target declared only so another target's metric can name it.
+
+    No ``evaluations``, no benchmarks, no security section, no stress: it is
+    never asked to measure anything. The shape of the judge in
+    examples/custom_eval_test_gpt.yaml and examples/custom_eval_test.yaml.
+    """
+    return target_block(name, dataset=None, with_evaluations=False)
+
+
+def unmeasurable_target_block(name, dataset):
+    """Asked to evaluate, with a metric that cannot read the dataset.
+
+    ``conversation_coherence`` is multi-turn only, so pointing it at a
+    single-turn dataset leaves ``run_evaluation`` with no compatible metric
+    and it returns None. A real misconfiguration that passes config
+    validation, and the target ends up healthy with nothing to show.
+    """
+    return f"""\
+  - name: {name}
+    type: llm
+    provider: openai
+    model: gpt-4
+    api_key: sk-test
+    evaluations:
+      - name: {name}-eval
+        dataset: {dataset}
+        metrics:
+          - name: {name}-coherence
+            type: conversation_coherence
+            judge_model:
+              target: {name}
+"""
 
 
 def benchmark_target_block(name, dataset):
@@ -252,6 +287,95 @@ def test_healthy_target_with_no_evaluations_exits_one(
     exit_code = command.run()
 
     assert command.get_results()["outcome"]["status"] == "failed"
+    assert exit_code == 1
+
+
+def test_judge_only_support_target_does_not_fail_the_run(
+    tmp_path, monkeypatch, fake_targets
+):
+    """The shipped way to configure an external judge.
+
+    Two targets: the subject, which is what we asked to evaluate, and a
+    judge declared only so the subject's metric can reference it by name.
+    The judge is healthy and produces no results of its own because nothing
+    ever asked it to - every measurement it takes part in is recorded
+    against the subject. A run in which every case was scored and nothing
+    errored is a passing run.
+    """
+    dataset = write_dataset(tmp_path)
+    config = build_config(
+        tmp_path,
+        [support_target_block("judge"), target_block("subject", dataset, judge="judge")],
+    )
+
+    command = SurogateEval(config=config, args={})
+    monkeypatch.chdir(tmp_path)
+    exit_code = command.run()
+
+    results = command.get_results()
+    targets = {t["name"]: t for t in results["targets"]}
+    assert targets["judge"]["status"] == "success"
+    # The judge was asked for nothing; the subject was asked to evaluate.
+    assert targets["judge"]["requested_work"] == []
+    assert "evaluation" in targets["subject"]["requested_work"]
+
+    outcome = results["outcome"]
+    assert outcome["scored"] == 2
+    assert outcome["errored"] == 0
+    assert outcome["status"] == "completed"
+    assert outcome["reason"] is None
+    assert exit_code == 0
+
+
+def test_target_asked_to_evaluate_that_produced_nothing_exits_one(
+    tmp_path, monkeypatch, fake_targets
+):
+    """The rule the support-target exemption must not weaken.
+
+    This target was asked to evaluate and came back with nothing, because
+    its only metric cannot read the dataset it was pointed at. Healthy, an
+    evaluation on its work plan, and not one result to show for it. Being
+    asked and staying silent is the failure the rule exists for, and no
+    exemption applies to it.
+    """
+    dataset = write_dataset(tmp_path)
+    config = build_config(tmp_path, [unmeasurable_target_block("t1", dataset)])
+
+    command = SurogateEval(config=config, args={})
+    monkeypatch.chdir(tmp_path)
+    exit_code = command.run()
+
+    results = command.get_results()
+    assert results["targets"][0]["requested_work"] == ["evaluation"]
+    assert results["targets"][0]["evaluations"] == []
+
+    outcome = results["outcome"]
+    assert outcome["status"] == "failed"
+    assert "nothing was measured" in outcome["reason"]
+    assert exit_code == 1
+
+
+def test_a_run_of_only_support_targets_exits_one(tmp_path, monkeypatch, fake_targets):
+    """Support targets are exempt one by one, not collectively.
+
+    Every target healthy, every target asked for nothing: this config
+    measures nothing at all, which is a failed run however many judges it
+    declares.
+    """
+    config = build_config(
+        tmp_path, [support_target_block("judge-a"), support_target_block("judge-b")]
+    )
+
+    command = SurogateEval(config=config, args={})
+    monkeypatch.chdir(tmp_path)
+    exit_code = command.run()
+
+    results = command.get_results()
+    assert [t["status"] for t in results["targets"]] == ["success", "success"]
+
+    outcome = results["outcome"]
+    assert outcome["status"] == "failed"
+    assert "asked to run anything" in outcome["reason"]
     assert exit_code == 1
 
 

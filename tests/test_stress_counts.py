@@ -221,3 +221,89 @@ def test_num_requests_zero_terminates_and_sends_nothing():
     assert result["total_requests"] == 0
     assert result["load_scored_n"] == 0
     assert result["load_errored_n"] == 1
+
+
+def stress_failure(dataset=None):
+    """Drive the real runner down a path that never reaches ``to_dict()``.
+
+    A missing ``dataset`` key takes the config guard; a path that is not
+    there takes the catch-all, via the real loader's FileNotFoundError.
+    Both are reachable from a working config: ``_validate_file_paths`` only
+    warns about a stress dataset it cannot find, so a typo survives
+    validation and lands here.
+    """
+    from surogate_eval.runners import run_stress_testing
+
+    config = {} if dataset is None else {"dataset": str(dataset)}
+    return run_stress_testing(FakeTarget(), config)
+
+
+def half_measured_batch():
+    """Sixteen metric cases scored, four errored: 20.0%, exactly at the
+    default threshold and therefore still a passing run."""
+    return BatchMetricResult(
+        metric_name="toxicity",
+        metric_type=MetricType.TOXICITY,
+        results=[
+            MetricResult(
+                metric_name="toxicity",
+                metric_type=MetricType.TOXICITY,
+                score=0.9,
+                success=True,
+            )
+            for _ in range(16)
+        ] + [
+            MetricResult.errored(
+                metric_name="toxicity",
+                metric_type=MetricType.TOXICITY,
+                reason="judge unavailable",
+            )
+            for _ in range(4)
+        ],
+    ).to_dict()
+
+
+def test_a_stress_crash_declares_the_load_channel(tmp_path):
+    """Both early returns skip ``StressTestResult.to_dict()``, so they have
+    to name their own channel or the outcome walk guesses - and its guess
+    is the measurement channel."""
+    for crash in (stress_failure(), stress_failure(tmp_path / "typo.csv")):
+        assert (crash["load_scored_n"], crash["load_errored_n"]) == (0, 0)
+        assert "scored_n" not in crash and "errored_n" not in crash
+
+
+def test_a_stress_crash_cannot_move_the_measurement_error_rate(tmp_path):
+    """The verdict flip. Sixteen scored and four errored metric cases sit at
+    20.0%, exactly at the threshold and passing. A stress test that died
+    before its first request used to be charged to the measurement channel
+    as a twenty-first evaluation, taking the run to 5 of 21 - 23.8% - and
+    failing it for a reason that had nothing to do with the metrics.
+
+    The crash still fails the run. It fails it on the load channel, where a
+    load failure belongs.
+    """
+    batch = half_measured_batch()
+
+    without_stress = compute_outcome({
+        "targets": [{"name": "t1", "status": "success", "evaluations": [batch]}]
+    })
+    assert (without_stress["scored"], without_stress["errored"]) == (16, 4)
+    assert without_stress["error_rate"] == 0.2
+    assert without_stress["status"] == "completed"
+
+    with_stress = compute_outcome({
+        "targets": [{
+            "name": "t1",
+            "status": "success",
+            "evaluations": [batch],
+            "stress_testing": stress_failure(tmp_path / "typo.csv"),
+        }]
+    })
+
+    assert (with_stress["scored"], with_stress["errored"]) == (16, 4)
+    assert with_stress["error_rate"] == without_stress["error_rate"]
+    assert (with_stress["load_scored"], with_stress["load_errored"]) == (0, 1)
+    assert with_stress["load_error_rate"] == 1.0
+    assert with_stress["status"] == "failed"
+    assert "load" in with_stress["reason"].lower()
+    assert exit_code_for(with_stress) == 1

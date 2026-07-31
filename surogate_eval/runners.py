@@ -425,6 +425,29 @@ def _run_single_benchmark(
         return {"benchmark_name": benchmark_name, "status": "failed", "error": str(e)}
 
 
+def _stress_failure(reason: str) -> Dict[str, Any]:
+    """A stress run that ended before it could report its own counts.
+
+    These are the paths that never reach ``StressTestResult.to_dict()``: a
+    missing dataset, or anything raised on the way to the first request. They
+    used to return a bare status, which carries no count keys, so the outcome
+    walk fell through to its generic failure branch and charged the crash to
+    the MEASUREMENT channel - the one thing the load/measurement split exists
+    to prevent. A stress test that died is a load failure, on the load
+    channel, against the load error rate.
+
+    The zeroes are the point: the keys declare the channel, and
+    ``_collect_counts`` adds one errored unit for the failure status itself.
+    """
+    return {
+        "status": "error",
+        "reason": reason,
+        # See surogate_eval.outcome: LOAD_COUNT_KEYS.
+        "load_scored_n": 0,
+        "load_errored_n": 0,
+    }
+
+
 def run_stress_testing(
     target: BaseTarget,
     stress_config: Dict[str, Any],
@@ -448,7 +471,7 @@ def run_stress_testing(
         dataset_path = stress_config.get("dataset")
         if not dataset_path:
             logger.error("No dataset specified for stress testing")
-            return {"status": "error", "reason": "No dataset specified"}
+            return _stress_failure("No dataset specified")
 
         loader = DatasetLoader()
         test_cases = loader.load_test_cases(dataset_path)
@@ -476,7 +499,7 @@ def run_stress_testing(
         logger.error(f"Stress testing failed: {e}")
         import traceback
         traceback.print_exc()
-        return {"status": "error", "reason": str(e)}
+        return _stress_failure(str(e))
 
 
 async def run_red_teaming_async(

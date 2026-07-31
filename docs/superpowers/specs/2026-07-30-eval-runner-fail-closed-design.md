@@ -123,8 +123,32 @@ consolidated_results["outcome"] = {
 - zero targets are healthy (always, regardless of threshold), or
 - any configured target did not complete its evaluations (health check failed, target creation
   failed, or the evaluation raised), or
-- a healthy target produced no countable results at all, or
+- no target was asked to run anything (a config that measures nothing), or
+- a healthy target produced no countable results at all, **unless it is a support target**, or
 - `error_rate` exceeds `max_error_rate`.
+
+**The support-target exemption.** A judge, a simulator or an evaluation model is declared only
+so another target's config can name it; nobody asks it to measure anything, because every
+measurement it takes part in is recorded against the target it judges. Its silence is expected
+and must not fail the run. Two declarations `eval.py` writes onto the target entry decide this,
+and a target is excused only when **both** hold:
+
+- `requested_work` is empty: the work plan `_plan_work` built, recorded as it is dispatched, so
+  the rule reads a declared fact instead of inferring intent from the results that came back;
+- `support_target` is true: another target references this one under `judge_model`,
+  `refusal_judge_model`, `simulator_model` or `evaluation_model`
+  (`EvalConfig.support_target_names`, off the same traversal `_validate_target_references` uses
+  to reject dangling names). Naming yourself does not count.
+
+An empty plan on its own is not enough, because it is equally the signature of a misspelt
+section: `evaluation:` for `evaluations:` loads clean (`TargetConfig` reads exact keys off a
+`DictDefault` and nothing rejects unknown ones), plans nothing and measures nothing. Beside a
+working target the run-wide backstop does not fire, so excusing it reported `completed`, exit 0,
+and never named the target whose entire config had been ignored.
+
+The consequence is intended: a target nothing references, whose only sections are `enabled:
+false`, now fails the run. An entry that carries neither declaration (an older results file) is
+assumed to have been asked and is not excused; the exemption must never be granted by omission.
 
 `error_rate` is **run-wide**, not per-metric: `errored_n / (scored_n + errored_n)` summed across
 every `MetricResult` produced by every metric on every target in the run.
@@ -138,7 +162,8 @@ never fires, and `total = 0` divides to `error_rate = 0.0` and reports "complete
 close this. First, any node carrying a failure status (`failed`, `error`, `validation_failed`,
 `incompatible`, `unhealthy`) counts as one errored unit, so coarse failures above the metric
 level become countable. Second, a healthy target that produced zero countable results fails the
-run outright: "we measured nothing" is not a success.
+run outright, support targets excepted as described above: "we measured nothing" is not a
+success.
 
 `max_error_rate` is configurable at the top level of the eval config, **default 0.2**:
 

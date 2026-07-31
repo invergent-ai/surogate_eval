@@ -183,13 +183,13 @@ class SurogateEval(SurogateCommand):
 
     @staticmethod
     def _plan_work(target_config: TargetConfig) -> List[Tuple[str, Any]]:
-        """Everything this target's config asks us to run, in dispatch order.
+        """Everything this target's config asks us to run.
 
         The single answer to "what was this target asked to do?". A target
-        that plans no work - a judge, a simulator, an evaluation model
-        declared only so another target can name it - is a support target:
-        it is never asked to measure anything, so producing nothing is its
-        expected outcome rather than a failed run.
+        that plans no work has been asked for nothing; paired with whether
+        another target names it as a judge or simulator, that is how
+        ``outcome.py`` tells a support target's expected silence from a
+        target whose sections were never read.
 
         ``_run_target_evaluations`` dispatches from this list and records it
         verbatim on the target entry, so ``outcome.py`` decides on a declared
@@ -197,6 +197,12 @@ class SurogateEval(SurogateCommand):
         new kind of work has to be planned here to run at all, which is what
         keeps the record honest without anyone remembering to update it: the
         list that runs and the list we claim to have asked for are one list.
+
+        The order here is the order the kinds are declared, not the order
+        they are dispatched in: the runner picks the entries of one kind at
+        a time and runs metric evaluations, then stress testing, then the
+        benchmark/red-team/guardrails loop. Order within one kind is
+        preserved.
         """
         plan: List[Tuple[str, Any]] = []
 

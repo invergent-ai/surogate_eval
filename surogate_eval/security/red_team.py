@@ -116,10 +116,16 @@ class RedTeamRunner:
             the attack and declined it - a false PASS on a security scan,
             the worst direction this can go wrong.
 
-            DeepTeam's own attack loop (RedTeamer._a_attack) wraps this
-            call in its own try/except: a raise here is caught there, the
-            test case is marked with ``.error`` and left with
-            ``.score = None`` rather than being judged, and - because
+            DeepTeam wraps every call to this callback in its own
+            try/except, and which one catches depends on the attack.
+            Single-turn: ``RedTeamer._a_attack`` invokes the callback
+            itself and catches around it. Multi-turn: the callback is
+            invoked during simulation, one call site earlier, and caught in
+            ``AttackSimulator.a_enhance_attack`` - by the time
+            ``_a_attack`` sees the case its ``turns`` are non-empty, so it
+            skips the callback entirely and only measures. Either way a
+            raise here marks the test case with ``.error`` and leaves it
+            with ``.score = None`` rather than judged, and - because
             ``ignore_errors`` defaults to True on this path - it costs
             exactly one attack, not the whole scan. ``score is None`` is
             already the signal RiskAssessment.result_counts() treats as

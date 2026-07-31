@@ -108,21 +108,45 @@ class RedTeamRunner:
 
 
         async def model_callback(input: str, turns: list = None) -> str:
-            """Callback for target model."""
+            """Callback for target model.
+
+            A target failure used to be swallowed into "": DeepTeam's
+            refusal judge then scored the empty string as if the target
+            had answered, so an unreachable target read as one that saw
+            the attack and declined it - a false PASS on a security scan,
+            the worst direction this can go wrong.
+
+            DeepTeam's own attack loop (RedTeamer._a_attack) wraps this
+            call in its own try/except: a raise here is caught there, the
+            test case is marked with ``.error`` and left with
+            ``.score = None`` rather than being judged, and - because
+            ``ignore_errors`` defaults to True on this path - it costs
+            exactly one attack, not the whole scan. ``score is None`` is
+            already the signal RiskAssessment.result_counts() treats as
+            errored, so raising is what routes a target failure into that
+            same channel instead of inventing a new one. The callback
+            contract is "return a string"; there is no error slot in it,
+            so raising is the only way to signal a failure without
+            silently handing back a legitimate-looking answer.
+            """
             try:
                 # Translate input if translator is set
                 if self.translator:
                     translate_request = TargetRequest(prompt=input)
                     translate_response = await self.translator.send_request_async(translate_request)
+                    if translate_response.error:
+                        raise RuntimeError(f"Translator request failed: {translate_response.error}")
                     input = translate_response.content
                     logger.debug(f"Translated input to target language")
 
                 request = TargetRequest(prompt=input)
                 response = await self.target.send_request_async(request)
+                if response.error:
+                    raise RuntimeError(f"Target request failed: {response.error}")
                 return response.content
             except Exception as e:
                 logger.error(f"Error in model callback: {e}")
-                return ""
+                raise
 
         # Build vulnerabilities list
         vulnerabilities = self._build_vulnerabilities()

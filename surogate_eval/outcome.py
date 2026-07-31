@@ -34,24 +34,34 @@ for how a failure status is charged when that happens.
 
 Silence, and who is allowed it
 ------------------------------
-"A healthy target produced nothing" is a failure only if we asked that
-target to produce something. Not every entry in ``targets:`` is under test.
-A judge, a simulator, an evaluation model is a *support* target: it is
-declared so another target's config can reference it by name, it has no
-``evaluations``/``benchmarks``/``red_teaming``/``guardrails``/stress section
-of its own, and it is never asked to measure anything. Its silence is the
-expected outcome, not a broken run.
+"A healthy target produced nothing" is a failure unless that target is a
+*support* target: a judge, a simulator, an evaluation model, declared only so
+another target's config can reference it by name. Nobody asks a judge to
+measure anything - every measurement it takes part in is recorded against the
+target it judges - so its silence is the expected outcome, not a broken run.
 
-That question - what was this target asked to do? - cannot be answered from
-the results. Inferring it from what came back is what made this rule fire on
-three separate healthy runs (benchmark-only, stress-only, judge-only), each
-patched by teaching the walk about one more emitter. So it is not inferred
-here at all: ``eval.py`` writes down its work plan for a target under
-``REQUESTED_WORK_KEY`` at the moment it dispatches that plan, and this module
-reads the declaration. An entry with an empty plan was asked for nothing and
-may be silent; an entry that does not declare at all is assumed to have been
-asked, so a runner that forgets to write the plan down fails loudly rather
-than silencing the rule.
+Two declarations, both written by ``eval.py`` onto the target entry, decide
+this, and a target is excused only when both hold:
+
+* ``REQUESTED_WORK_KEY`` - the work plan dispatched for this target,
+  recorded at the moment it is dispatched. What a target was asked to do
+  cannot be answered from the results; inferring it from what came back is
+  what made this rule fire on three separate healthy runs (benchmark-only,
+  stress-only, judge-only), each patched by teaching the walk about one more
+  emitter. An entry that does not declare at all is assumed to have been
+  asked, so a runner that forgets to write the plan down fails loudly rather
+  than silencing the rule.
+* ``SUPPORT_TARGET_KEY`` - whether another target names this one as its
+  judge, simulator or evaluator (``EvalConfig.support_target_names``). An
+  empty plan alone is not enough, because it is equally the signature of a
+  misspelt section: ``evaluation:`` for ``evaluations:`` loads clean, plans
+  nothing, and used to be excused as a support target - so a config whose
+  every measurement was silently dropped reported "completed" and exited 0,
+  without naming the target it happened to.
+
+The consequence is intended: a target nothing references, whose only
+sections are switched off, now fails the run. Nothing asked it for anything
+and nothing needs it, which is a config that does not say what it means.
 
 A run in which *no* target was asked for anything is still a failed run: that
 is a config that measures nothing, whatever its targets are.
@@ -72,6 +82,10 @@ LOAD_COUNT_KEYS = ('load_scored_n', 'load_errored_n')
 #: Key a target entry uses to declare the work its runner dispatched for it.
 #: Written by ``eval.py`` from the same plan it executes.
 REQUESTED_WORK_KEY = 'requested_work'
+
+#: Key a target entry uses to declare that another target names it as a
+#: judge, simulator or evaluator. Written by ``eval.py`` from the config.
+SUPPORT_TARGET_KEY = 'support_target'
 
 
 class Counts(NamedTuple):
@@ -122,6 +136,19 @@ def _was_asked_to_work(entry: Dict[str, Any]) -> bool:
     if requested is None:
         return True
     return bool(requested)
+
+
+def _may_be_silent(entry: Dict[str, Any]) -> bool:
+    """Is producing nothing the expected outcome for this target?
+
+    Only for a support target: asked for nothing *and* named by another
+    target as its judge, simulator or evaluator. Being asked for nothing on
+    its own is also what a misspelt section looks like - see "Silence, and
+    who is allowed it" above. Fail-closed on an entry that carries no
+    support declaration, for the same reason as the work plan: an old
+    results file must not exempt anything by omission.
+    """
+    return not _was_asked_to_work(entry) and bool(entry.get(SUPPORT_TARGET_KEY))
 
 
 def _collect_counts(node: Any) -> Counts:
@@ -220,19 +247,20 @@ def compute_outcome(
         # into the run-wide error rate it disappears behind a busier target.
         if entry.get('status') in FAILED_STATUSES:
             broken_targets.append(name)
-        # A target that passed its health check, was asked to produce
-        # something and then produced nothing at all is not a success. "We
-        # measured nothing" used to divide to an error rate of 0.0 and exit
-        # 0. Load counts answer this question - a stress-only target did do
-        # work - even though they are excluded from the error rate below.
+        # A target that passed its health check and then produced nothing at
+        # all is not a success. "We measured nothing" used to divide to an
+        # error rate of 0.0 and exit 0. Load counts answer this question - a
+        # stress-only target did do work - even though they are excluded
+        # from the error rate below.
         #
-        # A target that was asked for nothing is exempt: see "Silence, and
-        # who is allowed it" above. Being asked for nothing is checked here,
-        # per target, and again run-wide below, because a config in which
-        # nobody was asked for anything measures nothing and must fail.
+        # A support target is exempt: see "Silence, and who is allowed it"
+        # above. That is checked here, per target, and the run-wide
+        # "nobody was asked for anything" case is checked below, because a
+        # config that measures nothing must fail however many judges it
+        # declares.
         elif (entry.get('status') == 'success'
                 and target_counts.evidence == 0
-                and _was_asked_to_work(entry)):
+                and not _may_be_silent(entry)):
             empty_targets.append(name)
 
     error_rate = _rate(totals.errored, totals.measured)
@@ -250,16 +278,20 @@ def compute_outcome(
             f'Target(s) {", ".join(broken_targets)} did not complete their '
             'evaluations.'
         )
+    elif not asked:
+        # Ahead of the per-target rule below: when nobody was asked for
+        # anything, every silent target is a symptom and the config is the
+        # cause. Naming the targets instead would describe the same failure
+        # one level too low.
+        status = 'failed'
+        reason = (
+            'No target was asked to run anything; nothing was measured.'
+        )
     elif empty_targets:
         status = 'failed'
         reason = (
             'No results were produced for target(s) '
             f'{", ".join(empty_targets)}; nothing was measured.'
-        )
-    elif not asked:
-        status = 'failed'
-        reason = (
-            'No target was asked to run anything; nothing was measured.'
         )
     elif error_rate > max_error_rate:
         status = 'failed'

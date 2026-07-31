@@ -7,6 +7,7 @@ evaluation path against fake targets (no network), and assert on the process
 exit code the run returns.
 """
 
+from pathlib import Path
 from types import SimpleNamespace
 
 import pytest
@@ -18,6 +19,8 @@ from surogate_eval.eval import SurogateEval
 from surogate_eval.targets.base import TargetResponse, TargetType
 
 JUDGE_JSON = '{"toxicity_score": 1, "reason": "nothing concerning"}'
+
+REPO_ROOT = Path(__file__).resolve().parent.parent
 
 
 class FakeTarget:
@@ -81,6 +84,31 @@ def support_target_block(name):
     examples/custom_eval_test_gpt.yaml and examples/custom_eval_test.yaml.
     """
     return target_block(name, dataset=None, with_evaluations=False)
+
+
+def typo_target_block(name, dataset):
+    """A target whose work never loads because the section name is misspelt.
+
+    ``TargetConfig`` reads exact keys off a ``DictDefault`` whose
+    ``__missing__`` returns None, and nothing rejects unknown keys, so
+    ``evaluation:`` for ``evaluations:`` passes validation and plans no work
+    at all. The same empty plan a support target has - the difference being
+    that no other target names this one, so its silence is a typo rather
+    than the expected outcome.
+    """
+    return f"""\
+  - name: {name}
+    type: llm
+    provider: openai
+    model: gpt-4
+    api_key: sk-test
+    evaluation:
+      - name: {name}-eval
+        dataset: {dataset}
+        metrics:
+          - name: {name}-toxicity
+            type: toxicity
+"""
 
 
 def unmeasurable_target_block(name, dataset):
@@ -377,6 +405,76 @@ def test_a_run_of_only_support_targets_exits_one(tmp_path, monkeypatch, fake_tar
     assert outcome["status"] == "failed"
     assert "asked to run anything" in outcome["reason"]
     assert exit_code == 1
+
+
+def test_a_typo_that_plans_no_work_fails_the_run_and_is_named(
+    tmp_path, monkeypatch, fake_targets
+):
+    """The exemption must fit a support target and nothing else.
+
+    ``evaluation:`` for ``evaluations:`` loads clean, plans nothing and
+    measures nothing. An empty plan alone used to be enough to be excused,
+    so beside a working target the run reported completed, exited 0, and
+    never named the target whose entire config was ignored.
+    """
+    dataset = write_dataset(tmp_path)
+    config = build_config(
+        tmp_path, [target_block("t1", dataset), typo_target_block("typo", dataset)]
+    )
+
+    command = SurogateEval(config=config, args={})
+    monkeypatch.chdir(tmp_path)
+    exit_code = command.run()
+
+    results = command.get_results()
+    targets = {t["name"]: t for t in results["targets"]}
+    # Healthy, asked for nothing, and named by no other target.
+    assert targets["typo"]["status"] == "success"
+    assert targets["typo"]["requested_work"] == []
+    assert targets["typo"]["support_target"] is False
+
+    outcome = results["outcome"]
+    assert outcome["status"] == "failed"
+    assert "typo" in outcome["reason"]
+    assert exit_code == 1
+
+
+def test_a_referenced_judge_is_marked_as_support(tmp_path, monkeypatch, fake_targets):
+    """The other side of the same rule, on the entry ops reads: the judge is
+    excused because the subject names it, not because it stayed quiet."""
+    dataset = write_dataset(tmp_path)
+    config = build_config(
+        tmp_path,
+        [support_target_block("judge"), target_block("subject", dataset, judge="judge")],
+    )
+
+    command = SurogateEval(config=config, args={})
+    monkeypatch.chdir(tmp_path)
+    exit_code = command.run()
+
+    targets = {t["name"]: t for t in command.get_results()["targets"]}
+    assert targets["judge"]["support_target"] is True
+    # A target that names only itself is not its own support target.
+    assert targets["subject"]["support_target"] is False
+    assert exit_code == 0
+
+
+@pytest.mark.parametrize(
+    "path,judges",
+    [
+        ("examples/config.yaml", {"judge-gpt4", "openrouter-gpt4"}),
+        ("examples/custom_eval_test.yaml", {"qwen3-vl-judge"}),
+        ("examples/custom_eval_test_gpt.yaml", {"gpt4o-mini-judge"}),
+    ],
+)
+def test_shipped_example_judges_are_support_targets(monkeypatch, path, judges):
+    """The configs this repo ships are the shape the exemption exists for."""
+    monkeypatch.setenv("OPENAI_API_KEY", "sk-test")
+    monkeypatch.setenv("OPENROUTER_API_KEY", "sk-test")
+
+    config = load_config(EvalConfig, str(REPO_ROOT / path))
+
+    assert judges <= config.support_target_names()
 
 
 def test_benchmark_only_run_exits_zero(tmp_path, monkeypatch, fake_targets):

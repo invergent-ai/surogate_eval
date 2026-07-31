@@ -1,11 +1,72 @@
 from dataclasses import dataclass
-from typing import Optional, List, Dict, Any, Literal
+from typing import Iterator, Optional, List, Dict, Any, Literal, Tuple
 from pathlib import Path
 
 from surogate_eval.utils.dict import DictDefault
 from surogate_eval.utils.logger import get_logger
 
 logger = get_logger()
+
+#: Keys under which one target names another as a support model: a judge, a
+#: simulator, an evaluator. The single definition of "a reference to another
+#: target" - ``_validate_target_references`` checks the names resolve and
+#: ``EvalConfig.support_target_names`` collects them, both off the traversal
+#: below, so the two can never disagree about what counts as a reference.
+SUPPORT_MODEL_KEYS = (
+    'judge_model',
+    'refusal_judge_model',
+    'simulator_model',
+    'evaluation_model',
+)
+
+
+def _referenced_target(block: Any) -> Optional[str]:
+    """The target a support-model block names, if it names one.
+
+    A reference to another entry in ``targets:`` is ``{target: <name>}``.
+    The same keys also take a plain model string (``simulator_model:
+    gpt-3.5-turbo``), which names a provider model and refers to no target.
+    """
+    if isinstance(block, dict):
+        return block.get('target')
+    return None
+
+
+def _iter_support_references(target: 'TargetConfig') -> Iterator[Tuple[str, str, str]]:
+    """Every target this one names, as ``(where, key, name)``.
+
+    ``where`` locates the reference for an error message.
+
+    A disabled section still counts. Naming a target as your judge is what
+    makes that target a support target - it is declared to serve someone
+    else, whether or not the section using it runs today - and a dangling
+    name in a section that is switched off is a config error the moment it
+    is switched on. ``examples/config.yaml`` ships exactly this shape: its
+    ``judge-gpt4`` is named only by ``guardrails`` sections that are off.
+    """
+    for evaluation in target.evaluations or []:
+        eval_name = evaluation.get('name', 'unnamed')
+        where = f"Target '{target.name}', Evaluation '{eval_name}'"
+        for metric in evaluation.get('metrics') or []:
+            for key in SUPPORT_MODEL_KEYS:
+                name = _referenced_target(metric.get(key))
+                if name:
+                    yield where, key, name
+
+        for benchmark in evaluation.get('benchmarks') or []:
+            bench_where = f"Target '{target.name}', Benchmark '{benchmark.get('name')}'"
+            for key in SUPPORT_MODEL_KEYS:
+                name = _referenced_target(benchmark.get(key))
+                if name:
+                    yield bench_where, key, name
+
+    for section_name in ('red_teaming', 'guardrails'):
+        section = getattr(target, section_name) or {}
+        where = f"Target '{target.name}', {section_name}"
+        for key in SUPPORT_MODEL_KEYS:
+            name = _referenced_target(section.get(key))
+            if name:
+                yield where, key, name
 
 
 @dataclass
@@ -463,53 +524,39 @@ class EvalConfig:
         return warnings
 
     def _validate_target_references(self) -> list[str]:
-        """Validate that judge model references point to existing targets."""
+        """Validate that support model references point to existing targets."""
         errors = []
         target_names = {t.name for t in self.targets}
 
         for target in self.targets:
-            if not target.evaluations:
-                continue
-
-            for eval_config in target.evaluations:
-                eval_name = eval_config.get('name', 'unnamed')
-                metrics = eval_config.get('metrics', [])
-
-                # Check metric judge models
-                for metric in metrics:
-                    judge_model = metric.get('judge_model', {})
-                    judge_target = judge_model.get('target')
-
-                    if judge_target and judge_target not in target_names:
-                        errors.append(
-                            f"Target '{target.name}', Evaluation '{eval_name}': "
-                            f"judge target '{judge_target}' not found in configured targets"
-                        )
-
-                # Check benchmark judge models
-                benchmarks = eval_config.get('benchmarks', [])
-                for benchmark in benchmarks:
-                    judge_model = benchmark.get('judge_model', {})
-                    judge_target = judge_model.get('target')
-
-                    if judge_target and judge_target not in target_names:
-                        errors.append(
-                            f"Target '{target.name}', Benchmark '{benchmark.get('name')}': "
-                            f"judge target '{judge_target}' not found in configured targets"
-                        )
-
-            # Check guardrails judge model
-            if target.guardrails and target.guardrails.get('enabled'):
-                refusal_judge = target.guardrails.get('refusal_judge_model', {})
-                judge_target = refusal_judge.get('target')
-
-                if judge_target and judge_target not in target_names:
+            for where, key, name in _iter_support_references(target):
+                if name not in target_names:
                     errors.append(
-                        f"Target '{target.name}': "
-                        f"guardrails refusal_judge_model target '{judge_target}' not found in configured targets"
+                        f"{where}: {key} target '{name}' not found in configured targets"
                     )
 
         return errors
+
+    def support_target_names(self) -> set[str]:
+        """Targets that another target names as a judge, simulator or evaluator.
+
+        A support target is declared so someone else can point at it by
+        name; it is never asked to measure anything of its own, so producing
+        no results is its expected outcome rather than a broken run. That is
+        the exemption ``outcome.py`` applies, and this is what it is keyed
+        on: being referenced, not merely being silent. An empty work plan on
+        its own is equally the signature of a misspelt section, which must
+        fail the run rather than be excused by it.
+
+        Naming yourself does not make you one: a target that judges its own
+        answers is still a target under test.
+        """
+        return {
+            name
+            for target in self.targets
+            for _, _, name in _iter_support_references(target)
+            if name != target.name
+        }
 
     def _validate_file_paths(self) -> list[str]:
         """Validate that specified file paths exist. Returns warnings."""

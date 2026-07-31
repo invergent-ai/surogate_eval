@@ -9,6 +9,7 @@ from surogate_eval.config.eval_config import TargetConfig
 from surogate_eval.outcome import (
     DEFAULT_MAX_ERROR_RATE,
     REQUESTED_WORK_KEY,
+    SUPPORT_TARGET_KEY,
     compute_outcome,
     exit_code_for,
 )
@@ -52,6 +53,11 @@ class SurogateEval(SurogateCommand):
             "targets": [],
         }
         self.targets: List[BaseTarget] = []
+        #: Targets another target names as its judge, simulator or
+        #: evaluator. Recorded on each target entry so ``outcome.py`` can
+        #: tell a support target's expected silence from a target whose
+        #: config was never read.
+        self.support_target_names: set = set()
 
     def run(self) -> int:
         """Run the evaluation pipeline. Returns a process exit code."""
@@ -97,6 +103,7 @@ class SurogateEval(SurogateCommand):
 
         logger.info(f"Processing {len(target_configs)} target(s)")
         self.consolidated_results["summary"]["total_targets"] = len(target_configs)
+        self.support_target_names = self.config.support_target_names()
 
         # PHASE 1: Create all targets
         logger.info("Creating all targets...")
@@ -227,9 +234,13 @@ class SurogateEval(SurogateCommand):
             "provider": target.config.get("provider", "unknown"),
             "status": "success",
             # What we asked this target for, taken from the plan dispatched
-            # below rather than restated. An empty list marks a support
-            # target, whose silence outcome.py must not read as a failure.
+            # below rather than restated, and whether anyone else named this
+            # target as their judge/simulator/evaluator. Together they let
+            # outcome.py tell a support target's expected silence from a
+            # target whose sections were never read - a misspelt
+            # ``evaluations:`` plans nothing either.
             REQUESTED_WORK_KEY: [kind for kind, _ in work],
+            SUPPORT_TARGET_KEY: target_name in self.support_target_names,
             "evaluations": [],
         }
 

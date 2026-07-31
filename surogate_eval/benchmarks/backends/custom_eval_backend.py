@@ -403,6 +403,12 @@ class CustomEvalBackend:
             instruction = self._get_column_value(row, columns, 'instruction', '')
             expected = self._get_column_value(row, columns, 'answer', '')
 
+            # A request that failed is a failure to measure, not a target
+            # that answered wrongly. Same rule as _evaluate_toxicity_rows:
+            # a response carrying an error is errored; an empty completion
+            # with no error is a real (bad) answer and is still scored.
+            request_error = None
+            raw_output = ''
             try:
                 if system_prompt:
                     messages = [
@@ -413,35 +419,15 @@ class CustomEvalBackend:
                 else:
                     request = TargetRequest(prompt=instruction)
                 response = target.send_request(request)
-                raw_output = response.content
-
-                # Normalize output for comparison
-                normalized_output = self._normalize_output(raw_output, expected)
-
-                # Compare normalized output against expected answer
-                expected_clean = expected.strip().lower()
-                output_clean = normalized_output.strip().lower()
-
-                success = (
-                    expected_clean == output_clean
-                    or expected_clean in output_clean
-                    or output_clean.startswith(expected_clean)
-                )
-
-                results.append({
-                    'original_idx': original_idx,
-                    'eval_type': 'exact_match',
-                    'instruction': instruction,
-                    'expected': expected,
-                    'output': normalized_output,
-                    'raw_output': raw_output,
-                    'score': 1.0 if success else 0.0,
-                    'success': success,
-                    'reason': 'Exact match' if success else 'No match',
-                })
-
+                if response.error:
+                    request_error = response.error
+                else:
+                    raw_output = response.content or ''
             except Exception as e:
-                logger.error(f"Inference error for row {original_idx}: {e}")
+                request_error = str(e)
+
+            if request_error is not None:
+                logger.error(f"Inference error for row {original_idx}: {request_error}")
                 results.append({
                     'original_idx': original_idx,
                     'eval_type': 'exact_match',
@@ -449,12 +435,45 @@ class CustomEvalBackend:
                     'expected': expected,
                     'output': '',
                     'raw_output': '',
-                    'score': 0.0,
+                    'status': 'errored',
+                    'score': None,
                     'success': False,
-                    'reason': f'Inference error: {str(e)}',
+                    'reason': f'Inference error: {request_error}',
                 })
+                continue
 
-        logger.info(f"Completed exact_match (direct): {sum(r['success'] for r in results)}/{len(results)} correct")
+            # Normalize output for comparison
+            normalized_output = self._normalize_output(raw_output, expected)
+
+            # Compare normalized output against expected answer
+            expected_clean = expected.strip().lower()
+            output_clean = normalized_output.strip().lower()
+
+            success = (
+                expected_clean == output_clean
+                or expected_clean in output_clean
+                or output_clean.startswith(expected_clean)
+            )
+
+            results.append({
+                'original_idx': original_idx,
+                'eval_type': 'exact_match',
+                'instruction': instruction,
+                'expected': expected,
+                'output': normalized_output,
+                'raw_output': raw_output,
+                'status': 'scored',
+                'score': 1.0 if success else 0.0,
+                'success': success,
+                'reason': 'Exact match' if success else 'No match',
+            })
+
+        errored_n = sum(1 for r in results if r['status'] == 'errored')
+        scored_n = len(results) - errored_n
+        logger.info(
+            f"Completed exact_match (direct): {sum(r['success'] for r in results)}/{scored_n} correct "
+            f"({errored_n} not measured)"
+        )
         return results
 
     def _evaluate_judge_rows(
@@ -505,7 +524,15 @@ class CustomEvalBackend:
                 prompt = prompt_template.replace('{instruction}', instruction)
                 prompt = prompt.replace('{expected}', expected)
 
-            # Get model output
+            # Get model output.
+            #
+            # A request that failed is a failure to measure, not a target
+            # that answered wrongly. Same rule as _evaluate_toxicity_rows:
+            # a response carrying an error is errored; an empty completion
+            # with no error is a real (bad) answer and is still judged.
+            request_error = None
+            raw_output = ''
+            normalized_output = ''
             try:
                 from surogate_eval.targets.base import TargetRequest
                 system_prompt = config.get('system_prompt')
@@ -518,14 +545,18 @@ class CustomEvalBackend:
                 else:
                     request = TargetRequest(prompt=prompt)
                 response = target.send_request(request)
-                raw_output = response.content
-
-                # Normalize output for comparison
-                normalized_output = self._normalize_output(raw_output, expected)
-                logger.debug(f"Raw: {raw_output[:100]}... -> Normalized: {normalized_output[:100]}...")
-
+                if response.error:
+                    request_error = response.error
+                else:
+                    raw_output = response.content or ''
+                    # Normalize output for comparison
+                    normalized_output = self._normalize_output(raw_output, expected)
+                    logger.debug(f"Raw: {raw_output[:100]}... -> Normalized: {normalized_output[:100]}...")
             except Exception as e:
-                logger.error(f"Inference error for row {original_idx}: {e}")
+                request_error = str(e)
+
+            if request_error is not None:
+                logger.error(f"Inference error for row {original_idx}: {request_error}")
                 results.append({
                     'original_idx': original_idx,
                     'eval_type': 'judge',
@@ -533,9 +564,10 @@ class CustomEvalBackend:
                     'expected': expected,
                     'output': '',
                     'raw_output': '',
-                    'score': 0.0,
+                    'status': 'errored',
+                    'score': None,
                     'success': False,
-                    'reason': f'Inference error: {str(e)}',
+                    'reason': f'Inference error: {request_error}',
                     'criteria': row_criteria,
                 })
                 continue
@@ -568,6 +600,7 @@ class CustomEvalBackend:
                     'expected': expected,
                     'output': normalized_output,  # Store normalized
                     'raw_output': raw_output,  # Store raw for reference
+                    'status': 'scored',
                     'score': metric.score,
                     'success': metric.score >= 0.5,
                     'reason': getattr(metric, 'reason', None),
@@ -577,6 +610,10 @@ class CustomEvalBackend:
                 logger.debug(f"Row {original_idx} judge score: {metric.score:.3f}")
 
             except Exception as e:
+                # A judge that breaks is a failure of the judge, not of the
+                # target's answer - out of scope for this pass (which is
+                # about inference errors above), left as-is: still counted
+                # as scored, still averaged in at 0.0.
                 logger.error(f"G-Eval failed for row {original_idx}: {e}")
                 results.append({
                     'original_idx': original_idx,
@@ -585,14 +622,22 @@ class CustomEvalBackend:
                     'expected': expected,
                     'output': normalized_output,
                     'raw_output': raw_output,
+                    'status': 'scored',
                     'score': 0.0,
                     'success': False,
                     'reason': f'Judge error: {str(e)}',
                     'criteria': row_criteria,
                 })
 
-        avg_score = sum(r['score'] for r in results) / len(results) if results else 0.0
-        logger.info(f"Completed judge evaluation: avg score {avg_score:.3f}")
+        errored_n = sum(1 for r in results if r['status'] == 'errored')
+        scored_n = len(results) - errored_n
+        avg_score = (
+            sum(r['score'] for r in results if r['status'] != 'errored') / scored_n
+        ) if scored_n else 0.0
+        logger.info(
+            f"Completed judge evaluation: avg score {avg_score:.3f} over {scored_n} scored "
+            f"({errored_n} not measured)"
+        )
 
         return results
 
@@ -809,20 +854,29 @@ class CustomEvalBackend:
         all_results = exact_match_results + judge_results
         all_results.sort(key=lambda x: x['original_idx'])
 
-        # Calculate metrics
+        # Calculate metrics. Rates are over what was actually measured - an
+        # errored row is reported separately (scored_n/errored_n) so the run
+        # outcome can see it, instead of being averaged in as a fake zero.
         total = len(all_results)
         em_total = len(exact_match_results)
         judge_total = len(judge_results)
 
+        em_errored = sum(1 for r in exact_match_results if r.get('status') == 'errored')
+        em_scored = em_total - em_errored
         em_correct = sum(1 for r in exact_match_results if r['success'])
-        judge_avg = sum(r['score'] for r in judge_results) / judge_total if judge_total else 0.0
 
+        judge_errored = sum(1 for r in judge_results if r.get('status') == 'errored')
+        judge_scored = judge_total - judge_errored
+        judge_scored_rows = [r for r in judge_results if r.get('status') != 'errored']
+        judge_avg = sum(r['score'] for r in judge_scored_rows) / judge_scored if judge_scored else 0.0
+
+        scored_total = em_scored + judge_scored
         overall_score = 0.0
-        if total > 0:
+        if scored_total > 0:
             overall_score = (
-                (em_correct / em_total if em_total else 0.0) * em_total +
-                judge_avg * judge_total
-            ) / total
+                (em_correct / em_scored if em_scored else 0.0) * em_scored +
+                judge_avg * judge_scored
+            ) / scored_total
 
         return {
             'overall_score': overall_score,
@@ -831,12 +885,18 @@ class CustomEvalBackend:
                 'exact_match': {
                     'total': em_total,
                     'correct': em_correct,
-                    'accuracy': em_correct / em_total if em_total else 0.0,
+                    'accuracy': em_correct / em_scored if em_scored else 0.0,
+                    'scored_n': em_scored,
+                    'errored_n': em_errored,
                 },
                 'judge': {
                     'total': judge_total,
                     'avg_score': judge_avg,
-                    'success_rate': sum(1 for r in judge_results if r['success']) / judge_total if judge_total else 0.0,
+                    'success_rate': (
+                        sum(1 for r in judge_scored_rows if r['success']) / judge_scored
+                    ) if judge_scored else 0.0,
+                    'scored_n': judge_scored,
+                    'errored_n': judge_errored,
                 },
             },
             'detailed_results': all_results,

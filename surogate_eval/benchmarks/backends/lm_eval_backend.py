@@ -423,11 +423,30 @@ class LMEvalBackend:
                     'score': score,
                     'accuracy': score,
                     'n_samples': n_samples,
+                    # One countable unit per task the harness scored. Not
+                    # per sample: lm-eval only reports 'samples' for some
+                    # task types, so sample counts cannot be relied on as
+                    # the evidence that this task was measured.
+                    'scored_n': 1,
+                    'errored_n': 0,
                     'metrics': {k: v for k, v in metrics.items() if isinstance(v, (int, float))}
                 }
                 total_score += score
                 total_samples += n_samples
                 num_tasks += 1
+            else:
+                # lm-eval returned this task with no usable numeric metric.
+                # It used to be dropped silently, which left a benchmark
+                # that measured nothing looking indistinguishable from one
+                # that was never asked to measure anything.
+                logger.error(f"lm-eval task '{task}' returned no numeric metric: {metrics}")
+                task_results[task] = {
+                    'score': None,
+                    'error': 'lm-eval returned no numeric metric for this task',
+                    'metrics': {k: v for k, v in metrics.items() if isinstance(v, (int, float))},
+                    'scored_n': 0,
+                    'errored_n': 1,
+                }
 
         overall_score = total_score / num_tasks if num_tasks > 0 else 0.0
 

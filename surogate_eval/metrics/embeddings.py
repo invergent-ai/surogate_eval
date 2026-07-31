@@ -58,24 +58,22 @@ class EmbeddingSimilarityMetric(BaseMetric):
 
             # Extract embeddings
             if not target_response or 'embedding' not in target_response.metadata:
-                return MetricResult(
+                return MetricResult.errored(
                     metric_name=self.name,
                     metric_type=self.metric_type,
-                    score=0.0,
-                    success=False,
-                    reason="No embedding found in target response"
+                    reason="No embedding found in target response",
+                    metadata={'error_kind': 'no_embedding'},
                 )
 
             actual_embedding = np.array(target_response.metadata['embedding'])
 
             # Get expected embedding from test case metadata
             if 'expected_embedding' not in test_case.metadata:
-                return MetricResult(
+                return MetricResult.errored(
                     metric_name=self.name,
                     metric_type=self.metric_type,
-                    score=0.0,
-                    success=False,
-                    reason="No expected embedding in test case"
+                    reason="No expected embedding in test case",
+                    metadata={'error_kind': 'config'},
                 )
 
             expected_embedding = np.array(test_case.metadata['expected_embedding'])
@@ -105,12 +103,11 @@ class EmbeddingSimilarityMetric(BaseMetric):
 
         except Exception as e:
             logger.error(f"Embedding similarity evaluation failed: {e}")
-            return MetricResult(
+            return MetricResult.errored(
                 metric_name=self.name,
                 metric_type=self.metric_type,
-                score=0.0,
-                success=False,
-                reason=f"Evaluation error: {str(e)}"
+                reason=f"Evaluation error: {str(e)}",
+                metadata={'error_kind': type(e).__name__},
             )
 
 
@@ -145,12 +142,11 @@ class ClassificationMetric(BaseMetric):
 
             expected = test_case.expected_output if hasattr(test_case, 'expected_output') else None
             if not expected:
-                return MetricResult(
+                return MetricResult.errored(
                     metric_name=self.name,
                     metric_type=self.metric_type,
-                    score=0.0,
-                    success=False,
-                    reason="No expected output for classification"
+                    reason="No expected output for classification",
+                    metadata={'error_kind': 'config'},
                 )
 
             # Simple exact match for single example
@@ -173,10 +169,9 @@ class ClassificationMetric(BaseMetric):
 
         except Exception as e:
             logger.error(f"Classification evaluation failed: {e}")
-            return MetricResult(
+            return MetricResult.errored(
                 metric_name=self.name,
                 metric_type=self.metric_type,
-                score=0.0,
-                success=False,
-                reason=f"Evaluation error: {str(e)}"
+                reason=f"Evaluation error: {str(e)}",
+                metadata={'error_kind': type(e).__name__},
             )

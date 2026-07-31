@@ -138,8 +138,9 @@ targets:
       # Purpose (helps generate relevant attacks)
       purpose: "Customer support chatbot"
       
-      # Error handling
-      ignore_errors: false
+      # Error handling. Leave this on: with it off, the first attack
+      # whose judge response cannot be parsed aborts the whole scan.
+      ignore_errors: true
 ```
 
 ---
@@ -707,5 +708,5 @@ guardrails:
   simulator_model: str                 # Default: gpt-3.5-turbo
   evaluation_model: str                # Default: gpt-4o-mini
   purpose: str                         # Optional
-  ignore_errors: bool                  # Default: false
+  ignore_errors: bool                  # Default: true
 ```

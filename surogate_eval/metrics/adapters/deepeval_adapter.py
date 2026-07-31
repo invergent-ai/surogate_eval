@@ -1,6 +1,7 @@
 # surogate/eval/metrics/adapters/deepeval_adapter.py
 from typing import Dict, Any, Optional, Union
 
+from ...errors import JudgeError
 from ...utils.logger import get_logger
 
 try:
@@ -198,22 +199,21 @@ class DeepEvalAdapter(LLMJudgeMetric):
         try:
             # Check if we have actual output
             if not actual_output:
-                return MetricResult(
-                    metric_name=self.name,
-                    metric_type=self.metric_type,
-                    score=0.0,
-                    success=False,
-                    reason="No actual output to evaluate"
-                )
+                return self._no_output_result(target_response)
 
             # Check for metric-dataset mismatch
             if isinstance(test_case, TestCase) and self.is_conversational:
-                return MetricResult(
+                # A misconfigured metric never measured anything. Scoring it
+                # 0.0 wrote a configuration mistake into the average as if
+                # the model had answered badly.
+                return MetricResult.errored(
                     metric_name=self.name,
                     metric_type=self.metric_type,
-                    score=0.0,
-                    success=False,
-                    reason=f"Conversational metric '{self.name}' requires multi-turn test cases"
+                    reason=f"Conversational metric '{self.name}' requires multi-turn test cases",
+                    metadata={
+                        'deepeval_type': self.config.get('deepeval_metric_type'),
+                        'error_kind': 'config',
+                    },
                 )
 
             if isinstance(test_case, MultiTurnTestCase) and not self.is_conversational:
@@ -224,12 +224,15 @@ class DeepEvalAdapter(LLMJudgeMetric):
                 # Check if this is a multimodal metric
                 if self.is_multimodal:
                     if not MULTIMODAL_AVAILABLE:
-                        return MetricResult(
+                        # A missing capability is not a measurement either.
+                        return MetricResult.errored(
                             metric_name=self.name,
                             metric_type=self.metric_type,
-                            score=0.0,
-                            success=False,
-                            reason="Multimodal evaluation not available in this deepeval version"
+                            reason="Multimodal evaluation not available in this deepeval version",
+                            metadata={
+                                'deepeval_type': self.config.get('deepeval_metric_type'),
+                                'error_kind': 'capability',
+                            },
                         )
 
                     # Convert to MLLMTestCase for multimodal evaluation
@@ -341,6 +344,21 @@ class DeepEvalAdapter(LLMJudgeMetric):
 
             # Extract results
             score = self.deepeval_metric.score
+            if score is None:
+                # deepeval's score is nullable: it stays None when the metric
+                # could not produce a verdict. A scored MetricResult must
+                # carry a real number, or avg_score raises a TypeError while
+                # summing.
+                return MetricResult.errored(
+                    metric_name=self.name,
+                    metric_type=self.metric_type,
+                    reason="DeepEval returned no score for this test case",
+                    metadata={
+                        'deepeval_type': self.config.get('deepeval_metric_type'),
+                        'error_kind': 'no_score',
+                    },
+                )
+
             success = self.deepeval_metric.is_successful()
             reason = self.deepeval_metric.reason if hasattr(self.deepeval_metric, 'reason') else None
 
@@ -362,14 +380,32 @@ class DeepEvalAdapter(LLMJudgeMetric):
                 }
             )
 
+        except JudgeError as e:
+            # The judge broke. Reporting 0.0 here is what made a judge
+            # outage indistinguishable from a bad model (E-RUN-1).
+            logger.error(f"Judge failure in metric '{self.name}': {e}")
+            return MetricResult.errored(
+                metric_name=self.name,
+                metric_type=self.metric_type,
+                reason=f"Judge unavailable: {e}",
+                metadata={
+                    'deepeval_type': self.config.get('deepeval_metric_type'),
+                    'error_kind': type(e).__name__,
+                },
+            )
+
         except Exception as e:
+            # Our own bug. Still errored, but labelled so it is not
+            # mistaken for a judge problem when reading results.
             logger.error(f"DeepEval evaluation failed: {e}")
             import traceback
             logger.debug(traceback.format_exc())
-            return MetricResult(
+            return MetricResult.errored(
                 metric_name=self.name,
                 metric_type=self.metric_type,
-                score=0.0,
-                success=False,
-                reason=f"Evaluation error: {str(e)}"
+                reason=f"Internal evaluation error: {e}",
+                metadata={
+                    'deepeval_type': self.config.get('deepeval_metric_type'),
+                    'error_kind': 'internal',
+                },
             )

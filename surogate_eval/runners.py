@@ -30,7 +30,12 @@ def run_evaluation(
     """
     from surogate_eval.datasets import DatasetLoader, DatasetValidator
     from surogate_eval.datasets.test_case import TestCase, MultiTurnTestCase
-    from surogate_eval.metrics import MetricRegistry, LLMJudgeMetric
+    from surogate_eval.metrics import (
+        BatchMetricResult,
+        LLMJudgeMetric,
+        MetricRegistry,
+        MetricResult,
+    )
     from surogate_eval.targets.base import TargetRequest
 
     eval_name = eval_config.get("name", "unnamed")
@@ -201,7 +206,29 @@ def run_evaluation(
                 logger.error(f"Metric {metric.name} failed: {e}")
                 import traceback
                 logger.debug(traceback.format_exc())
-                metric_results[metric.name] = {"error": str(e), "status": "failed"}
+
+                # One errored unit per case that went unmeasured. A bare
+                # {"error": ...} dict counted as a single error however many
+                # cases the batch was going to measure, so a 200-case metric
+                # crashing looked no worse than one bad answer.
+                unmeasured = len(metric_test_cases) or 1
+                failed_batch = BatchMetricResult(
+                    metric_name=metric.name,
+                    metric_type=metric.metric_type,
+                    results=[
+                        MetricResult.errored(
+                            metric_name=metric.name,
+                            metric_type=metric.metric_type,
+                            reason=f"Metric batch failed: {e}",
+                            metadata={'error_kind': type(e).__name__},
+                        )
+                        for _ in range(unmeasured)
+                    ],
+                )
+                # ``error`` marks the metric as failed in the report; no
+                # ``status`` alongside it, or the outcome walk would count the
+                # crash once more on top of the per-case counts.
+                metric_results[metric.name] = {**failed_batch.to_dict(), "error": str(e)}
 
         detailed_results_list = [detailed_results[i] for i in sorted(detailed_results.keys())]
 
@@ -398,6 +425,29 @@ def _run_single_benchmark(
         return {"benchmark_name": benchmark_name, "status": "failed", "error": str(e)}
 
 
+def _stress_failure(reason: str) -> Dict[str, Any]:
+    """A stress run that ended before it could report its own counts.
+
+    These are the paths that never reach ``StressTestResult.to_dict()``: a
+    missing dataset, or anything raised on the way to the first request. They
+    used to return a bare status, which carries no count keys, so the outcome
+    walk fell through to its generic failure branch and charged the crash to
+    the MEASUREMENT channel - the one thing the load/measurement split exists
+    to prevent. A stress test that died is a load failure, on the load
+    channel, against the load error rate.
+
+    The zeroes are the point: the keys declare the channel, and
+    ``_collect_counts`` adds one errored unit for the failure status itself.
+    """
+    return {
+        "status": "error",
+        "reason": reason,
+        # See surogate_eval.outcome: LOAD_COUNT_KEYS.
+        "load_scored_n": 0,
+        "load_errored_n": 0,
+    }
+
+
 def run_stress_testing(
     target: BaseTarget,
     stress_config: Dict[str, Any],
@@ -421,7 +471,7 @@ def run_stress_testing(
         dataset_path = stress_config.get("dataset")
         if not dataset_path:
             logger.error("No dataset specified for stress testing")
-            return {"status": "error", "reason": "No dataset specified"}
+            return _stress_failure("No dataset specified")
 
         loader = DatasetLoader()
         test_cases = loader.load_test_cases(dataset_path)
@@ -449,7 +499,7 @@ def run_stress_testing(
         logger.error(f"Stress testing failed: {e}")
         import traceback
         traceback.print_exc()
-        return {"status": "error", "reason": str(e)}
+        return _stress_failure(str(e))
 
 
 async def run_red_teaming_async(
@@ -517,7 +567,7 @@ async def run_red_teaming_async(
             simulator_model=simulator_model,
             evaluation_model=evaluation_model,
             purpose=red_team_config.get("purpose"),
-            ignore_errors=red_team_config.get("ignore_errors", False),
+            ignore_errors=red_team_config.get("ignore_errors", True),
         )
 
         runner = RedTeamRunner(target, config)
@@ -601,7 +651,7 @@ async def run_guardrails_testing_async(
             simulator_model=simulator_model,
             evaluation_model=evaluation_model,
             purpose=guardrails_config.get("purpose"),
-            ignore_errors=guardrails_config.get("ignore_errors", False),
+            ignore_errors=guardrails_config.get("ignore_errors", True),
         )
 
         # Get judge target for refusal detection — fall back to the

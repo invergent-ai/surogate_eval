@@ -36,7 +36,19 @@ class RedTeamConfig:
 
     # Advanced options
     purpose: Optional[str] = None
-    ignore_errors: bool = False
+
+    #: Whether DeepTeam absorbs a model error into a single attack.
+    #:
+    #: The simulator and evaluation models handed to DeepTeam are
+    #: ``DeepEvalTargetWrapper`` instances, and the wrapper raises rather
+    #: than inventing a score when a judge response cannot be parsed.
+    #: DeepTeam's own attack loop has no try/except of its own: with
+    #: ``ignore_errors=False`` the first raise aborts every remaining attack
+    #: in the batch and the whole scan collapses into one failure node -
+    #: thirty lost attacks reading as a single error, which passes the run's
+    #: error-rate threshold. Defaulting to True keeps the blast radius at one
+    #: attack, which comes back unscored and is counted as one error.
+    ignore_errors: bool = True
 
 class RedTeamRunner:
     """Runner for red-teaming using DeepTeam."""
@@ -96,21 +108,51 @@ class RedTeamRunner:
 
 
         async def model_callback(input: str, turns: list = None) -> str:
-            """Callback for target model."""
+            """Callback for target model.
+
+            A target failure used to be swallowed into "": DeepTeam's
+            refusal judge then scored the empty string as if the target
+            had answered, so an unreachable target read as one that saw
+            the attack and declined it - a false PASS on a security scan,
+            the worst direction this can go wrong.
+
+            DeepTeam wraps every call to this callback in its own
+            try/except, and which one catches depends on the attack.
+            Single-turn: ``RedTeamer._a_attack`` invokes the callback
+            itself and catches around it. Multi-turn: the callback is
+            invoked during simulation, one call site earlier, and caught in
+            ``AttackSimulator.a_enhance_attack`` - by the time
+            ``_a_attack`` sees the case its ``turns`` are non-empty, so it
+            skips the callback entirely and only measures. Either way a
+            raise here marks the test case with ``.error`` and leaves it
+            with ``.score = None`` rather than judged, and - because
+            ``ignore_errors`` defaults to True on this path - it costs
+            exactly one attack, not the whole scan. ``score is None`` is
+            already the signal RiskAssessment.result_counts() treats as
+            errored, so raising is what routes a target failure into that
+            same channel instead of inventing a new one. The callback
+            contract is "return a string"; there is no error slot in it,
+            so raising is the only way to signal a failure without
+            silently handing back a legitimate-looking answer.
+            """
             try:
                 # Translate input if translator is set
                 if self.translator:
                     translate_request = TargetRequest(prompt=input)
                     translate_response = await self.translator.send_request_async(translate_request)
+                    if translate_response.error:
+                        raise RuntimeError(f"Translator request failed: {translate_response.error}")
                     input = translate_response.content
                     logger.debug(f"Translated input to target language")
 
                 request = TargetRequest(prompt=input)
                 response = await self.target.send_request_async(request)
+                if response.error:
+                    raise RuntimeError(f"Target request failed: {response.error}")
                 return response.content
             except Exception as e:
                 logger.error(f"Error in model callback: {e}")
-                return ""
+                raise
 
         # Build vulnerabilities list
         vulnerabilities = self._build_vulnerabilities()
@@ -314,6 +356,10 @@ class RedTeamRunner:
         # Build detailed results for each test case
         detailed_results = []
         for idx, test_case in enumerate(test_cases):
+            # An attack DeepTeam handed back without a score was never
+            # judged. Recording it as 0.0 made an unmeasured attack look
+            # like a measured one, so the run outcome could not see it.
+            score = getattr(test_case, 'score', None)
             detailed_results.append({
                 'idx': idx,
                 'vulnerability': str(test_case.vulnerability) if hasattr(test_case, 'vulnerability') else 'unknown',
@@ -325,8 +371,8 @@ class RedTeamRunner:
                 'input': test_case.input if hasattr(test_case, 'input') else '',
                 'actual_output': test_case.actual_output if hasattr(test_case, 'actual_output') else '',
                 'expected_output': test_case.expected_output if hasattr(test_case, 'expected_output') else '',
-                'score': test_case.score if hasattr(test_case, 'score') else 0.0,
-                'success': (test_case.score < 1.0) if hasattr(test_case, 'score') else False,
+                'score': score,
+                'success': (score < 1.0) if score is not None else False,
                 # Attack succeeded if not blocked
                 'reason': test_case.reason if hasattr(test_case, 'reason') else None,
             })

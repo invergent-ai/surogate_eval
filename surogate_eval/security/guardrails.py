@@ -3,7 +3,7 @@
 
 from dataclasses import dataclass, field
 from datetime import datetime
-from typing import List, Dict, Any, Optional, Union
+from typing import List, Dict, Any, Optional, Tuple, Union
 
 from deepeval.models import DeepEvalBaseLLM
 
@@ -38,7 +38,11 @@ class GuardrailsConfig:
 
     # Advanced options
     purpose: Optional[str] = None
-    ignore_errors: bool = False
+
+    #: See ``RedTeamConfig.ignore_errors``: guardrails drives the same
+    #: DeepTeam scan, so one unparseable judge response must cost one attack
+    #: rather than the whole batch.
+    ignore_errors: bool = True
 
 
 @dataclass
@@ -69,6 +73,12 @@ class GuardrailsResult:
     safe_prompts_allowed: int = 0
     false_positive_rate: float = 0.0  # Lower is better
 
+    # Prompts that could not be tested at all. Kept apart from the tested
+    # counts so a prompt we failed to put to the model is never averaged
+    # into a refusal rate as if it had been answered.
+    harmful_prompts_errored: int = 0
+    safe_prompts_errored: int = 0
+
     # Detailed results
     harmful_results: List[RefusalResult] = field(default_factory=list)
     safe_results: List[RefusalResult] = field(default_factory=list)
@@ -76,19 +86,36 @@ class GuardrailsResult:
     # By vulnerability breakdown
     refusal_by_vulnerability: Dict[str, float] = field(default_factory=dict)
 
+    def result_counts(self) -> Tuple[int, int]:
+        """Countable units for the run outcome, as ``(scored, errored)``.
+
+        One unit is one prompt put to the model and judged, harmful or
+        safe alike. A model that complies with a harmful prompt is a
+        measurement, not an error; only a prompt we could not test at all
+        is errored.
+        """
+        scored = self.harmful_prompts_tested + self.safe_prompts_tested
+        errored = self.harmful_prompts_errored + self.safe_prompts_errored
+        return scored, errored
+
     def to_dict(self) -> Dict[str, Any]:
         """Convert to dictionary."""
+        scored_n, errored_n = self.result_counts()
         return {
             'target_name': self.target_name,
             'timestamp': self.timestamp,
+            'scored_n': scored_n,
+            'errored_n': errored_n,
             'harmful_prompts': {
                 'tested': self.harmful_prompts_tested,
                 'refused': self.harmful_prompts_refused,
+                'errored': self.harmful_prompts_errored,
                 'refusal_rate': self.refusal_rate
             },
             'safe_prompts': {
                 'tested': self.safe_prompts_tested,
                 'allowed': self.safe_prompts_allowed,
+                'errored': self.safe_prompts_errored,
                 'false_positive_rate': self.false_positive_rate
             },
             'refusal_by_vulnerability': self.refusal_by_vulnerability,
@@ -170,8 +197,9 @@ Reply with ONLY a single number: 0 or 1"""
         self.result = GuardrailsResult(target_name=self.target.name)
 
         # Step 1: Test harmful prompts (reuse red-teaming)
-        harmful_results = await self._test_harmful_prompts()
+        harmful_results, harmful_errored = await self._test_harmful_prompts()
         self.result.harmful_results = harmful_results
+        self.result.harmful_prompts_errored = harmful_errored
         self.result.harmful_prompts_tested = len(harmful_results)
         self.result.harmful_prompts_refused = sum(1 for r in harmful_results if r.refused)
         self.result.refusal_rate = (
@@ -181,8 +209,9 @@ Reply with ONLY a single number: 0 or 1"""
 
         # Step 2: Test safe prompts (if dataset provided)
         if self.config.safe_prompts_dataset:
-            safe_results = await self._test_safe_prompts()
+            safe_results, safe_errored = await self._test_safe_prompts()
             self.result.safe_results = safe_results
+            self.result.safe_prompts_errored = safe_errored
             self.result.safe_prompts_tested = len(safe_results)
             self.result.safe_prompts_allowed = sum(1 for r in safe_results if not r.refused)
             self.result.false_positive_rate = (
@@ -199,8 +228,12 @@ Reply with ONLY a single number: 0 or 1"""
 
         return self.result
 
-    async def _test_harmful_prompts(self) -> List[RefusalResult]:
-        """Test harmful prompts using red-teaming attacks."""
+    async def _test_harmful_prompts(self) -> Tuple[List[RefusalResult], int]:
+        """Test harmful prompts using red-teaming attacks.
+
+        Returns the results and the number of prompts that could not be
+        tested at all.
+        """
         logger.info("Testing harmful prompts (via red-teaming attacks)")
 
         # Create red-teaming config
@@ -219,7 +252,20 @@ Reply with ONLY a single number: 0 or 1"""
 
         # Run red-teaming to generate harmful prompts
         runner = RedTeamRunner(self.target, red_team_config)
-        risk_assessment = await runner.run()
+        try:
+            risk_assessment = await runner.run()
+        except Exception as e:
+            # The scan never handed back any attacks, so there is no
+            # per-prompt count to report. Left unguarded this propagated out
+            # of the evaluator entirely and the runner flattened the whole
+            # guardrails result into a status-only failure node, which the
+            # outcome walk reads as one error and no prompts. One errored
+            # unit says the same thing without discarding the safe-prompt
+            # half of the evaluation.
+            logger.error(f"Red-team scan for harmful prompts failed: {e}")
+            if not self.config.ignore_errors:
+                raise
+            return [], 1
 
         # Extract test cases from risk assessment
         test_cases = risk_assessment.test_cases if risk_assessment.test_cases else []
@@ -228,6 +274,7 @@ Reply with ONLY a single number: 0 or 1"""
 
         # Evaluate refusals with progress indicator
         results = []
+        errored = 0
         total = len(test_cases)
 
         for idx, test_case in enumerate(test_cases, 1):
@@ -245,6 +292,7 @@ Reply with ONLY a single number: 0 or 1"""
                     prompt = test_case.attack
                 else:
                     logger.warning(f"Could not find input/prompt in test case: {dir(test_case)}")
+                    errored += 1
                     continue
 
                 # Try to get output/response
@@ -259,6 +307,34 @@ Reply with ONLY a single number: 0 or 1"""
                 else:
                     logger.warning(
                         f"Could not find output/response in test case. Available attributes: {dir(test_case)}")
+                    errored += 1
+                    continue
+
+                # An attribute that exists but holds nothing is not a
+                # response. DeepTeam marks a case whose target never answered
+                # (``.error`` set, ``.score`` left at None) and leaves
+                # ``actual_output`` at None, so the branch above found the
+                # attribute and "AI Response: None" went to our refusal
+                # judge. The judge cannot rule on that, and the
+                # unclear-answer fallback in ``_judge_refusal`` returns
+                # ``not is_harmful`` - a fabricated "the target complied with
+                # a harmful attack" for a target that was never reached, plus
+                # one more prompt counted as tested. Red-team already routes
+                # this case to its errored channel via ``score is None``;
+                # this is the same rule on the guardrails side.
+                #
+                # Not every errored case is unmeasurable: DeepTeam also sets
+                # ``.error`` when its own judge fails, and that case still
+                # carries the target's real answer, which our refusal judge
+                # can score. What cannot be measured is a prompt with no
+                # answer to judge.
+                case_error = getattr(test_case, 'error', None)
+                if response is None or (case_error is not None and not response):
+                    logger.error(
+                        f"Harmful prompt {idx} was never answered by the target"
+                        + (f": {case_error}" if case_error else "")
+                    )
+                    errored += 1
                     continue
 
                 vulnerability_type = getattr(test_case, 'vulnerability_type', 'unknown')
@@ -288,15 +364,29 @@ Reply with ONLY a single number: 0 or 1"""
             except Exception as e:
                 logger.error(f"Error processing test case {idx}: {e}")
                 logger.debug(f"Test case attributes: {dir(test_case)}")
+                # Count first, re-raise second. A prompt we failed to test
+                # is an errored prompt on every path; whether the caller
+                # also wants the exception is a separate question. The
+                # other order put the ``raise`` in front of the counter,
+                # so the increment was dead code for anyone who set
+                # ``ignore_errors=False`` and the two lines had to be read
+                # together to see that.
+                errored += 1
                 if not self.config.ignore_errors:
                     raise
                 continue
 
         logger.success(f"Tested {len(results)} harmful prompts")
-        return results
+        if errored:
+            logger.error(f"{errored} harmful prompt(s) could not be tested")
+        return results, errored
 
-    async def _test_safe_prompts(self) -> List[RefusalResult]:
-        """Test safe prompts from dataset."""
+    async def _test_safe_prompts(self) -> Tuple[List[RefusalResult], int]:
+        """Test safe prompts from dataset.
+
+        Returns the results and the number of prompts that could not be
+        tested at all.
+        """
         logger.info(f"Testing safe prompts from: {self.config.safe_prompts_dataset}")
 
         try:
@@ -308,6 +398,7 @@ Reply with ONLY a single number: 0 or 1"""
 
             # Test each safe prompt with progress indicator
             results = []
+            errored = 0
             total = len(test_cases)
 
             for idx, test_case in enumerate(test_cases, 1):
@@ -315,16 +406,32 @@ Reply with ONLY a single number: 0 or 1"""
                     prompt = test_case.input
                 else:
                     logger.warning(f"Skipping non-TestCase: {type(test_case)}")
+                    errored += 1
                     continue
 
                 # Get model response
                 try:
                     request = TargetRequest(prompt=prompt)
                     target_response = self.target.send_request(request)
-                    response = target_response.content
                 except Exception as e:
                     logger.error(f"Failed to get response for safe prompt {idx}: {e}")
+                    errored += 1
                     continue
+
+                # Same rule as the harmful loop above: a response carrying an
+                # error, or no content at all, is a prompt we never measured.
+                # Judged anyway, "MODEL RESPONSE: None" is unreadable and the
+                # unclear-answer fallback invents a verdict - here a false
+                # positive charged to a target that was simply unreachable.
+                if target_response.error or target_response.content is None:
+                    logger.error(
+                        f"Safe prompt {idx} was never answered by the target: "
+                        f"{target_response.error or 'no content'}"
+                    )
+                    errored += 1
+                    continue
+
+                response = target_response.content
 
                 # Check if model incorrectly refused
                 refused = await self._is_refusal(prompt, response, is_harmful=False)
@@ -344,11 +451,16 @@ Reply with ONLY a single number: 0 or 1"""
                     logger.step(idx, total, f"Tested {idx}/{total} safe prompts")
 
             logger.success(f"Tested {len(results)} safe prompts")
-            return results
+            if errored:
+                logger.error(f"{errored} safe prompt(s) could not be tested")
+            return results, errored
 
         except Exception as e:
+            # The dataset never loaded, so there is no per-prompt count to
+            # report. One errored unit still makes the failure visible to
+            # the run outcome instead of reading as "no safe prompts".
             logger.error(f"Failed to test safe prompts: {e}")
-            return []
+            return [], 1
 
     async def _is_refusal(self, prompt: str, response: str, is_harmful: bool) -> bool:
         """
@@ -455,12 +567,16 @@ Reply with ONLY a single number: 0 or 1"""
         logger.metric("Harmful Prompts Tested", str(self.result.harmful_prompts_tested))
         logger.metric("Harmful Prompts Refused", str(self.result.harmful_prompts_refused))
         logger.metric("Refusal Rate (Higher = Better)", f"{self.result.refusal_rate:.1%}")
+        if self.result.harmful_prompts_errored:
+            logger.metric("Harmful Prompts Not Measured", str(self.result.harmful_prompts_errored))
 
         # Safe prompts
         if self.result.safe_prompts_tested > 0:
             logger.metric("Safe Prompts Tested", str(self.result.safe_prompts_tested))
             logger.metric("Safe Prompts Allowed", str(self.result.safe_prompts_allowed))
             logger.metric("False Positive Rate (Lower = Better)", f"{self.result.false_positive_rate:.1%}")
+        if self.result.safe_prompts_errored:
+            logger.metric("Safe Prompts Not Measured", str(self.result.safe_prompts_errored))
 
         # Per-vulnerability breakdown
         if self.result.refusal_by_vulnerability:

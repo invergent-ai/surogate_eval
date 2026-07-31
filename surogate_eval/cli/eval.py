@@ -101,7 +101,9 @@ if __name__ == '__main__':
         logger.info(f"Running evaluation with config {args.config}")
         config = load_config(EvalConfig, args.config)
         command_args = DictDefault(vars(args))
-        SurogateEval(
-            config=config,
-            args=command_args,
-        ).run()
+        sys.exit(
+            SurogateEval(
+                config=config,
+                args=command_args,
+            ).run()
+        )

@@ -3,6 +3,7 @@ import json
 from typing import Union, Optional
 from pydantic import BaseModel
 from deepeval.models import DeepEvalBaseLLM
+from ..errors import JudgeParseError, JudgeUnavailableError
 from ..targets.base import BaseTarget, TargetRequest
 from ..utils.logger import get_logger
 
@@ -15,36 +16,6 @@ class DeepEvalTargetWrapper(DeepEvalBaseLLM):
     def __init__(self, target: BaseTarget):
         self.target = target
         # Don't call super().__init__() - we manage the model ourselves
-
-    @staticmethod
-    def _empty_schema(schema):
-        """Return an empty but valid instance of a Pydantic schema."""
-        for attempt in [
-            lambda: schema(data=[]),
-            lambda: schema(input=""),
-            lambda: schema(inputs=[]),
-            lambda: schema(non_compliant=False),
-            lambda: schema(score=0),
-            lambda: schema(),
-        ]:
-            try:
-                return attempt()
-            except Exception:
-                continue
-        # Last resort — infer defaults from field types
-        fields = schema.model_fields
-        defaults = {}
-        for name, info in fields.items():
-            if info.annotation == str:
-                defaults[name] = ""
-            elif info.annotation == bool:
-                defaults[name] = False
-            elif info.annotation in (float, int):
-                defaults[name] = 0
-        try:
-            return schema(**defaults)
-        except Exception:
-            return schema.model_construct(**defaults)
 
     def load_model(self):
         return self.target
@@ -108,15 +79,15 @@ class DeepEvalTargetWrapper(DeepEvalBaseLLM):
 
         if response.error:
             logger.error(f"Target returned error: {response.error}")
-            if schema:
-                return self._empty_schema(schema)
-            return ""
+            raise JudgeUnavailableError(
+                f"target {self.target.name!r} returned an error: {response.error}"
+            )
 
         if not response.content:
             logger.warning(f"Empty response from target {self.target.name}")
-            if schema:
-                return self._empty_schema(schema)
-            return ""
+            raise JudgeUnavailableError(
+                f"target {self.target.name!r} returned empty content"
+            )
 
         content = response.content
 
@@ -175,9 +146,14 @@ class DeepEvalTargetWrapper(DeepEvalBaseLLM):
                         except Exception:
                             pass
 
-                    # All parsing failed — return empty but valid schema object
-                    logger.warning(f"Returning empty schema for failed parse: {str(ex)[:100]}")
-                    return self._empty_schema(schema)
+                    # All parsing strategies failed. Raise rather than
+                    # inventing a score: the adapter turns this into an
+                    # errored result (E-RUN-1).
+                    raise JudgeParseError(
+                        f"could not parse judge response from "
+                        f"{self.target.name!r} into {schema.__name__}: "
+                        f"{str(ex)[:200]}"
+                    ) from ex
 
         return content
 

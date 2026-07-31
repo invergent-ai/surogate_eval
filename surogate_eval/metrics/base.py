@@ -6,6 +6,9 @@ from enum import Enum
 
 from surogate_eval.datasets import TestCase, MultiTurnTestCase
 from surogate_eval.targets import TargetResponse
+from surogate_eval.utils.logger import get_logger
+
+logger = get_logger()
 
 
 class MetricType(Enum):
@@ -35,16 +38,48 @@ class MetricType(Enum):
     CLASSIFICATION = "classification"
 
 
+class MetricStatus(str, Enum):
+    """Whether a result is a measurement or a failure to measure."""
+
+    scored = "scored"
+    errored = "errored"
+
+
 @dataclass
 class MetricResult:
     """Result from a metric evaluation."""
 
     metric_name: str
     metric_type: MetricType
-    score: float  # 0.0 to 1.0
+    score: Optional[float]
     success: bool
     reason: Optional[str] = None
     metadata: Dict[str, Any] = field(default_factory=dict)
+    status: MetricStatus = MetricStatus.scored
+
+    @classmethod
+    def errored(
+            cls,
+            *,
+            metric_name: str,
+            metric_type: MetricType,
+            reason: str,
+            metadata: Optional[Dict[str, Any]] = None,
+    ) -> "MetricResult":
+        """Build a result that records a failure to measure.
+
+        ``score`` is None rather than 0.0 so an error can never be
+        averaged into a score (E-RUN-1).
+        """
+        return cls(
+            metric_name=metric_name,
+            metric_type=metric_type,
+            score=None,
+            success=False,
+            reason=reason,
+            metadata=metadata or {},
+            status=MetricStatus.errored,
+        )
 
     def to_dict(self) -> Dict[str, Any]:
         """Convert to dictionary."""
@@ -53,9 +88,22 @@ class MetricResult:
             'metric_type': self.metric_type.value,
             'score': self.score,
             'success': self.success,
+            'status': self.status.value,
             'reason': self.reason,
             'metadata': self.metadata
         }
+
+
+@dataclass(frozen=True)
+class _Aggregates:
+    """Every figure derived from one partition of a batch's results."""
+
+    scored_results: List[MetricResult]
+    scored_n: int
+    errored_n: int
+    error_rate: float
+    avg_score: float
+    success_rate: float
 
 
 @dataclass
@@ -66,28 +114,65 @@ class BatchMetricResult:
     metric_type: MetricType
     results: List[MetricResult]
 
+    def _aggregate(self) -> _Aggregates:
+        """Partition the results once and derive everything from that.
+
+        Each property below used to rebuild the filtered list for itself, so
+        a single ``to_dict()`` walked the results five times.
+        """
+        scored = [r for r in self.results if r.status is MetricStatus.scored]
+        total = len(self.results)
+        scored_n = len(scored)
+
+        return _Aggregates(
+            scored_results=scored,
+            scored_n=scored_n,
+            errored_n=total - scored_n,
+            error_rate=((total - scored_n) / total) if total else 0.0,
+            avg_score=(sum(r.score for r in scored) / scored_n) if scored_n else 0.0,
+            success_rate=(
+                sum(1 for r in scored if r.success) / scored_n
+            ) if scored_n else 0.0,
+        )
+
+    @property
+    def scored_results(self) -> List[MetricResult]:
+        """Results that are a measurement rather than a failure."""
+        return self._aggregate().scored_results
+
+    @property
+    def scored_n(self) -> int:
+        return self._aggregate().scored_n
+
+    @property
+    def errored_n(self) -> int:
+        return self._aggregate().errored_n
+
+    @property
+    def error_rate(self) -> float:
+        return self._aggregate().error_rate
+
     @property
     def avg_score(self) -> float:
-        """Calculate average score."""
-        if not self.results:
-            return 0.0
-        return sum(r.score for r in self.results) / len(self.results)
+        """Average over what we could actually measure."""
+        return self._aggregate().avg_score
 
     @property
     def success_rate(self) -> float:
-        """Calculate success rate."""
-        if not self.results:
-            return 0.0
-        return sum(1 for r in self.results if r.success) / len(self.results)
+        return self._aggregate().success_rate
 
     def to_dict(self) -> Dict[str, Any]:
         """Convert to dictionary."""
+        aggregates = self._aggregate()
         return {
             'metric_name': self.metric_name,
             'metric_type': self.metric_type.value,
             'num_evaluations': len(self.results),
-            'avg_score': self.avg_score,
-            'success_rate': self.success_rate,
+            'scored_n': aggregates.scored_n,
+            'errored_n': aggregates.errored_n,
+            'error_rate': aggregates.error_rate,
+            'avg_score': aggregates.avg_score,
+            'success_rate': aggregates.success_rate,
             'results': [r.to_dict() for r in self.results]
         }
 
@@ -158,7 +243,20 @@ class BaseMetric(ABC):
         results = []
         for i, (test_case, actual_output) in enumerate(zip(test_cases, actual_outputs)):
             target_response = target_responses[i] if target_responses else None
-            result = self.evaluate(test_case, actual_output, target_response)
+            try:
+                result = self.evaluate(test_case, actual_output, target_response)
+            except Exception as e:
+                # Safety net for E-RUN-1: a metric whose own handler misses an
+                # exception must not take the rest of the batch down, and the
+                # case must not disappear. It is recorded as unmeasured so the
+                # run outcome still counts it.
+                logger.error(f"Metric '{self.name}' raised on case {i}: {e}")
+                result = MetricResult.errored(
+                    metric_name=self.name,
+                    metric_type=self.metric_type,
+                    reason=f"Metric raised {type(e).__name__}: {e}",
+                    metadata={'error_kind': type(e).__name__},
+                )
             results.append(result)
 
         return BatchMetricResult(
@@ -188,3 +286,30 @@ class LLMJudgeMetric(BaseMetric):
     def set_judge_target(self, judge_target):
         """Set the judge target for evaluation."""
         self.judge_target = judge_target
+
+    def _no_output_result(
+            self,
+            target_response: Optional[TargetResponse] = None,
+    ) -> MetricResult:
+        """Result for an empty target output.
+
+        A failed request is a failure to measure. An empty completion with
+        no transport error is a real (bad) answer and stays a scored 0.0.
+
+        Every judged metric needs this same distinction, so it lives here
+        rather than being restated in each of them.
+        """
+        if target_response is not None and target_response.error:
+            return MetricResult.errored(
+                metric_name=self.name,
+                metric_type=self.metric_type,
+                reason=f"Target request failed: {target_response.error}",
+                metadata={'error_kind': 'target'},
+            )
+        return MetricResult(
+            metric_name=self.name,
+            metric_type=self.metric_type,
+            score=0.0,
+            success=False,
+            reason="No output to evaluate",
+        )

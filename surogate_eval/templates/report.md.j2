@@ -106,7 +106,7 @@
 | # | Instruction | Expected | Output | Score | Status | Reason |
 |---|-------------|----------|--------|-------|--------|--------|
 {% for detail in type_results %}
-| {{ detail.original_idx | default('?') }} | {{ detail.instruction | default('') | truncate(50) | replace('\n', ' ') | replace('|', '\\|') }} | `{{ detail.expected | default('') | truncate(20) | replace('\n', ' ') | replace('|', '\\|') }}` | `{{ detail.output | default('') | truncate(20) | replace('\n', ' ') | replace('|', '\\|') }}` | {{ detail.score | default(0) | format_score(2) if detail.score is number else detail.score }} | {{ "✅" if detail.success else "❌" }} | {{ detail.reason | default('') | truncate(40) | replace('\n', ' ') | replace('|', '\\|') }} |
+| {{ detail.original_idx | default('?') }} | {{ detail.instruction | default('') | truncate(50) | replace('\n', ' ') | replace('|', '\\|') }} | `{{ detail.expected | default('') | truncate(20) | replace('\n', ' ') | replace('|', '\\|') }}` | `{{ detail.output | default('') | truncate(20) | replace('\n', ' ') | replace('|', '\\|') }}` | {{ detail.score | format_score(2) if detail.score is number else 'not measured' }} | {{ "✅" if detail.success else "❌" }} | {{ detail.reason | default('') | truncate(40) | replace('\n', ' ') | replace('|', '\\|') }} |
 {% endfor %}
 
 {% set failed_cases = type_results | rejectattr('success') | list %}
@@ -135,7 +135,7 @@
 ```
 
 {% endif %}
-**Score:** {{ detail.score | default(0) }}
+**Score:** {{ detail.score | format_score(2) if detail.score is number else 'not measured' }}
 
 **Reason:** {{ detail.reason | default('') }}
 

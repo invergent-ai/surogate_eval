@@ -2,10 +2,17 @@
 import asyncio
 import os
 from pathlib import Path
-from typing import Any, Dict, List
+from typing import Any, Dict, List, Tuple
 
 from surogate_eval.backend import LocalBackend
 from surogate_eval.config.eval_config import TargetConfig
+from surogate_eval.outcome import (
+    DEFAULT_MAX_ERROR_RATE,
+    REQUESTED_WORK_KEY,
+    SUPPORT_TARGET_KEY,
+    compute_outcome,
+    exit_code_for,
+)
 from surogate_eval.runners import (
     _write_progress,
     run_benchmarks,
@@ -25,6 +32,11 @@ os.environ["DEEPEVAL_FILE_SYSTEM"] = "READ_ONLY"
 os.environ["EVALSCOPE_CACHE"] = os.path.join(os.path.expanduser("~"), ".cache", "evalscope")
 os.environ["MODELSCOPE_TRUST_REMOTE_CODE"] = "1"
 
+#: Work kinds dispatched by the shared benchmark loop in
+#: ``_run_target_evaluations`` - one progress entry each. Metric evaluations
+#: and stress testing are planned the same way but dispatched on their own.
+BENCHMARK_LOOP_KINDS = ("benchmark", "red_teaming", "guardrails")
+
 
 class SurogateEval(SurogateCommand):
     def __init__(self, *, config, args):
@@ -41,9 +53,14 @@ class SurogateEval(SurogateCommand):
             "targets": [],
         }
         self.targets: List[BaseTarget] = []
+        #: Targets another target names as its judge, simulator or
+        #: evaluator. Recorded on each target entry so ``outcome.py`` can
+        #: tell a support target's expected silence from a target whose
+        #: config was never read.
+        self.support_target_names: set = set()
 
-    def run(self):
-        """Run the evaluation pipeline."""
+    def run(self) -> int:
+        """Run the evaluation pipeline. Returns a process exit code."""
         from datetime import datetime
 
         logger.banner("SUROGATE EVAL")
@@ -60,8 +77,21 @@ class SurogateEval(SurogateCommand):
         finally:
             self._cleanup()
 
+        configured = self.config.max_error_rate
+        outcome = compute_outcome(
+            self.consolidated_results,
+            DEFAULT_MAX_ERROR_RATE if configured is None else float(configured),
+        )
+        self.consolidated_results["outcome"] = outcome
+
         self._save_consolidated_results()
-        logger.success("Surogate Eval completed")
+
+        if outcome["status"] == "completed":
+            logger.success("Surogate Eval completed")
+        else:
+            logger.error(f"Surogate Eval failed: {outcome['reason']}")
+
+        return exit_code_for(outcome)
 
     def _process_targets(self):
         """Process all targets from config."""
@@ -73,6 +103,7 @@ class SurogateEval(SurogateCommand):
 
         logger.info(f"Processing {len(target_configs)} target(s)")
         self.consolidated_results["summary"]["total_targets"] = len(target_configs)
+        self.support_target_names = self.config.support_target_names()
 
         # PHASE 1: Create all targets
         logger.info("Creating all targets...")
@@ -121,24 +152,86 @@ class SurogateEval(SurogateCommand):
             try:
                 target_results = self._run_target_evaluations(target, target_config)
                 if target_results:
-                    existing_idx = next(
-                        (i for i, t in enumerate(self.consolidated_results["targets"])
-                         if t.get("name") == target_name),
-                        None,
-                    )
-                    if existing_idx is not None:
-                        self.consolidated_results["targets"][existing_idx] = target_results
-                    else:
-                        self.consolidated_results["targets"].append(target_results)
+                    self._record_target_result(target_results)
 
             except Exception as e:
                 logger.error(f"Failed to run evaluations for target '{target_name}': {e}")
                 import traceback
                 traceback.print_exc()
+                # Record the crash. Without an entry the target is invisible
+                # both in the results file and to the outcome computation, so
+                # a run with another healthy target still reported success.
+                self._record_target_result({
+                    "name": target_name,
+                    "status": "failed",
+                    "error": str(e),
+                    "evaluations": [],
+                })
+
+    def _record_target_result(self, target_results: Dict[str, Any]) -> None:
+        """Insert or replace the consolidated entry for a target."""
+        target_name = target_results.get("name")
+        existing_idx = next(
+            (i for i, t in enumerate(self.consolidated_results["targets"])
+             if t.get("name") == target_name),
+            None,
+        )
+        if existing_idx is not None:
+            self.consolidated_results["targets"][existing_idx] = target_results
+        else:
+            self.consolidated_results["targets"].append(target_results)
+
+    @staticmethod
+    def _plan_work(target_config: TargetConfig) -> List[Tuple[str, Any]]:
+        """Everything this target's config asks us to run.
+
+        The single answer to "what was this target asked to do?". A target
+        that plans no work has been asked for nothing; paired with whether
+        another target names it as a judge or simulator, that is how
+        ``outcome.py`` tells a support target's expected silence from a
+        target whose sections were never read.
+
+        ``_run_target_evaluations`` dispatches from this list and records it
+        verbatim on the target entry, so ``outcome.py`` decides on a declared
+        fact instead of guessing intent from the results that came back. Any
+        new kind of work has to be planned here to run at all, which is what
+        keeps the record honest without anyone remembering to update it: the
+        list that runs and the list we claim to have asked for are one list.
+
+        The order here is the order the kinds are declared, not the order
+        they are dispatched in: the runner picks the entries of one kind at
+        a time and runs metric evaluations, then stress testing, then the
+        benchmark/red-team/guardrails loop. Order within one kind is
+        preserved.
+        """
+        plan: List[Tuple[str, Any]] = []
+
+        evaluations = target_config.evaluations or []
+        for eval_config in evaluations:
+            plan.append(("evaluation", eval_config))
+        for eval_config in evaluations:
+            for bench_config in eval_config.get("benchmarks", []):
+                plan.append(("benchmark", bench_config))
+
+        red_teaming = target_config.red_teaming or {}
+        if red_teaming.get("enabled"):
+            plan.append(("red_teaming", red_teaming))
+
+        guardrails_cfg = target_config.guardrails or {}
+        if guardrails_cfg.get("enabled"):
+            plan.append(("guardrails", guardrails_cfg))
+
+        stress_testing = target_config.stress_testing or {}
+        if stress_testing.get("enabled"):
+            plan.append(("stress_testing", stress_testing))
+
+        return plan
 
     def _run_target_evaluations(self, target: BaseTarget, target_config: TargetConfig) -> Dict[str, Any]:
         """Run all evaluations for a single target."""
         target_name = target.name
+
+        work = self._plan_work(target_config)
 
         target_result = {
             "name": target_name,
@@ -146,13 +239,21 @@ class SurogateEval(SurogateCommand):
             "model": target.config.get("model", "unknown"),
             "provider": target.config.get("provider", "unknown"),
             "status": "success",
+            # What we asked this target for, taken from the plan dispatched
+            # below rather than restated, and whether anyone else named this
+            # target as their judge/simulator/evaluator. Together they let
+            # outcome.py tell a support target's expected silence from a
+            # target whose sections were never read - a misspelt
+            # ``evaluations:`` plans nothing either.
+            REQUESTED_WORK_KEY: [kind for kind, _ in work],
+            SUPPORT_TARGET_KEY: target_name in self.support_target_names,
             "evaluations": [],
         }
 
         backend = self._setup_target_backend(target_config)
 
         # Run evaluations
-        evaluations = target_config.evaluations or []
+        evaluations = [cfg for kind, cfg in work if kind == "evaluation"]
         if evaluations:
             logger.info(f"Running {len(evaluations)} evaluation(s) for target '{target_name}'")
             self.consolidated_results["summary"]["total_evaluations"] += len(evaluations)
@@ -165,26 +266,15 @@ class SurogateEval(SurogateCommand):
         else:
             logger.warning(f"No evaluations specified for target '{target_name}'")
 
-        # Build unified task list: standard benchmarks + security tests.
-        # All go through the same loop with consistent progress tracking
-        # and per-benchmark result file writing.
-        red_teaming = target_config.red_teaming or {}
-        guardrails_cfg = target_config.guardrails or {}
-
-        tasks: list[tuple[str, Any]] = []
-        for eval_config in evaluations:
-            for bc in eval_config.get("benchmarks", []):
-                tasks.append(("benchmark", bc))
-        if red_teaming.get("enabled"):
-            tasks.append(("red_teaming", red_teaming))
-        if guardrails_cfg.get("enabled"):
-            tasks.append(("guardrails", guardrails_cfg))
+        # Standard benchmarks + security tests all go through the same loop
+        # with consistent progress tracking and per-benchmark result file
+        # writing.
+        tasks = [(kind, cfg) for kind, cfg in work if kind in BENCHMARK_LOOP_KINDS]
 
         # Run stress testing (separate — not a scored benchmark)
-        stress_testing = target_config.stress_testing or {}
-        if stress_testing.get("enabled"):
+        for stress_config in [cfg for kind, cfg in work if kind == "stress_testing"]:
             logger.info(f"Running stress testing for target '{target_name}'")
-            stress_result = run_stress_testing(target, stress_testing)
+            stress_result = run_stress_testing(target, stress_config)
             if stress_result:
                 target_result["stress_testing"] = stress_result
 

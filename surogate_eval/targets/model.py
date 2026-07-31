@@ -180,60 +180,94 @@ class APIModelTarget(BaseTarget):
             metadata=metadata
         )
 
+    def _model_list_paths(self) -> tuple:
+        """Model-listing paths to probe, best candidate first.
+
+        The base URL usually already ends in /v1 (every provider default
+        does), and httpx joins it with the path, so probing /v1/models first
+        asks for /v1/v1/models: a guaranteed wasted round trip on every
+        standard config.
+        """
+        if self.base_url.rstrip('/').endswith('/v1'):
+            return ("/models", "/v1/models")
+        return ("/v1/models", "/models")
+
+    def _probe_paths(
+            self,
+            paths,
+            timeout: float,
+            rejected_credential_is_fatal: bool,
+    ) -> Optional[bool]:
+        """Try each path in turn.
+
+        ``True`` as soon as one answers 200. A path that cannot be reached
+        at all is skipped, since the next one may still answer. When
+        ``rejected_credential_is_fatal``, a 401/403 ends the probe with
+        ``False``, because a key the server refuses on one path it will
+        refuse on the rest. ``None`` means nothing answered either way, so
+        the caller says why it is giving up.
+        """
+        for path in paths:
+            try:
+                response = self.client.get(path, timeout=timeout)
+            except Exception:
+                continue
+            if response.status_code == 200:
+                logger.debug(f"{self.name}: {path} probe healthy")
+                return True
+            if rejected_credential_is_fatal and response.status_code in (401, 403):
+                logger.error(
+                    f"{self.name}: credential rejected by {path} "
+                    f"(HTTP {response.status_code})"
+                )
+                return False
+
+        return None
+
     def health_check(self) -> bool:
         """Check if API is accessible."""
         try:
             # For localhost/local endpoints - try various health endpoints
             # Check this FIRST before provider-specific logic
             if any(x in self.base_url for x in ['localhost', '127.0.0.1', '0.0.0.0']):
-                # Try /v1/models first (most common for vLLM/OpenAI-compatible)
-                try:
-                    response = self.client.get("/v1/models", timeout=5)
-                    if response.status_code == 200:
-                        logger.debug(f"{self.name}: /v1/models endpoint healthy")
-                        return True
-                except:
-                    pass
-
-                # Try /models
-                try:
-                    response = self.client.get("/models", timeout=5)
-                    if response.status_code == 200:
-                        logger.debug(f"{self.name}: /models endpoint healthy")
-                        return True
-                except:
-                    pass
-
-                # Try /health
-                try:
-                    response = self.client.get("/health", timeout=5)
-                    if response.status_code == 200:
-                        logger.debug(f"{self.name}: /health endpoint healthy")
-                        return True
-                except:
-                    pass
+                # A local server has no credential to reject, so a 4xx here
+                # is just the wrong path and the probe moves on. The 5s/10s
+                # split between this branch and the remote one is unexplained
+                # but kept: changing it changes how long a wedged endpoint
+                # blocks a run.
+                if self._probe_paths(
+                        self._model_list_paths() + ("/health",),
+                        timeout=5,
+                        rejected_credential_is_fatal=False,
+                ) is True:
+                    return True
 
                 logger.warning(f"Health check failed for {self.name}. Ensure server is running at {self.base_url}")
                 return False
 
-            # Special handling for OpenAI and Anthropic APIs (non-localhost)
-            # Only check API key if it's actually needed (remote API)
-            if self.provider in [ModelProvider.OPENAI, ModelProvider.ANTHROPIC]:
-                has_key = bool(self.api_key)
-                if not has_key:
-                    logger.error(f"No API key provided for {self.name}")
-                else:
-                    logger.debug(f"{self.name}: API key present, assuming healthy")
-                return has_key
+            # Remote APIs: probe rather than trust that a credential is
+            # present. A missing or rejected key must read as unhealthy,
+            # not as "assume it works" (E-RUN-2). The old code returned
+            # bool(self.api_key), so an unresolved "${OPENAI_API_KEY}"
+            # literal counted as a valid credential and every request
+            # then 401'd with all judged metrics scoring 0.
+            if not self.api_key:
+                logger.error(f"No API key provided for {self.name}")
+                return False
 
-            # For other remote APIs (OpenRouter, Cohere, etc.)
-            try:
-                response = self.client.get("/models", timeout=10)
-                return response.status_code == 200
-            except:
-                logger.warning(f"Could not verify health for {self.name}")
-                # Be optimistic if we have credentials
-                return bool(self.api_key)
+            probe = self._probe_paths(
+                self._model_list_paths(),
+                timeout=10,
+                rejected_credential_is_fatal=True,
+            )
+            if probe is not None:
+                return probe
+
+            logger.error(
+                f"Could not verify {self.name} at {self.base_url}; "
+                "treating as unhealthy"
+            )
+            return False
 
         except Exception as e:
             logger.error(f"Health check error for {self.name}: {e}")

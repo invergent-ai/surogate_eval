@@ -59,6 +59,10 @@ inference = [
 pdf = [
     "weasyprint>=62.0",
 ]
+test = [
+    "pytest>=8.0.0",
+    "pytest-asyncio>=0.24.0",
+]
 dev = [
     "pytest>=8.0.0",
     "ruff>=0.9.0",
@@ -80,6 +84,19 @@ surogate_eval = ["templates/*.j2", "templates/**/*.j2"]
 
 [tool.uv]
 managed = true
+
+[tool.pytest.ini_options]
+# No test may make a network call, and the telemetry that broke that rule
+# starts before any test does. ``deepeval`` registers a pytest plugin
+# (entry point ``deepeval -> deepeval.plugins.plugin``), so pytest imports
+# the package during startup - before ``tests/conftest.py`` is read, which
+# is why setting the opt-out variable there is too late to stop it.
+# Importing ``deepeval.telemetry`` resolves api.ipify.org, then initialises
+# Sentry with a live DSN and an OTLP exporter. Refusing to load the plugin
+# is the only lever that applies early enough. ``tests/conftest.py`` still
+# sets ``DEEPEVAL_TELEMETRY_OPT_OUT`` for the test modules that import
+# deepeval themselves, later, by their own route.
+addopts = "-p no:deepeval"
 
 [tool.ruff]
 line-length = 100

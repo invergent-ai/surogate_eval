@@ -1,6 +1,6 @@
 # surogate/eval/stress/stress_tester.py
 from dataclasses import dataclass, field
-from typing import Dict, Any, List, Optional, Union
+from typing import Dict, Any, List, Optional, Tuple, Union
 import time
 import asyncio
 import statistics
@@ -78,9 +78,44 @@ class StressTestResult:
     breaking_point_concurrent: Optional[int] = None
     breaking_point_reason: Optional[str] = None
 
+    def load_counts(self) -> Tuple[int, int]:
+        """Countable load units for the run outcome, as ``(passed, failed)``.
+
+        One unit is one request put to the target under load. A request that
+        came back is one successful unit of load; a request that failed
+        produced no latency sample and is a failed one.
+
+        These are load counts, not measurement counts, and ``to_dict()``
+        publishes them under the outcome module's load-channel keys. A
+        stress test generates traffic to see how a target holds up; it does
+        not measure the quality of what comes back. Counting its requests as
+        measurements let a default 100-request stress run outvote every
+        metric in the run, so a target with half its metric cases erroring
+        still reported "completed" (error rate 0.045). The outcome module
+        gives the load channel its own error rate against the same
+        threshold, so a stress test that fails still fails the run - it just
+        cannot dilute anybody else's numbers.
+
+        Emitting nothing countable at all is not an option either: a
+        stress-only target would trip the "healthy target produced nothing"
+        rule and exit 1 after a perfectly good run.
+        """
+        if self.total_requests == 0:
+            # Nothing was sent. Reported as one failed unit so an empty
+            # stress test fails the run loudly instead of dissolving into a
+            # zero error rate, matching BenchmarkResult.result_counts().
+            return 0, 1
+        return self.successful_requests, self.failed_requests
+
     def to_dict(self) -> Dict[str, Any]:
         """Convert to dictionary."""
+        load_scored_n, load_errored_n = self.load_counts()
         return {
+            # See surogate_eval.outcome: LOAD_COUNT_KEYS. These deliberately
+            # do NOT use scored_n/errored_n, which are the quality-
+            # measurement channel that feeds the run-wide error rate.
+            'load_scored_n': load_scored_n,
+            'load_errored_n': load_errored_n,
             'config': {
                 'num_concurrent': self.config.num_concurrent,
                 'duration_seconds': self.config.duration_seconds,
@@ -290,10 +325,13 @@ class StressTester:
             futures = []
 
             while True:
-                # Check stop conditions
-                if num_requests and request_count >= num_requests:
+                # Check stop conditions. `num_requests`/`duration_seconds` of 0
+                # are valid, meaningful values (stop immediately) and must not
+                # be treated the same as None (no such limit) by a truthiness
+                # check, or a 0 would never be able to stop the loop.
+                if num_requests is not None and request_count >= num_requests:
                     break
-                if duration_seconds and (time.time() - start_time) >= duration_seconds:
+                if duration_seconds is not None and (time.time() - start_time) >= duration_seconds:
                     break
                 if failures >= max_failures:
                     logger.warning(f"Stopping test: reached max failures ({max_failures})")
@@ -301,7 +339,7 @@ class StressTester:
 
                 # Submit new requests up to concurrency limit
                 while len(futures) < num_concurrent:
-                    if num_requests and request_count >= num_requests:
+                    if num_requests is not None and request_count >= num_requests:
                         break
 
                     test_case = self.test_cases[request_count % len(self.test_cases)]
@@ -343,7 +381,7 @@ class StressTester:
                     futures = [f for f in futures if f not in done_futures]
 
                     # Check duration for infinite requests mode
-                    if not num_requests and duration_seconds:
+                    if num_requests is None and duration_seconds is not None:
                         if (time.time() - start_time) >= duration_seconds:
                             break
 
@@ -452,8 +490,10 @@ class StressTester:
         else:
             avg_latency = median_latency = p95_latency = p99_latency = min_latency = max_latency = 0.0
 
-        # Calculate throughput
-        requests_per_second = len(results) / total_duration
+        # Calculate throughput. A num_requests=0 (or otherwise empty) run
+        # sends nothing and can finish in effectively zero time, so guard
+        # against dividing by a zero duration.
+        requests_per_second = (len(results) / total_duration) if total_duration > 0 else 0.0
 
         # Calculate token statistics
         token_results = [r for r in successful if r['tokens'] is not None]
@@ -478,7 +518,8 @@ class StressTester:
         logger.metric("Throughput", f"{requests_per_second:.2f} req/s")
         logger.metric("Avg Latency", f"{avg_latency:.1f}ms")
         logger.metric("P95 Latency", f"{p95_latency:.1f}ms")
-        logger.metric("Success Rate", f"{len(successful) / len(results):.1%}")
+        if results:
+            logger.metric("Success Rate", f"{len(successful) / len(results):.1%}")
 
         if tokens_per_second:
             logger.metric("Token Throughput", f"{tokens_per_second:.1f} tokens/s")

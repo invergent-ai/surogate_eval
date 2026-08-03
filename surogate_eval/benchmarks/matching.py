@@ -80,8 +80,13 @@ class Matcher:
         when a pattern exceeds its budget; the caller treats that as a failure
         to measure, since an abandoned match says nothing either way.
         """
-        cleaned = clean_formatting(raw_output or '')
-        wanted = clean_formatting(expected or '').strip().lower()
+        # `or ''` only guards falsy values; a truthy non-string (a numeric
+        # answer key authored as `42` rather than `"42"`, or a bool) must
+        # still not crash inside `clean_formatting`, so coerce explicitly.
+        cleaned = clean_formatting('' if raw_output is None else str(raw_output))
+        wanted = clean_formatting(
+            '' if expected is None else str(expected)
+        ).strip().lower()
 
         if self.mode == 'regex':
             try:
@@ -136,7 +141,7 @@ def build_matcher(cfg: Optional[Dict[str, Any]]) -> Matcher:
 
     try:
         compiled = regex.compile(pattern, flags)
-    except regex.error as exc:
+    except (regex.error, TypeError) as exc:
         raise ConfigError(f"invalid matcher pattern {pattern!r}: {exc}") from exc
 
     # Default to the first capture group when the pattern has one, and to the
@@ -144,13 +149,29 @@ def build_matcher(cfg: Optional[Dict[str, Any]]) -> Matcher:
     group = cfg.get('group')
     if group is None:
         group = 1 if compiled.groups else 0
-    group = int(group)
-    if group > compiled.groups:
+    else:
+        try:
+            group = int(group)
+        except (TypeError, ValueError) as exc:
+            raise ConfigError(
+                f"matcher group must be an integer, got {group!r}"
+            ) from exc
+    # Both bounds matter: a pattern has groups 0 (the whole match) through
+    # `compiled.groups`, and a negative index passes straight through to
+    # `re.Match.group()`, which raises `IndexError` on the first row rather
+    # than failing here, at build time, where every row would hit it.
+    if group < 0 or group > compiled.groups:
         raise ConfigError(
             f"matcher group {group} but pattern {pattern!r} has "
             f"{compiled.groups} capture group(s)"
         )
 
-    timeout = float(cfg.get('timeout') or DEFAULT_TIMEOUT_SECONDS)
+    timeout_cfg = cfg.get('timeout') or DEFAULT_TIMEOUT_SECONDS
+    try:
+        timeout = float(timeout_cfg)
+    except (TypeError, ValueError) as exc:
+        raise ConfigError(
+            f"matcher timeout must be a number, got {cfg.get('timeout')!r}"
+        ) from exc
     logger.debug(f"Matcher: mode={mode} group={group} timeout={timeout}s")
     return Matcher(mode, compiled=compiled, group=group, timeout=timeout)

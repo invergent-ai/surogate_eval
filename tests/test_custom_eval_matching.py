@@ -8,6 +8,10 @@ every row of an MCQ benchmark passed.
 No network: these are plain strings.
 """
 
+import re
+import tomllib
+from pathlib import Path
+
 import pytest
 
 from surogate_eval.benchmarks.matching import (
@@ -154,3 +158,64 @@ def test_the_retired_heuristics_no_longer_rewrite_the_output():
 
     assert by_hand.compare("Contact: a@b.com", "a@b.com")[0] is False
     assert with_pattern.compare("Contact: a@b.com", "a@b.com")[0] is True
+
+
+# --- fix round 1 -------------------------------------------------------
+
+
+def test_a_negative_group_is_rejected_at_build_time():
+    """The bounds check only guarded the upper end. A negative group passed
+    build-time validation and then crashed with a raw IndexError on the
+    first row compared - exactly the every-row misconfiguration this module
+    exists to catch before evaluation starts."""
+    with pytest.raises(ConfigError):
+        build_matcher({"mode": "regex", "pattern": r"(\w+)", "group": -1})
+
+
+def test_a_non_string_expected_does_not_crash_compare():
+    """A numeric answer key authored as ``42`` rather than ``"42"`` is a
+    realistic config shape. It must not crash inside ``clean_formatting``;
+    values are coerced to str at the boundary instead."""
+    success, cleaned = build_matcher(None).compare(42, "4")
+
+    assert success is True
+    assert cleaned == "42"
+
+
+def test_a_non_string_raw_output_does_not_crash_compare():
+    success, _cleaned = build_matcher(None).compare("True story", True)
+
+    assert success is True
+
+
+@pytest.mark.parametrize(
+    "cfg",
+    [
+        {"mode": "regex", "pattern": r"(\w+)", "group": "abc"},
+        {"mode": "regex", "pattern": r"(\w+)", "timeout": "soon"},
+        {"mode": "regex", "pattern": 123},
+    ],
+    ids=["bad-group", "bad-timeout", "non-string-pattern"],
+)
+def test_malformed_regex_config_values_raise_config_error_not_a_raw_exception(cfg):
+    """``group``, ``timeout`` and ``pattern`` all funnel through ``int()``,
+    ``float()`` or ``regex.compile()`` and previously let a ``ValueError`` or
+    ``TypeError`` escape uncaught. Tasks 2 and 3 catch ``ConfigError`` as the
+    single documented build-time contract, so these must route through it
+    too."""
+    with pytest.raises(ConfigError):
+        build_matcher(cfg)
+
+
+def test_regex_is_a_declared_dependency():
+    """``matching.py`` imports ``regex`` unguarded for the ``timeout=`` kwarg
+    the catastrophic-backtracking safety net depends on. It was present in
+    this environment only transitively (via sacrebleu/tiktoken/nltk/...), so
+    an upstream dependency bump dropping it would break this module at
+    import time with an undiagnosable ``ModuleNotFoundError``."""
+    pyproject_path = Path(__file__).resolve().parents[1] / "pyproject.toml"
+    pyproject = tomllib.loads(pyproject_path.read_text())
+    deps = pyproject["project"]["dependencies"]
+    names = [re.split(r"[<>=!\[; ]", dep, maxsplit=1)[0] for dep in deps]
+
+    assert "regex" in names

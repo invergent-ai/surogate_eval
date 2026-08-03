@@ -38,3 +38,12 @@ class BenchmarkSchemaError(EvalError):
     number we did not measure. Not retryable: an upstream schema change will
     not resolve on the next attempt.
     """
+
+
+class MatchTimeout(EvalError):
+    """A user-supplied pattern took longer than its budget on one row.
+
+    Raised rather than returning "no match", because a pattern we abandoned
+    tells us nothing about whether the answer was right. The caller records
+    the row as unmeasured.
+    """

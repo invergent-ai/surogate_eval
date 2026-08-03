@@ -522,17 +522,12 @@ class EvalScopeBackend:
                             sample = json.loads(line)
 
                             # Extract score from EvalScope's nested structure
-                            # sample_score.score.value.<metric>
-                            score = 0.0
-                            score_details = {}
-                            score_reason = None
+                            # sample_score.score.value.<metric>. A row we
+                            # cannot read a score from is unmeasured, which
+                            # includes a row carrying no score object at all.
                             sample_score = sample.get('sample_score') or {}
-                            if sample_score:
-                                score_obj = sample_score.get('score') or {}
-                                if score_obj:
-                                    score, score_details, score_reason = (
-                                        _extract_sample_score(score_obj)
-                                    )
+                            score_obj = sample_score.get('score') or {}
+                            score, score_details, score_reason = _extract_sample_score(score_obj)
 
                             # Extract input, target, and prediction
                             input_text = sample.get('input', '')
@@ -574,12 +569,8 @@ class EvalScopeBackend:
                                     )
 
                             # Get the model's prediction/output
-                            prediction = ''
-                            extracted = ''
-                            if sample_score:
-                                score_obj = sample_score.get('score') or {}
-                                prediction = score_obj.get('prediction', '') or ''
-                                extracted = score_obj.get('extracted_prediction', '') or ''
+                            prediction = score_obj.get('prediction', '') or ''
+                            extracted = score_obj.get('extracted_prediction', '') or ''
 
                             detailed_results.append({
                                 'input': input_text,

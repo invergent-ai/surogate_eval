@@ -134,3 +134,34 @@ def test_an_unmeasured_sample_is_not_reported_as_a_pass():
     assert record['success'] is False
     assert record['status'] == 'errored'
     assert 'unrecognised score schema' in record['reason']
+
+
+def test_a_row_with_no_score_object_is_unmeasured(tmp_path):
+    """A row carrying no score at all did not score zero either.
+
+    Task 1 fixed the case where the score object exists but cannot be read.
+    A row with no ``sample_score`` took a different path and kept the old
+    0.0 default, which reports it as an answer the model got wrong.
+
+    Driven through the real review-file loop rather than the helper, because
+    the defect is in the loop's initialiser, not in the extraction. No
+    network: this reads one file from tmp_path.
+    """
+    import json
+
+    from surogate_eval.benchmarks.backends.evalscope_backend import EvalScopeBackend
+
+    reviews = tmp_path / "reviews" / "model-under-test"
+    reviews.mkdir(parents=True)
+    (reviews / "gsm8k_default.jsonl").write_text(
+        json.dumps({"input": "2+2?", "target": "4"}) + "\n"
+    )
+
+    backend = EvalScopeBackend.__new__(EvalScopeBackend)
+    rows = backend._load_predictions(str(tmp_path), "model-under-test", "gsm8k")
+
+    assert len(rows) == 1
+    assert rows[0]["score"] is None, "a row with no score object is not a zero"
+    assert rows[0]["success"] is False
+    assert rows[0]["status"] == "errored"
+    assert rows[0]["reason"]

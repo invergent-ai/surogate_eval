@@ -143,6 +143,12 @@ def test_a_row_with_no_score_object_is_unmeasured(tmp_path):
     A row with no ``sample_score`` took a different path and kept the old
     0.0 default, which reports it as an answer the model got wrong.
 
+    A second, scored row is included alongside it so the same test drives
+    both halves of the loop through ``_load_predictions``: the unmeasured
+    branch (no ``sample_score``) and the scored branch (a realistic
+    ``sample_score``), the latter of which regressed silently when a guard
+    was removed and ``prediction``/``extracted`` stopped being read.
+
     Driven through the real review-file loop rather than the helper, because
     the defect is in the loop's initialiser, not in the extraction. No
     network: this reads one file from tmp_path.
@@ -153,18 +159,43 @@ def test_a_row_with_no_score_object_is_unmeasured(tmp_path):
 
     reviews = tmp_path / "reviews" / "model-under-test"
     reviews.mkdir(parents=True)
+    unmeasured_row = {"input": "2+2?", "target": "4"}
+    scored_row = {
+        "input": "What is 6 times 7?",
+        "target": "42",
+        "sample_score": {
+            "score": {
+                "value": {"acc": 1.0},
+                "main_score_name": "acc",
+                "prediction": "Let me work through this. 6 times 7 is 42.",
+                "extracted_prediction": "42",
+            },
+            "sample_metadata": {"subject": "arithmetic"},
+        },
+    }
     (reviews / "gsm8k_default.jsonl").write_text(
-        json.dumps({"input": "2+2?", "target": "4"}) + "\n"
+        json.dumps(unmeasured_row) + "\n" + json.dumps(scored_row) + "\n"
     )
 
     backend = EvalScopeBackend.__new__(EvalScopeBackend)
     rows = backend._load_predictions(str(tmp_path), "model-under-test", "gsm8k")
 
-    assert len(rows) == 1
-    assert rows[0]["score"] is None, "a row with no score object is not a zero"
-    assert rows[0]["success"] is False
-    assert rows[0]["status"] == "errored"
-    assert rows[0]["reason"]
+    assert len(rows) == 2
+
+    unmeasured, scored = rows
+
+    assert unmeasured["score"] is None, "a row with no score object is not a zero"
+    assert unmeasured["success"] is False
+    assert unmeasured["status"] == "errored"
+    assert unmeasured["reason"]
+
+    assert scored["score"] == 1.0
+    assert scored["success"] is True
+    assert scored["status"] == "scored"
+    assert scored["reason"] is None
+    assert scored["output"] == "42", "extracted_prediction must win over the raw prediction"
+    assert scored["raw_output"] == "Let me work through this. 6 times 7 is 42."
+    assert scored["subset"] == "arithmetic"
 
 
 def test_a_report_without_a_top_level_score_raises_rather_than_reporting_zero():

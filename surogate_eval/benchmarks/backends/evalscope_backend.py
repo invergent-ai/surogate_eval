@@ -2,7 +2,7 @@
 """EvalScope backend for benchmark evaluation."""
 import tempfile
 import time
-from typing import Dict, Any, List
+from typing import Dict, Any, List, Optional, Tuple
 from pathlib import Path
 
 import requests
@@ -75,6 +75,63 @@ except ImportError:
     EvalType = None
 
 logger = get_logger()
+
+
+#: Keys we know how to read a sample score from, tried in this order after
+#: ``main_score_name`` and ``acc``. Each entry is a benchmark we have seen
+#: write its score under that name.
+_KNOWN_SCORE_KEYS = (
+    'accuracy', 'correct', 'score',
+    'resolved', 'passed', 'pass',
+    'is_correct',           # simple_qa, simple_vqa
+    'prompt_level_strict',  # IFEval/IFBench
+    'em', 'exact_match',    # DROP, drivelology
+    'f1',                   # DROP, tool_bench
+    'winrate',              # alpaca_eval
+    'overall_score',        # healthbench
+    'eq_bench_score',       # eq_bench
+    'total_score',          # mia_bench
+)
+
+
+def _extract_sample_score(
+        score_obj: Dict[str, Any]
+) -> Tuple[Optional[float], Dict[str, Any], Optional[str]]:
+    """Read one sample's score out of an evalscope review row.
+
+    Returns ``(score, score_details, reason)``. A ``score`` of ``None`` means
+    the row could not be read, which is not the same thing as a row that
+    scored zero, and the two must never be conflated: the previous version
+    used ``score == 0.0`` as its "keep looking" signal, so a correctly-parsed
+    wrong answer fell through to a fallback that averaged every number in the
+    row and returned a fabricated non-zero score.
+
+    ``reason`` is set exactly when ``score`` is ``None``.
+    """
+    value = score_obj.get('value')
+
+    # Some adapters write a bare number rather than a dict of named metrics.
+    if isinstance(value, (int, float)):
+        return float(value), {}, None
+
+    if not isinstance(value, dict) or not value:
+        return None, {}, f"no readable score value (got {type(value).__name__})"
+
+    main_name = score_obj.get('main_score_name')
+    candidates = ([main_name] if main_name else []) + ['acc'] + list(_KNOWN_SCORE_KEYS)
+
+    for key in candidates:
+        if key not in value:
+            continue
+        try:
+            return float(value[key]), value, None
+        except (TypeError, ValueError):
+            # A key we recognise carrying something we cannot read is a
+            # failure to measure, not a reason to go looking for a number
+            # elsewhere in the row.
+            return None, value, f"score key {key!r} is not a number: {value[key]!r}"
+
+    return None, value, f"unrecognised score schema, keys: {sorted(value)}"
 
 
 class EvalScopeBackend:
@@ -465,48 +522,17 @@ class EvalScopeBackend:
                             sample = json.loads(line)
 
                             # Extract score from EvalScope's nested structure
-                            # sample_score.score.value.acc
+                            # sample_score.score.value.<metric>
                             score = 0.0
                             score_details = {}
+                            score_reason = None
                             sample_score = sample.get('sample_score') or {}
                             if sample_score:
                                 score_obj = sample_score.get('score') or {}
                                 if score_obj:
-                                    value = score_obj.get('value') or {}
-                                    if isinstance(value, dict):
-                                        score_details = value
-                                        # Try main_score_name first (set by evalscope)
-                                        main_name = score_obj.get('main_score_name')
-                                        if main_name and main_name in value:
-                                            score = float(value[main_name])
-                                        else:
-                                            # Get 'acc' or first available metric
-                                            score = value.get('acc', 0.0)
-                                        if score == 0.0:
-                                            # Try common metric names across benchmarks
-                                            for key in [
-                                                'accuracy', 'correct', 'score',
-                                                'resolved', 'passed', 'pass',
-                                                'is_correct',          # simple_qa, simple_vqa
-                                                'prompt_level_strict', # IFEval/IFBench
-                                                'em', 'exact_match',   # DROP, drivelology
-                                                'f1',                  # DROP, tool_bench
-                                                'winrate',             # alpaca_eval
-                                                'overall_score',       # healthbench
-                                                'eq_bench_score',      # eq_bench
-                                                'total_score',         # mia_bench
-                                            ]:
-                                                if key in value:
-                                                    score = float(value[key])
-                                                    break
-                                            # Last resort: average all numeric values
-                                            if score == 0.0 and value:
-                                                nums = [v for v in value.values()
-                                                        if isinstance(v, (int, float))]
-                                                if nums:
-                                                    score = sum(nums) / len(nums)
-                                    elif isinstance(value, (int, float)):
-                                        score = float(value)
+                                    score, score_details, score_reason = (
+                                        _extract_sample_score(score_obj)
+                                    )
 
                             # Extract input, target, and prediction
                             input_text = sample.get('input', '')
@@ -560,9 +586,11 @@ class EvalScopeBackend:
                                 'expected': expected,
                                 'output': extracted or prediction[:500],
                                 'raw_output': prediction,
-                                'score': float(score),
+                                'score': score,
                                 'score_details': score_details,
-                                'success': float(score) > 0,
+                                'success': score is not None and score > 0,
+                                'status': 'errored' if score is None else 'scored',
+                                'reason': score_reason,
                                 'subset': (sample_score.get('sample_metadata') or {}).get('subject', ''),
                                 'metadata': sample
                             })

@@ -108,8 +108,8 @@ class Matcher:
                 # The pattern is the answer format the benchmark asked for, so
                 # producing nothing that matches it is a wrong answer.
                 return False, ''
-            extracted = found.group(self._group) or ''
-            return extracted.strip().lower() == wanted, extracted.strip()
+            extracted = (found.group(self._group) or '').strip()
+            return extracted.lower() == wanted, extracted
 
         got = cleaned.strip().lower()
         if self.mode == 'exact':

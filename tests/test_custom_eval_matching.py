@@ -109,20 +109,19 @@ def test_an_unknown_mode_is_rejected_rather_than_silently_treated_as_contains():
     assert "fuzzy" in str(excinfo.value)
 
 
-def test_an_invalid_pattern_is_rejected_at_build_time():
-    """Every row would hit it, so it is a config error, not a row error."""
+@pytest.mark.parametrize(
+    "cfg",
+    [
+        {"mode": "regex", "pattern": "([unclosed"},
+        {"mode": "regex"},
+        {"mode": "regex", "pattern": r"(\w+)", "group": 3},
+    ],
+    ids=["invalid-pattern", "missing-pattern", "group-out-of-range"],
+)
+def test_bad_regex_config_is_rejected_at_build_time(cfg):
+    """Every row would hit these, so each is a config error, not a row error."""
     with pytest.raises(ConfigError):
-        build_matcher({"mode": "regex", "pattern": "([unclosed"})
-
-
-def test_regex_mode_requires_a_pattern():
-    with pytest.raises(ConfigError):
-        build_matcher({"mode": "regex"})
-
-
-def test_a_group_the_pattern_does_not_have_is_rejected_at_build_time():
-    with pytest.raises(ConfigError):
-        build_matcher({"mode": "regex", "pattern": r"(\w+)", "group": 3})
+        build_matcher(cfg)
 
 
 def test_a_catastrophic_pattern_is_bounded_rather_than_hanging_the_run():

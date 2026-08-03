@@ -120,6 +120,39 @@ Worth stating plainly: this is a self-inflicted foot-gun rather than an attack s
 comes from the tenant running their own benchmark, on their own per-run pod. The timeout exists so a
 bad pattern costs a row instead of the run.
 
+### Both scoring paths, one matcher
+
+`exact_match` rows take one of two paths: direct inference when no tokenizer is configured, and
+lm-eval when one is (`custom_eval_backend.py:287-292`). Only the direct path does its own comparison.
+The lm-eval path delegates correctness to lm-eval's own metric:
+
+```python
+score = 1.0 if detail.get('metrics', {}).get('exact_match', 0) else 0.0
+```
+
+So the same benchmark is scored by different rules depending on whether a tokenizer happens to be
+set, and neither rule is the one the user asked for.
+
+**lm-eval keeps generation; the comparison comes back to us.** Its `exact_match` metric is no longer
+read. Each returned row is scored by the same matcher the direct path uses, against the same cleaned
+text, so a benchmark's results stop depending on its tokenizer setting.
+
+Compare `raw_output`, not `output`. `LMEvalBackend` derives `output` by running its own
+`_extract_answer` heuristic (`lm_eval_backend.py:466-472`), which is a *third* extractor beside the
+matcher and the normaliser heuristics being retired here. Taking `raw_output` through the same
+cleanup as the direct path makes the two identical: raw model text, our cleanup, our matcher. As on
+the direct path, the record's `output` then holds our cleaned value and `raw_output` the model's.
+
+`_extract_answer` is left in place; lm-eval's own benchmark path still uses it. It simply stops
+deciding custom-eval scores.
+
+**A row lm-eval never returned is unmeasured.** When it returns fewer rows than were sent, the
+remainder currently become `score: 0.0, success: False, reason: 'No result'`
+(`custom_eval_backend.py:357-362`) — a row that was never scored, recorded as an answer the model got
+wrong. It gains `score: None`, `success: False`, `status: 'errored'` and a reason, matching the
+convention its sibling `_evaluate_exact_match_direct` already follows. It also currently carries no
+`status` key at all, unlike every other row this backend emits.
+
 ## Testing
 
 No network; all cases are plain strings through the real comparison.
@@ -137,6 +170,9 @@ No network; all cases are plain strings through the real comparison.
 - An invalid pattern and an unknown mode each fail the benchmark, naming the offending value.
 - A catastrophic pattern is bounded by the timeout and errors that row without taking the run.
 - `greeting-check`'s shape (long expected, output containing it) keeps passing under the default.
+- The same rows, scored through both paths, agree: a case that fails under `exact` on the direct path
+  fails on the lm-eval path too, rather than depending on the tokenizer setting.
+- A row lm-eval did not return is unmeasured, not a wrong answer.
 
 ## Out of scope
 
@@ -144,5 +180,5 @@ No network; all cases are plain strings through the real comparison.
   custom benchmark creation exists.
 - The create form's pattern field, the Custom Python option, and its hardcoded `columns`. They edit a
   form whose payload is discarded today, so they land with the work that makes it survive.
-- `_evaluate_exact_match_lm_eval`, the tokenizer path. It is a different comparison with its own
-  semantics and no custom benchmark reaches it.
+- Sending an explicit mode from the platform, and flipping the default to `exact`, are both listed
+  above and remain out of scope here.

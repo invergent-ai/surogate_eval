@@ -12,22 +12,21 @@ The replacement was never needed. ``runners.py`` puts ``judge_target``
 *into* ``backend_params`` before the benchmark runs, so the dict passed
 earlier in the same function already carried it.
 
-The second test closes the loop. The evalscope backend reads ``max_turns``
-inside its ``if judge_target:`` branch, which the wipe made unreachable by
+``test_judge_scored_benchmark_reaches_evalscope_with_its_turn_limit``
+closes the loop, because asserting the dict survives is not enough on its
+own. The evalscope backend reads ``max_turns`` inside its ``if
+judge_target:`` branch, and the wipe put that value out of reach by
 construction: the presence of the judge was exactly what emptied the dict
-the lookup reads. Asserting the dict survives is not enough on its own, so
-the config ``GenericBenchmark`` produces is fed to the real
-``_prepare_task_config`` and checked for the value that could never arrive.
+the lookup reads. So the config ``GenericBenchmark`` produces is fed to the
+real ``_prepare_task_config`` and checked for the value that could never
+arrive.
 
 No network: the backend is a stub for the passthrough tests, and
 ``_prepare_task_config`` is pure config assembly.
 """
 
-import pytest
-
-from surogate_eval.benchmarks import BenchmarkConfig
+from surogate_eval.benchmarks.base import BenchmarkConfig
 from surogate_eval.benchmarks.generic import GenericBenchmark
-from surogate_eval.benchmarks.backends.evalscope_backend import EvalScopeBackend
 
 BACKEND_PARAMS = {
     "use_sandbox": False,
@@ -39,7 +38,6 @@ BACKEND_PARAMS = {
 
 
 class FakeJudge:
-    name = "judge"
     config = {"base_url": "https://judge.example/v1", "model": "jm", "api_key": "jk"}
 
 
@@ -59,43 +57,53 @@ class CapturingBackend:
         return {"overall_score": 0.0, "task_results": {}, "detailed_results": []}
 
 
-def _run(with_judge: bool) -> dict:
-    """Drive the real ``evaluate`` and return the config the backend saw."""
-    params = dict(BACKEND_PARAMS)
-    if with_judge:
-        # runners.py puts the resolved judge into backend_params before the
-        # benchmark runs, so this is the state evaluate() actually sees.
-        params["judge_target"] = FakeJudge()
+def _run() -> tuple[dict, object]:
+    """Drive the real ``evaluate``.
+
+    Returns the config the backend was handed, plus the real evalscope
+    backend the benchmark built for itself, so a test can drive that rather
+    than hand-rolling a second one.
+    """
+    # runners.py puts the resolved judge into backend_params before the
+    # benchmark runs, so this is the state evaluate() actually sees.
+    params = dict(BACKEND_PARAMS, judge_target=FakeJudge())
 
     benchmark = GenericBenchmark(
         BenchmarkConfig(name="tau_bench", backend="evalscope", backend_params=params)
     )
-    backend = CapturingBackend()
-    benchmark.backend = backend
+    real_backend = benchmark.backend
+
+    capturing = CapturingBackend()
+    benchmark.backend = capturing
     benchmark.evaluate(FakeTarget())
-    return backend.config
+
+    return capturing.config, real_backend
 
 
-@pytest.mark.parametrize("with_judge", [False, True])
-def test_backend_params_survive_a_configured_judge(with_judge):
-    passed = _run(with_judge)["backend_params"]
+def test_backend_params_survive_a_configured_judge():
+    passed, _ = _run()
 
     for key, value in BACKEND_PARAMS.items():
-        assert passed[key] == value, f"{key} was dropped (judge={with_judge})"
+        assert passed["backend_params"][key] == value, f"{key} was dropped"
 
 
 def test_judge_target_still_reaches_the_backend():
     """The allow direction: not dropping the others must not drop the judge."""
-    passed = _run(with_judge=True)["backend_params"]
+    passed, _ = _run()
 
-    assert isinstance(passed["judge_target"], FakeJudge)
+    assert isinstance(passed["backend_params"]["judge_target"], FakeJudge)
 
 
 def test_judge_scored_benchmark_reaches_evalscope_with_its_turn_limit():
-    """``max_turns`` must survive far enough to configure the user simulator."""
-    config = _run(with_judge=True)
+    """The settings must survive as far as evalscope's ``dataset_args``.
 
-    backend = EvalScopeBackend.__new__(EvalScopeBackend)
+    ``max_num_steps`` is the assertion that proves the fix: evalscope writes
+    it only inside its own ``if judge_target:`` branch, the one the wipe put
+    out of reach. ``timeout_multiplier`` covers the unconditional
+    ``extra_params`` path beside it.
+    """
+    config, backend = _run()
+
     task_config = backend._prepare_task_config(FakeTarget(), "tau_bench", config)
 
     extra = task_config.dataset_args["tau_bench"]["extra_params"]

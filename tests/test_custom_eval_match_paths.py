@@ -65,3 +65,84 @@ def test_a_bad_matcher_fails_the_benchmark_rather_than_every_row():
 
     with pytest.raises(ConfigError):
         _score("anything", "A", {"mode": "nonsense"})
+
+
+def _score_lm_eval(answer, expected, matcher=None, returned_rows=1):
+    """Run one row through the lm-eval path, with lm-eval itself stubbed.
+
+    Only generation is stubbed. The scoring under test is ours.
+    """
+    from surogate_eval.benchmarks.backends import custom_eval_backend as ceb
+
+    class StubLMEval:
+        def evaluate(self, target, benchmark_name, config):
+            details = [
+                {
+                    "output": "IGNORED",  # lm-eval's own extraction guess
+                    "raw_output": answer,
+                    "metrics": {"exact_match": 1},  # lm-eval says correct
+                }
+            ] * returned_rows
+            return {"detailed_results": details}
+
+    backend = ceb.CustomEvalBackend.__new__(ceb.CustomEvalBackend)
+    rows = [{"instruction": "q", "answer": expected, "_original_idx": 0}]
+    config = {"matcher": matcher} if matcher is not None else {}
+
+    import surogate_eval.benchmarks.backends.lm_eval_backend as lm
+    saved = lm.LMEvalBackend
+    lm.LMEvalBackend = StubLMEval
+    try:
+        return backend._evaluate_exact_match_lm_eval(
+            rows, FakeTarget(answer), config, COLUMNS, tokenizer="gpt2"
+        )
+    finally:
+        lm.LMEvalBackend = saved
+
+
+def test_the_lm_eval_path_scores_with_our_matcher_not_lm_evals_metric():
+    """lm-eval said correct; the configured mode says otherwise, and wins."""
+    row = _score_lm_eval("The answer is C.", "A", {"mode": "exact"})[0]
+
+    assert row["success"] is False, "lm-eval's exact_match metric must not decide this"
+    assert row["score"] == 0.0
+
+
+def test_both_paths_agree_on_the_same_row():
+    """A benchmark's result must not depend on whether a tokenizer is set."""
+    direct = _score("The answer is C.", "A", {"mode": "exact"})
+    lm_eval = _score_lm_eval("The answer is C.", "A", {"mode": "exact"})[0]
+
+    assert direct["success"] == lm_eval["success"]
+    assert direct["score"] == lm_eval["score"]
+
+
+def test_a_row_lm_eval_never_returned_is_unmeasured():
+    """It was not scored, so it is not a wrong answer."""
+    rows = [
+        {"instruction": "q1", "answer": "A", "_original_idx": 0},
+        {"instruction": "q2", "answer": "B", "_original_idx": 1},
+    ]
+    from surogate_eval.benchmarks.backends import custom_eval_backend as ceb
+    import surogate_eval.benchmarks.backends.lm_eval_backend as lm
+
+    class ShortStub:
+        def evaluate(self, target, benchmark_name, config):
+            return {"detailed_results": [
+                {"output": "A", "raw_output": "A", "metrics": {"exact_match": 1}}
+            ]}
+
+    backend = ceb.CustomEvalBackend.__new__(ceb.CustomEvalBackend)
+    saved = lm.LMEvalBackend
+    lm.LMEvalBackend = ShortStub
+    try:
+        results = backend._evaluate_exact_match_lm_eval(
+            rows, FakeTarget("A"), {}, COLUMNS, tokenizer="gpt2"
+        )
+    finally:
+        lm.LMEvalBackend = saved
+
+    assert results[1]["score"] is None, "a row never returned is not a zero"
+    assert results[1]["success"] is False
+    assert results[1]["status"] == "errored"
+    assert results[1]["reason"]

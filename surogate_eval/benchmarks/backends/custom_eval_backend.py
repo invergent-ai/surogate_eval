@@ -246,6 +246,7 @@ class CustomEvalBackend:
     ) -> List[Dict[str, Any]]:
         """Evaluate exact_match rows using LM-Eval backend."""
         logger.info(f"Evaluating {len(rows)} exact_match rows with lm-eval")
+        matcher = build_matcher(config.get('matcher'))
 
         from .lm_eval_backend import LMEvalBackend
 
@@ -292,19 +293,41 @@ class CustomEvalBackend:
             results = []
 
             for i, row in enumerate(lm_eval_rows):
-                if i < len(detailed_results):
-                    detail = detailed_results[i]
-                    score = 1.0 if detail.get('metrics', {}).get('exact_match', 0) else 0.0
-                    success = bool(detail.get('metrics', {}).get('exact_match', 0))
-                    output = detail.get('output', '')
-                    raw_output = detail.get('raw_output', '')
-                    reason = 'Exact match' if success else 'No match'
-                else:
-                    score = 0.0
+                if i >= len(detailed_results):
+                    # lm-eval returned fewer rows than we sent. This row was
+                    # never scored, which is not the same as scoring it wrong.
+                    results.append({
+                        'original_idx': row['_original_idx'],
+                        'eval_type': 'exact_match',
+                        'instruction': row['instruction'],
+                        'expected': row['answer'],
+                        'output': '',
+                        'raw_output': '',
+                        'status': 'errored',
+                        'score': None,
+                        'success': False,
+                        'reason': 'lm-eval returned no result for this row',
+                    })
+                    continue
+
+                detail = detailed_results[i]
+                # lm-eval generated; the comparison is ours. Its own
+                # exact_match metric is deliberately not read, and neither is
+                # its `output`, which is its own extraction heuristic - a
+                # third extractor beside the matcher.
+                raw_output = detail.get('raw_output', '') or ''
+                status = 'scored'
+                reason = None
+                try:
+                    success, output = matcher.compare(raw_output, row['answer'])
+                    score = 1.0 if success else 0.0
+                    reason = 'Match' if success else 'No match'
+                except Exception as e:
+                    status = 'errored'
+                    score = None
                     success = False
                     output = ''
-                    raw_output = ''
-                    reason = 'No result'
+                    reason = f'Comparison error: {e}'
 
                 result = {
                     'original_idx': row['_original_idx'],
@@ -313,6 +336,7 @@ class CustomEvalBackend:
                     'expected': row['answer'],
                     'output': output,
                     'raw_output': raw_output,
+                    'status': status,
                     'score': score,
                     'success': success,
                     'reason': reason,

@@ -695,10 +695,11 @@ class EvalScopeBackend:
         score_obj = sample_score.get('score') or {}
         score, score_details, score_reason = _extract_sample_score(score_obj)
 
-        # Read once, guarded: a truthy non-dict here would
-        # otherwise reach ``.get`` at both use sites below
-        # and lose the rest of the file, the same way a
-        # non-dict ``score`` used to.
+        # Read once, guarded: a truthy non-dict here would otherwise reach
+        # ``.get`` at both use sites below. The caller isolates the row, so
+        # the cost of that would be this row rather than the file; the guard
+        # is what keeps the rest of the row usable, with only its metadata
+        # discarded, instead of losing the whole record to the handler.
         sample_meta = sample_score.get('sample_metadata')
         if not isinstance(sample_meta, dict):
             sample_meta = {}

@@ -148,20 +148,27 @@ def test_an_unmeasured_sample_is_not_reported_as_a_pass():
     ``success`` is what the consuming service renders as a correct sample, so
     an unreadable row must not set it. The score must stay ``None`` rather
     than becoming 0.0, because the consumer distinguishes them.
+
+    Driven through ``_review_row_to_record`` rather than rebuilding the record
+    from the helper's return: a hand-built copy of the implementation's own
+    expressions asserts only that those literals behave as written, and would
+    stay green if the real builder started setting ``success`` unconditionally
+    - the exact regression this test names.
     """
-    score, _details, reason = _extract_sample_score({"value": {"grade": 3}})
+    backend = EvalScopeBackend.__new__(EvalScopeBackend)
 
-    record = {
-        'score': score,
-        'success': score is not None and score > 0,
-        'status': 'errored' if score is None else 'scored',
-        'reason': reason,
-    }
+    record = backend._review_row_to_record(
+        {
+            "input": "?",
+            "target": "?",
+            "sample_score": {"score": {"value": {"grade": 3, "confidence": 0.9}}},
+        }
+    )
 
-    assert record['score'] is None
-    assert record['success'] is False
-    assert record['status'] == 'errored'
-    assert 'unrecognised score schema' in record['reason']
+    assert record["score"] is None
+    assert record["success"] is False
+    assert record["status"] == "errored"
+    assert "unrecognised score schema" in record["reason"]
 
 
 def test_a_row_with_no_score_object_is_unmeasured(tmp_path):

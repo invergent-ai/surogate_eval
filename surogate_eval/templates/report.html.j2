@@ -426,6 +426,12 @@
                             {% elif task_data.avg_score is defined %}
                             <td>{{ task_data.success_rate | default(0) | format_percent }}</td>
                             <td class="metric-value">{{ task_data.avg_score | format_score(2) }}</td>
+                            {% elif task_data.safety_rate is defined %}
+                            <td>{{ task_data.safe | default(0) }} safe</td>
+                            <td class="metric-value">{{ task_data.safety_rate | format_percent }}</td>
+                            {% else %}
+                            <td>not measured</td>
+                            <td class="metric-value">{{ task_data.reason | default(task_data.error) | default('no score reported') }}</td>
                             {% endif %}
                         </tr>
                         {% endfor %}

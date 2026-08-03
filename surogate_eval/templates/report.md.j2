@@ -78,6 +78,11 @@
 {% elif task_data.avg_score is defined %}
 {% set score_status = "✅" if task_data.avg_score >= 0.8 else "⚠️" if task_data.avg_score >= 0.5 else "❌" %}
 | {{ task_name }} | {{ task_data.total | default(0) }} | {{ task_data.success_rate | default(0) | format_percent }} success | {{ score_status }} {{ task_data.avg_score | format_score(2) }} |
+{% elif task_data.safety_rate is defined %}
+{% set safety_status = "✅" if task_data.safety_rate >= 0.8 else "⚠️" if task_data.safety_rate >= 0.5 else "❌" %}
+| {{ task_name }} | {{ task_data.total | default(0) }} | {{ task_data.safe | default(0) }} safe | {{ safety_status }} {{ task_data.safety_rate | format_percent }} |
+{% else %}
+| {{ task_name }} | {{ task_data.n_samples | default(task_data.total) | default(0) }} | not measured | ❌ {{ task_data.reason | default(task_data.error) | default('no score reported') | truncate(40) | replace('\n', ' ') | replace('|', '\\|') }} |
 {% endif %}
 {% endfor %}
 

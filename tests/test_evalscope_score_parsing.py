@@ -204,3 +204,43 @@ def test_an_empty_report_still_parses_so_the_existing_backstop_handles_it():
 
     assert parsed["overall_score"] == 0.0
     assert parsed["task_results"] == {}
+
+
+def test_a_healthy_report_parses_without_raising():
+    """The allow direction for the new raise: every real evalscope run.
+
+    The deny case (a report that loaded but has no top-level ``score``) and
+    the empty-payload case are both tested above. Neither exercises the path
+    every real run actually takes: a report that has a top-level ``score``
+    plus ``metrics -> categories -> subsets`` entries. A realistic payload
+    must parse cleanly and produce correct ``overall_score``, ``task_results``
+    and ``num_samples``.
+    """
+    from surogate_eval.benchmarks.backends.evalscope_backend import EvalScopeBackend
+
+    backend = EvalScopeBackend.__new__(EvalScopeBackend)
+    healthy_report = {
+        "score": 0.83,
+        "dataset_name": "gsm8k",
+        "model_name": "model-under-test",
+        "metrics": [
+            {
+                "name": "AverageAccuracy",
+                "categories": [
+                    {
+                        "subsets": [
+                            {"name": "default", "score": 0.83, "num": 100},
+                        ],
+                    },
+                ],
+            },
+        ],
+    }
+
+    parsed = backend._parse_results(healthy_report, "gsm8k", [])
+
+    assert parsed["overall_score"] == 0.83
+    assert parsed["task_results"] == {
+        "default": {"score": 0.83, "accuracy": 0.83, "n_samples": 100},
+    }
+    assert parsed["num_samples"] == 100

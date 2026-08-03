@@ -410,3 +410,91 @@ def test_a_malformed_sample_metadata_does_not_drop_the_rest_of_the_file(tmp_path
     # The malformed row still parses; only its metadata is unusable.
     assert rows[1]["score"] == 1.0
     assert rows[1]["subset"] == ""
+
+
+def test_a_subset_without_a_score_raises_like_the_report_does():
+    """The subset-level twin of the report-level guard.
+
+    `_parse_results` raises when the report has no top-level `score`, on the
+    grounds that defaulting it reports a model that scored zero. One loop
+    down, each subset's score was still read with `.get('score', 0.0)`, which
+    is the same fabrication at a level the report guard does not cover, and
+    `result_counts()` then counts that subset as scored.
+    """
+    backend = EvalScopeBackend.__new__(EvalScopeBackend)
+    renamed_subset = {
+        "score": 0.83,
+        "metrics": [
+            {
+                "name": "acc",
+                "categories": [
+                    {"subsets": [{"name": "default", "value": 0.83, "num": 100}]}
+                ],
+            }
+        ],
+    }
+
+    with pytest.raises(BenchmarkSchemaError) as excinfo:
+        backend._parse_results(renamed_subset, "gsm8k", [])
+
+    assert "default" in str(excinfo.value)
+
+
+def test_an_unparseable_line_does_not_lose_the_rest_of_the_file(tmp_path):
+    """A truncated line is one unreadable row, not the end of the file."""
+    reviews = tmp_path / "reviews" / _MODEL_ID
+    reviews.mkdir(parents=True)
+    good = {
+        "input": "2+2?",
+        "target": "4",
+        "sample_score": {"score": {"value": {"acc": 1.0}, "main_score_name": "acc"}},
+    }
+    (reviews / "gsm8k_default.jsonl").write_text(
+        json.dumps(good) + "\n" + '{"input": "3+3?", "sample_sc\n' + json.dumps(good) + "\n"
+    )
+
+    backend = EvalScopeBackend.__new__(EvalScopeBackend)
+    rows = backend._load_predictions(str(tmp_path), _MODEL_ID, "gsm8k")
+
+    assert len(rows) == 3, "a truncated line must cost one row, not the file"
+    assert rows[0]["score"] == 1.0
+    assert rows[1]["score"] is None
+    assert rows[1]["status"] == "errored"
+    assert rows[1]["reason"]
+    assert rows[2]["score"] == 1.0
+
+
+def test_an_unanticipated_field_failure_is_contained_to_its_row(tmp_path):
+    """The class of hazard, not the three instances we happened to find.
+
+    Field-level guards were added for `sample_score`, `score` and
+    `sample_metadata`. They do not cover every field the row builder reads:
+    `instruction_id_list` is fed straight to `enumerate()`, so a non-list
+    there raises `TypeError` from a spot nobody guarded. Before per-row
+    isolation that took the rest of the file with it. This test deliberately
+    uses a field NO guard was written for, so it keeps proving the class is
+    closed even if the specific guards change.
+    """
+    def row(idx, metadata):
+        return {
+            "input": f"q{idx}",
+            "target": "",  # empty, so the metadata-driven `expected` path runs
+            "sample_score": {
+                "score": {"value": {"acc": 1.0}, "main_score_name": "acc"},
+                "sample_metadata": metadata,
+            },
+        }
+
+    rows = _load_rows(
+        tmp_path,
+        row(0, {"subject": "algebra"}),
+        row(1, {"instruction_id_list": 42}),  # not a list: enumerate() raises
+        row(2, {"subject": "geometry"}),
+    )
+
+    assert len(rows) == 3, "an unguarded field must not lose the rest of the file"
+    assert rows[0]["subset"] == "algebra"
+    assert rows[2]["subset"] == "geometry"
+    assert rows[1]["status"] == "errored"
+    assert rows[1]["score"] is None
+    assert rows[1]["reason"]

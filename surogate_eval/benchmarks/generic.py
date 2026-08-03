@@ -49,6 +49,11 @@ class GenericBenchmark(BaseBenchmark):
             'path': self.config.path,
             'dataset_hub': self.config.dataset_hub,
             'batch_size': self.config.batch_size or self.config.backend_params.get('batch_size', 1),
+            # Passed whole: runners.py already put the resolved ``judge_target``
+            # in here before the benchmark runs. Do not rebuild this entry to
+            # "add" the judge - a fresh dict silently drops every other key the
+            # backend reads (``use_sandbox``, ``max_turns``, ...). See
+            # tests/test_benchmark_backend_params.py.
             'backend_params': self.config.backend_params,
             'tokenizer': tokenizer,
             # Generation params
@@ -66,11 +71,6 @@ class GenericBenchmark(BaseBenchmark):
             'judge_criteria': self.config.judge_criteria,
             'eval_type': self.config.eval_type,
         }
-
-        if self.config.backend_params.get('judge_target'):
-            backend_config['backend_params'] = {
-                'judge_target': self.config.backend_params['judge_target']
-            }
 
         backend_results = self.backend.evaluate(
             target=target,

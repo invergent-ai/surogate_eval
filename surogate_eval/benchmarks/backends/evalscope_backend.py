@@ -61,6 +61,7 @@ try:
 except Exception:
     pass
 
+from surogate_eval.errors import BenchmarkSchemaError
 from surogate_eval.targets import BaseTarget
 from surogate_eval.utils.logger import get_logger
 
@@ -675,6 +676,18 @@ class EvalScopeBackend:
         Parse EvalScope results into standardized format.
         """
         task_results = {}
+
+        # An empty payload means the report file was missing. That is already
+        # handled downstream: no task parses, and BenchmarkResult.result_counts
+        # charges one errored unit. A payload that loaded but has no 'score' is
+        # different - it is what an upstream key rename looks like - and
+        # defaulting it to 0.0 reports a model that scored zero.
+        if results and 'score' not in results:
+            raise BenchmarkSchemaError(
+                f"evalscope report for {benchmark_name!r} has no 'score' key; "
+                f"got keys: {sorted(results)}"
+            )
+
         overall_score = results.get('score', 0.0)
 
         # Extract subset scores from metrics

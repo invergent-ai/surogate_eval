@@ -29,3 +29,12 @@ class JudgeUnavailableError(JudgeError):
 
 class JudgeParseError(JudgeError):
     """The judge returned content that could not be parsed into a schema."""
+
+
+class BenchmarkSchemaError(EvalError):
+    """A backend's result payload did not have the shape we know how to read.
+
+    Raised rather than defaulted past, because the alternative is publishing a
+    number we did not measure. Not retryable: an upstream schema change will
+    not resolve on the next attempt.
+    """

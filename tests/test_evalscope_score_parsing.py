@@ -165,3 +165,42 @@ def test_a_row_with_no_score_object_is_unmeasured(tmp_path):
     assert rows[0]["success"] is False
     assert rows[0]["status"] == "errored"
     assert rows[0]["reason"]
+
+
+def test_a_report_without_a_top_level_score_raises_rather_than_reporting_zero():
+    """An evalscope key rename must not read as "the model scored zero".
+
+    A missing report file is already handled: results is {}, no task parses,
+    and BenchmarkResult.result_counts() charges one errored unit. The silent
+    case is a report that loads and whose subsets parse, but that carries no
+    top-level ``score`` key.
+    """
+    from surogate_eval.benchmarks.backends.evalscope_backend import EvalScopeBackend
+    from surogate_eval.errors import BenchmarkSchemaError
+
+    backend = EvalScopeBackend.__new__(EvalScopeBackend)
+    renamed = {
+        "overall": 0.83,  # what a rename might look like
+        "metrics": [
+            {"name": "acc", "categories": [
+                {"subsets": [{"name": "default", "score": 0.83, "num": 100}]}
+            ]}
+        ],
+    }
+
+    with pytest.raises(BenchmarkSchemaError) as excinfo:
+        backend._parse_results(renamed, "gsm8k", [])
+
+    assert "score" in str(excinfo.value)
+
+
+def test_an_empty_report_still_parses_so_the_existing_backstop_handles_it():
+    """The missing-file case must keep its current behaviour."""
+    from surogate_eval.benchmarks.backends.evalscope_backend import EvalScopeBackend
+
+    backend = EvalScopeBackend.__new__(EvalScopeBackend)
+
+    parsed = backend._parse_results({}, "gsm8k", [])
+
+    assert parsed["overall_score"] == 0.0
+    assert parsed["task_results"] == {}

@@ -144,6 +144,52 @@ def test_clean_formatting_leaves_a_plain_answer_alone():
     assert clean_formatting("**42**") == "42"
 
 
+@pytest.mark.parametrize(
+    "markup, expected",
+    [
+        ("**A**.", "A."),
+        ("**50**%", "50%"),
+        ("*yes*!", "yes!"),
+        ("**A**,", "A,"),
+    ],
+)
+def test_clean_formatting_does_not_space_pad_inline_markup_boundaries(markup, expected):
+    """``get_text(separator=' ')`` inserted a space at every tag boundary, so
+    ``**A**.`` became ``A .``. Under `contains` that never mattered
+    (``"a" in "a ."``), but `exact` and `regex` compare the cleaned text
+    verbatim, so a correct ``**A**.`` was scored wrong against expected
+    ``A``. The one pre-existing markdown test (``**42**``) happens to be the
+    single shape where nothing sits next to the markup, so it never caught
+    this."""
+    assert clean_formatting(markup) == expected
+
+
+def test_exact_accepts_inline_markup_directly_adjacent_to_punctuation():
+    """The regression stated the way a benchmark would actually hit it: an
+    `exact` comparison of a model's ``**A**.`` against an expected ``A``."""
+    success, cleaned = build_matcher({"mode": "exact"}).compare("**A**.", "A.")
+
+    assert success is True
+    assert cleaned == "A."
+
+
+def test_clean_formatting_does_not_run_words_together_across_paragraphs():
+    """The fix for the above (dropping the inline separator) must not merge
+    text across BLOCK boundaries instead. Two paragraphs must not collapse
+    into one word."""
+    cleaned = clean_formatting("a\n\nb")
+
+    assert cleaned != "ab"
+    assert cleaned == "a b"
+
+
+def test_clean_formatting_does_not_run_list_items_together():
+    cleaned = clean_formatting("- item one\n- item two\n- item three")
+
+    assert cleaned == "item one item two item three"
+    assert "oneitem" not in cleaned
+
+
 def test_the_retired_heuristics_no_longer_rewrite_the_output():
     """The behaviour change, stated as a test.
 

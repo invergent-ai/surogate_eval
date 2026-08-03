@@ -50,7 +50,16 @@ def clean_formatting(text: str) -> str:
         import markdown
 
         html = markdown.markdown(text)
-        cleaned = BeautifulSoup(html, 'html.parser').get_text(separator=' ')
+        # Not `separator=' '`: that padded every inline-markup boundary with
+        # a space (`**A**.` -> `A .`), which `contains` never noticed
+        # (`"a" in "a ."`) but `exact` and `regex` compare verbatim, so a
+        # correct answer was scored wrong. `separator=''` does not merge
+        # words across BLOCK boundaries instead: `markdown.markdown` always
+        # joins top-level block elements (paragraphs, list items, headings)
+        # with a literal `\n` in the HTML it emits, and that text node
+        # survives regardless of `separator`; the whitespace collapse below
+        # turns it back into a single space.
+        cleaned = BeautifulSoup(html, 'html.parser').get_text(separator='')
     except ImportError:
         cleaned = text
         cleaned = stdlib_re.sub(r'\*\*([^*]+)\*\*', r'\1', cleaned)

@@ -50,7 +50,7 @@
   returning `(success, cleaned_output)` and raising `MatchTimeout` when a pattern exceeds the budget.
   `Matcher.mode: str`. Also `clean_formatting(text: str) -> str`. Tasks 2 and 3 use all of these.
 
-- [ ] **Step 1: Write the failing test**
+- [x] **Step 1: Write the failing test**
 
 Create `tests/test_custom_eval_matching.py`:
 
@@ -213,12 +213,12 @@ def test_the_retired_heuristics_no_longer_rewrite_the_output():
     assert with_pattern.compare("Contact: a@b.com", "a@b.com")[0] is True
 ```
 
-- [ ] **Step 2: Run test to verify it fails**
+- [x] **Step 2: Run test to verify it fails**
 
 Run: `./.venv/bin/python -m pytest tests/test_custom_eval_matching.py -q`
 Expected: FAIL at import, `ModuleNotFoundError: No module named 'surogate_eval.benchmarks.matching'`
 
-- [ ] **Step 3: Add the two error types**
+- [x] **Step 3: Add the two error types**
 
 Append to `surogate_eval/errors.py`:
 
@@ -234,7 +234,7 @@ class MatchTimeout(EvalError):
 
 `ConfigError` already exists in that file and is used for the build-time failures.
 
-- [ ] **Step 4: Write the matcher**
+- [x] **Step 4: Write the matcher**
 
 Create `surogate_eval/benchmarks/matching.py`:
 
@@ -397,7 +397,7 @@ def build_matcher(cfg: Optional[Dict[str, Any]]) -> Matcher:
     return Matcher(mode, compiled=compiled, group=group, timeout=timeout)
 ```
 
-- [ ] **Step 5: Run test to verify it passes**
+- [x] **Step 5: Run test to verify it passes**
 
 Run: `./.venv/bin/python -m pytest tests/test_custom_eval_matching.py -q`
 Expected: PASS, 17 tests
@@ -407,12 +407,12 @@ module optimised that particular pattern away. Do not weaken the assertion: repl
 `r"(a|a)+$"` and re-run, and if it still completes, raise the input length rather than deleting the
 test.
 
-- [ ] **Step 6: Run the full suite**
+- [x] **Step 6: Run the full suite**
 
 Run: `./.venv/bin/python -m pytest -q`
 Expected: PASS, 226 existing plus the new file, no regressions
 
-- [ ] **Step 7: Commit**
+- [x] **Step 7: Commit**
 
 ```bash
 git add surogate_eval/benchmarks/matching.py surogate_eval/errors.py tests/test_custom_eval_matching.py
@@ -444,7 +444,7 @@ Not wired into the backend yet."
 - Produces: `BenchmarkConfig.matcher: Optional[Dict[str, Any]] = None`, reaching the backend as
   `config['matcher']`. Task 3 reads the same built matcher.
 
-- [ ] **Step 1: Write the failing test**
+- [x] **Step 1: Write the failing test**
 
 Create `tests/test_custom_eval_match_paths.py`:
 
@@ -518,13 +518,13 @@ def test_a_bad_matcher_fails_the_benchmark_rather_than_every_row():
         _score("anything", "A", {"mode": "nonsense"})
 ```
 
-- [ ] **Step 2: Run test to verify it fails**
+- [x] **Step 2: Run test to verify it fails**
 
 Run: `./.venv/bin/python -m pytest tests/test_custom_eval_match_paths.py -q`
 Expected: FAIL — `test_exact_mode_reaches_the_comparison` reports `success is True`, because the
 matcher is ignored and containment still applies.
 
-- [ ] **Step 3: Carry `matcher` on the config**
+- [x] **Step 3: Carry `matcher` on the config**
 
 In `surogate_eval/benchmarks/base.py`, after line 60 (`eval_type: str = 'exact_match'`), add:
 
@@ -545,7 +545,7 @@ In `surogate_eval/runners.py`, after line 381 (`eval_type=bench_config.get("eval
             matcher=bench_config.get("matcher"),
 ```
 
-- [ ] **Step 4: Use the matcher in the direct path**
+- [x] **Step 4: Use the matcher in the direct path**
 
 In `custom_eval_backend.py`, add to the imports at the top of the file:
 
@@ -585,7 +585,7 @@ with:
 `except Exception as e: row_error = f'Comparison error: {e}'`, so a timed-out row becomes an errored
 row with no further change.
 
-- [ ] **Step 5: Delete the heuristics**
+- [x] **Step 5: Delete the heuristics**
 
 Delete `_normalize_output` entirely from `custom_eval_backend.py` (currently lines 177-232). Its
 formatting half now lives in `matching.clean_formatting`; its email, percentage, date and yes/no
@@ -596,12 +596,12 @@ Confirm nothing else calls it:
 Run: `grep -rn "_normalize_output" surogate_eval/ tests/`
 Expected: no output.
 
-- [ ] **Step 6: Run the tests**
+- [x] **Step 6: Run the tests**
 
 Run: `./.venv/bin/python -m pytest tests/test_custom_eval_match_paths.py tests/test_custom_eval_matching.py -q`
 Expected: PASS
 
-- [ ] **Step 7: Run the full suite**
+- [x] **Step 7: Run the full suite**
 
 Run: `./.venv/bin/python -m pytest -q`
 Expected: PASS, no regressions.
@@ -615,7 +615,7 @@ row. Its **docstring** references `_normalize_output` by name and goes stale —
 name `clean_formatting`, and do not touch the assertions. If any assertion actually fails, stop and
 report it rather than editing it.
 
-- [ ] **Step 8: Commit**
+- [x] **Step 8: Commit**
 
 ```bash
 git add surogate_eval/benchmarks/base.py surogate_eval/benchmarks/generic.py surogate_eval/runners.py surogate_eval/benchmarks/backends/custom_eval_backend.py tests/test_custom_eval_match_paths.py
@@ -644,7 +644,7 @@ a second, invisible extractor competing with the one the user configures."
   Task 2.
 - Produces: nothing new.
 
-- [ ] **Step 1: Write the failing test**
+- [x] **Step 1: Write the failing test**
 
 Append to `tests/test_custom_eval_match_paths.py`:
 
@@ -731,13 +731,13 @@ def test_a_row_lm_eval_never_returned_is_unmeasured():
     assert results[1]["reason"]
 ```
 
-- [ ] **Step 2: Run test to verify it fails**
+- [x] **Step 2: Run test to verify it fails**
 
 Run: `./.venv/bin/python -m pytest tests/test_custom_eval_match_paths.py -q -k "lm_eval or both_paths"`
 Expected: FAIL — the first reports `success is True` (lm-eval's metric decided), and the last
 reports `score == 0.0` rather than `None`.
 
-- [ ] **Step 3: Score with the matcher and record an unreturned row as unmeasured**
+- [x] **Step 3: Score with the matcher and record an unreturned row as unmeasured**
 
 In `_evaluate_exact_match_lm_eval`, add near the top of the method, beside the existing
 `logger.info`:
@@ -826,17 +826,17 @@ And update the record built just below it to carry the new fields:
 
 The trailing `logger.info` summing `r['success']` still works, since `success` is always a bool.
 
-- [ ] **Step 4: Run the tests**
+- [x] **Step 4: Run the tests**
 
 Run: `./.venv/bin/python -m pytest tests/test_custom_eval_match_paths.py -q`
 Expected: PASS
 
-- [ ] **Step 5: Run the full suite**
+- [x] **Step 5: Run the full suite**
 
 Run: `./.venv/bin/python -m pytest -q`
 Expected: PASS, no regressions
 
-- [ ] **Step 6: Commit**
+- [x] **Step 6: Commit**
 
 ```bash
 git add surogate_eval/benchmarks/backends/custom_eval_backend.py tests/test_custom_eval_match_paths.py

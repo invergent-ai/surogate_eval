@@ -321,7 +321,11 @@ class CustomEvalBackend:
                 try:
                     success, output = matcher.compare(raw_output, row['answer'])
                     score = 1.0 if success else 0.0
-                    reason = 'Match' if success else 'No match'
+                    # Named after the configured mode, not hardcoded as
+                    # "exact match": the branch's whole point is that the
+                    # rule need not be exact match, and the direct path
+                    # reports success the same way (see there for why).
+                    reason = f'{matcher.mode} match' if success else 'No match'
                 except Exception as e:
                     status = 'errored'
                     score = None
@@ -450,7 +454,13 @@ class CustomEvalBackend:
                 'status': 'scored',
                 'score': 1.0 if success else 0.0,
                 'success': success,
-                'reason': 'Exact match' if success else 'No match',
+                # Named after the configured mode, not hardcoded as "exact
+                # match": that word is only true under `mode: exact`, and
+                # was misleading under `contains` (the default) and `regex`.
+                # Matches the lm-eval path's wording so the two paths agree
+                # in user-visible report text, same as they agree on the
+                # score itself.
+                'reason': f'{matcher.mode} match' if success else 'No match',
             })
 
         errored_n = sum(1 for r in results if r['status'] == 'errored')

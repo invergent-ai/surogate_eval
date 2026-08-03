@@ -67,6 +67,27 @@ def test_a_bad_matcher_fails_the_benchmark_rather_than_every_row():
         _score("anything", "A", {"mode": "nonsense"})
 
 
+@pytest.mark.parametrize(
+    "matcher, answer, expected",
+    [
+        (None, "The answer is A.", "A"),
+        ({"mode": "exact"}, "A", "A"),
+        ({"mode": "regex", "pattern": r"\b([ABCD])\b"}, "The answer is A.", "A"),
+    ],
+    ids=["contains", "exact", "regex"],
+)
+def test_the_success_reason_names_the_mode_that_actually_ran(matcher, answer, expected):
+    """`reason` used to be hardcoded `'Exact match'` on every success, which
+    was only ever true under `mode: exact` - wrong under the default
+    `contains` and under `regex`. `Matcher.mode` is exactly the mode that
+    ran, so it is what the report should say."""
+    row = _score(answer, expected, matcher)
+    mode = matcher["mode"] if matcher else "contains"
+
+    assert row["success"] is True
+    assert row["reason"] == f"{mode} match"
+
+
 def _score_lm_eval(answer, expected, matcher=None, returned_rows=1):
     """Run one row through the lm-eval path, with lm-eval itself stubbed.
 
@@ -106,6 +127,26 @@ def test_the_lm_eval_path_scores_with_our_matcher_not_lm_evals_metric():
 
     assert row["success"] is False, "lm-eval's exact_match metric must not decide this"
     assert row["score"] == 0.0
+
+
+def test_the_lm_eval_path_success_reason_also_names_the_mode():
+    """The lm-eval path used to hardcode `'Match'` on success, disagreeing
+    with the direct path's (also wrong) `'Exact match'`. Both must say the
+    same thing, and both must name the mode that actually ran."""
+    row = _score_lm_eval("A", "A", {"mode": "regex", "pattern": r"\b([ABCD])\b"})[0]
+
+    assert row["success"] is True
+    assert row["reason"] == "regex match"
+
+
+def test_both_paths_report_the_same_success_reason_text():
+    """Identical record shapes must mean identical report text, not just an
+    identical score - a user reading either path's output should not be able
+    to tell them apart."""
+    direct = _score("A", "A", {"mode": "exact"})
+    lm_eval = _score_lm_eval("A", "A", {"mode": "exact"})[0]
+
+    assert direct["reason"] == lm_eval["reason"] == "exact match"
 
 
 def test_both_paths_agree_on_the_same_row():

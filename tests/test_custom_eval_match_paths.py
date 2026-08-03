@@ -109,10 +109,19 @@ def test_the_lm_eval_path_scores_with_our_matcher_not_lm_evals_metric():
 
 
 def test_both_paths_agree_on_the_same_row():
-    """A benchmark's result must not depend on whether a tokenizer is set."""
+    """A benchmark's result must not depend on whether a tokenizer is set.
+
+    Agreement alone is not enough to assert here: pre-branch, both paths
+    also agreed on this exact row - on the wrong answer, because the direct
+    path matched by containment and the lm-eval path trusted its own
+    `exact_match` metric. Pinning the value is what makes this test actually
+    exercise the branch's headline claim rather than passing for the same
+    reason it used to.
+    """
     direct = _score("The answer is C.", "A", {"mode": "exact"})
     lm_eval = _score_lm_eval("The answer is C.", "A", {"mode": "exact"})[0]
 
+    assert direct["success"] is False
     assert direct["success"] == lm_eval["success"]
     assert direct["score"] == lm_eval["score"]
 

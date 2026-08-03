@@ -363,3 +363,59 @@ def test_no_sample_score_and_no_value_get_distinct_reasons():
     assert no_score_object_reason
     assert no_value_field_reason
     assert no_score_object_reason != no_value_field_reason
+
+
+def test_a_malformed_sample_metadata_does_not_drop_the_rest_of_the_file(tmp_path):
+    """The third instance of the same non-dict hazard, in ``sample_metadata``.
+
+    ``sample_score`` and its nested ``score`` are both guarded. ``sample_metadata``
+    is read the same way at two more places - once to build a readable
+    ``expected``, once for the ``subset`` field - and both spell it
+    ``(sample_score.get('sample_metadata') or {})``, which passes a truthy
+    non-dict straight through to ``.get()``. So a list there raised
+    ``AttributeError`` into the per-file handler and lost the rest of the
+    file, exactly as a bad ``score`` used to.
+
+    No network: this reads one file from tmp_path.
+    """
+    import json
+
+    from surogate_eval.benchmarks.backends.evalscope_backend import EvalScopeBackend
+
+    def row(idx, metadata):
+        return {
+            "input": f"q{idx}",
+            "target": "",  # empty, so the metadata-driven `expected` path runs too
+            "sample_score": {
+                "score": {
+                    "main_score_name": "acc",
+                    "value": {"acc": 1.0},
+                    "prediction": f"a{idx}",
+                },
+                "sample_metadata": metadata,
+            },
+        }
+
+    reviews = tmp_path / "reviews" / "model-under-test"
+    reviews.mkdir(parents=True)
+    (reviews / "gsm8k_default.jsonl").write_text(
+        "\n".join(
+            json.dumps(r)
+            for r in [
+                row(0, {"subject": "algebra"}),
+                row(1, ["not", "a", "dict"]),  # the malformed one
+                row(2, {"subject": "geometry"}),
+            ]
+        )
+        + "\n"
+    )
+
+    backend = EvalScopeBackend.__new__(EvalScopeBackend)
+    rows = backend._load_predictions(str(tmp_path), "model-under-test", "gsm8k")
+
+    assert len(rows) == 3, "a bad sample_metadata must not lose the rest of the file"
+    assert rows[0]["subset"] == "algebra"
+    assert rows[2]["subset"] == "geometry"
+    # The malformed row still parses; only its metadata is unusable.
+    assert rows[1]["score"] == 1.0
+    assert rows[1]["subset"] == ""

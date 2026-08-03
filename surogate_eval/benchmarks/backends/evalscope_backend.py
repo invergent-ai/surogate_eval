@@ -553,6 +553,14 @@ class EvalScopeBackend:
                             score_obj = sample_score.get('score') or {}
                             score, score_details, score_reason = _extract_sample_score(score_obj)
 
+                            # Read once, guarded: a truthy non-dict here would
+                            # otherwise reach ``.get`` at both use sites below
+                            # and lose the rest of the file, the same way a
+                            # non-dict ``score`` used to.
+                            sample_meta = sample_score.get('sample_metadata')
+                            if not isinstance(sample_meta, dict):
+                                sample_meta = {}
+
                             # Extract input, target, and prediction
                             input_text = sample.get('input', '')
                             expected = sample.get('target', '')
@@ -567,7 +575,7 @@ class EvalScopeBackend:
                                         break
                             if not expected or len(expected) > 2000:
                                 # Build a human-readable expected from metadata
-                                meta = (sample_score.get('sample_metadata') or {})
+                                meta = sample_meta
 
                                 # IFEval/IFBench: instruction constraints
                                 instructions = meta.get('instruction_id_list', [])
@@ -612,7 +620,7 @@ class EvalScopeBackend:
                                 'success': score is not None and score > 0,
                                 'status': 'errored' if score is None else 'scored',
                                 'reason': score_reason,
-                                'subset': (sample_score.get('sample_metadata') or {}).get('subject', ''),
+                                'subset': sample_meta.get('subject', ''),
                                 'metadata': sample
                             })
 

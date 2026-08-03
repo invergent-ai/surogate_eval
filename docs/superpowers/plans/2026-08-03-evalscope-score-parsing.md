@@ -338,33 +338,41 @@ score=None, success=False, status=errored, with a reason naming what it saw."
 Append to `tests/test_evalscope_score_parsing.py`:
 
 ```python
-def test_a_row_with_no_score_object_is_unmeasured():
+def test_a_row_with_no_score_object_is_unmeasured(tmp_path):
     """A row carrying no score at all did not score zero either.
 
     Task 1 fixed the case where the score object exists but cannot be read.
-    A row with no ``sample_score``, or with an empty one, took a different
-    path and kept the old 0.0 default.
+    A row with no ``sample_score`` took a different path and kept the old
+    0.0 default, which reports it as an answer the model got wrong.
+
+    Driven through the real review-file loop rather than the helper, because
+    the defect is in the loop's initialiser, not in the extraction. No
+    network: this reads one file from tmp_path.
     """
-    score, _details, reason = _extract_sample_score({})
+    import json
 
-    assert score is None
-    assert reason
+    from surogate_eval.benchmarks.backends.evalscope_backend import EvalScopeBackend
 
-    # And the initialiser in the loop must agree with it, rather than
-    # defaulting to a number.
-    from surogate_eval.benchmarks.backends import evalscope_backend as eb
-    import inspect
-
-    src = inspect.getsource(eb.EvalScopeBackend._load_predictions)
-    assert "score = 0.0" not in src, (
-        "the review loop still defaults an unread row to a zero score"
+    reviews = tmp_path / "reviews" / "model-under-test"
+    reviews.mkdir(parents=True)
+    (reviews / "gsm8k_default.jsonl").write_text(
+        json.dumps({"input": "2+2?", "target": "4"}) + "\n"
     )
+
+    backend = EvalScopeBackend.__new__(EvalScopeBackend)
+    rows = backend._load_predictions(str(tmp_path), "model-under-test", "gsm8k")
+
+    assert len(rows) == 1
+    assert rows[0]["score"] is None, "a row with no score object is not a zero"
+    assert rows[0]["success"] is False
+    assert rows[0]["status"] == "errored"
+    assert rows[0]["reason"]
 ```
 
 - [ ] **Step 2: Run test to verify it fails**
 
 Run: `./.venv/bin/python -m pytest tests/test_evalscope_score_parsing.py::test_a_row_with_no_score_object_is_unmeasured -v`
-Expected: FAIL on the `score = 0.0` assertion
+Expected: FAIL, `assert 0.0 is None` — the loop's initialiser still supplies a zero
 
 - [ ] **Step 3: Change the initialiser**
 
@@ -381,6 +389,29 @@ In `_load_predictions`, change the block from Task 1 Step 5 to:
 ```
 
 `_extract_sample_score({})` already returns `(None, {}, "no readable score value ...")`, so the empty cases need no special handling.
+
+`score_obj` is now always bound (to `{}` when absent), so the later prediction block a few
+lines down loses its guard. Change:
+
+```python
+                            # Get the model's prediction/output
+                            prediction = ''
+                            extracted = ''
+                            if sample_score:
+                                score_obj = sample_score.get('score') or {}
+                                prediction = score_obj.get('prediction', '') or ''
+                                extracted = score_obj.get('extracted_prediction', '') or ''
+```
+
+to:
+
+```python
+                            # Get the model's prediction/output
+                            prediction = score_obj.get('prediction', '') or ''
+                            extracted = score_obj.get('extracted_prediction', '') or ''
+```
+
+This removes a second, now-redundant derivation of `score_obj` from the same `sample_score`.
 
 - [ ] **Step 4: Run test to verify it passes**
 

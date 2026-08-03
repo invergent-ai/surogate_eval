@@ -95,3 +95,83 @@ def test_an_unmeasured_row_does_not_read_as_a_score_of_zero(dataset, monkeypatch
     _, markdown = markdown_for(dataset, monkeypatch)
 
     assert "**Score:** 0" not in markdown
+
+
+def _report_for(task_results):
+    """Render a custom_eval benchmark with the given task_results.
+
+    ``custom_eval`` because that is the only backend whose ``task_results``
+    reach the report at all: both templates select the task table with
+    ``selectattr('backend', 'equalto', 'custom_eval')``.
+    """
+    from surogate_eval.benchmarks.base import BenchmarkResult
+    from surogate_eval.report import ReportGenerator
+
+    result = BenchmarkResult(
+        benchmark_name="cx_quality",
+        overall_score=0.9,
+        num_samples=20,
+        backend="custom_eval",
+        task_results=task_results,
+        detailed_results=[],
+        metadata={},
+    ).to_dict()
+    result["status"] = "completed"
+
+    consolidated = {
+        "targets": [{"name": "t1", "status": "success", "benchmarks": [result]}]
+    }
+    gen = ReportGenerator()
+    return gen.generate_markdown(consolidated), gen.generate_html(consolidated)
+
+
+TASKS = {
+    # Shape the custom-eval backend really emits for a toxicity run.
+    "toxicity": {
+        "total": 10,
+        "safe": 8,
+        "toxic": 2,
+        "safety_rate": 0.8,
+        "scored_n": 10,
+        "errored_n": 0,
+    },
+    # A task nothing could measure.
+    "broken": {
+        "status": "failed",
+        "score": None,
+        "n_samples": 10,
+        "reason": "no usable 'score'",
+    },
+}
+
+
+def test_a_measured_task_is_not_dropped_for_using_its_own_metric_key():
+    """The task table branched only on ``accuracy`` and ``avg_score``.
+
+    A toxicity run reports under ``safety_rate``, so its only task row
+    matched neither branch and, with no ``else``, rendered nothing at all -
+    a measured result silently absent from the operator-facing report.
+    """
+    markdown, _html = _report_for(TASKS)
+
+    assert "toxicity" in markdown, "a measured task must not vanish from the table"
+    assert "80" in markdown
+
+
+def test_a_task_nobody_could_measure_still_appears_as_unmeasured():
+    """And one that genuinely was not measured says so, rather than vanishing."""
+    markdown, _html = _report_for(TASKS)
+
+    assert "broken" in markdown
+    assert "not measured" in markdown
+
+
+def test_the_task_table_never_renders_a_ragged_html_row():
+    """The html row opens unconditionally, so a missing branch yields two
+    cells in a four-column table rather than an omitted row."""
+    _markdown, html = _report_for(TASKS)
+
+    for task in ("toxicity", "broken"):
+        start = html.index(f"<td>{task}</td>")
+        row = html[start:html.index("</tr>", start)]
+        assert row.count("<td") == 4, f"{task}: ragged row with {row.count('<td')} cells"

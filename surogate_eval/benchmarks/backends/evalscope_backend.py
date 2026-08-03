@@ -2,7 +2,8 @@
 """EvalScope backend for benchmark evaluation."""
 import tempfile
 import time
-from typing import Dict, Any, List
+import traceback
+from typing import Dict, Any, List, Optional, Tuple
 from pathlib import Path
 
 import requests
@@ -61,6 +62,7 @@ try:
 except Exception:
     pass
 
+from surogate_eval.errors import BenchmarkSchemaError
 from surogate_eval.targets import BaseTarget
 from surogate_eval.utils.logger import get_logger
 
@@ -75,6 +77,110 @@ except ImportError:
     EvalType = None
 
 logger = get_logger()
+
+
+#: Keys we know how to read a sample score from, tried in this order after
+#: ``main_score_name`` and ``acc``. Each entry is a benchmark we have seen
+#: write its score under that name.
+_KNOWN_SCORE_KEYS = (
+    'accuracy', 'correct', 'score',
+    'resolved', 'passed', 'pass',
+    'is_correct',           # simple_qa, simple_vqa
+    'prompt_level_strict',  # IFEval/IFBench
+    'em', 'exact_match',    # DROP, drivelology
+    'f1',                   # DROP, tool_bench
+    'winrate',              # alpaca_eval
+    'overall_score',        # healthbench
+    'eq_bench_score',       # eq_bench
+    'total_score',          # mia_bench
+)
+
+#: The fallback order, built once. ``main_score_name`` is evalscope's own
+#: per-sample signal and is tried ahead of these when the row carries one.
+_SCORE_KEY_FALLBACKS = ('acc',) + _KNOWN_SCORE_KEYS
+
+
+def _extract_sample_score(
+        score_obj: Any
+) -> Tuple[Optional[float], Dict[str, Any], Optional[str]]:
+    """Read one sample's score out of an evalscope review row.
+
+    Returns ``(score, score_details, reason)``. A ``score`` of ``None`` means
+    the row could not be read, which is not the same thing as a row that
+    scored zero, and the two must never be conflated: the previous version
+    used ``score == 0.0`` as its "keep looking" signal, so a correctly-parsed
+    wrong answer fell through to a fallback that averaged every number in the
+    row and returned a fabricated non-zero score.
+
+    ``reason`` is set exactly when ``score`` is ``None``. Two distinct causes
+    are told apart deliberately, because they are triaged differently: no
+    score object at all (the review process never produced one) versus a
+    score object that exists but has no ``value`` field (scoring was
+    attempted and something about the value's shape broke).
+    """
+    # A malformed review file can carry a non-dict here (e.g. a list from a
+    # truncated write). That must be unmeasured, not an AttributeError that
+    # takes the rest of the file down with it.
+    if not isinstance(score_obj, dict):
+        return None, {}, f"score object is not a dict (got {type(score_obj).__name__})"
+
+    if not score_obj:
+        return None, {}, "no score object for this sample (sample_score/score missing)"
+
+    value = score_obj.get('value')
+
+    # Some adapters write a bare number rather than a dict of named metrics.
+    if isinstance(value, (int, float)):
+        return float(value), {}, None
+
+    if value is None:
+        return None, {}, "score object has no 'value' field"
+
+    if not isinstance(value, dict) or not value:
+        return None, {}, f"score 'value' field is unusable (got {type(value).__name__})"
+
+    main_name = score_obj.get('main_score_name')
+    candidates = (
+        (main_name, *_SCORE_KEY_FALLBACKS) if main_name else _SCORE_KEY_FALLBACKS
+    )
+
+    for key in candidates:
+        if key not in value:
+            continue
+        try:
+            return float(value[key]), value, None
+        except (TypeError, ValueError):
+            # A key we recognise carrying something we cannot read is a
+            # failure to measure, not a reason to go looking for a number
+            # elsewhere in the row.
+            return None, value, f"score key {key!r} is not a number: {value[key]!r}"
+
+    return None, value, f"unrecognised score schema, keys: {sorted(value)}"
+
+
+def _unreadable_row_record(reason: str, lineno: int) -> Dict[str, Any]:
+    """A review row we could not read at all, recorded rather than dropped.
+
+    Dropping it would understate the sample count and hide the failure, so
+    the row is kept as unmeasured, on the same rule the rest of this module
+    follows: a failure to measure is never a score. It shows in the report
+    and in the sample list; it does not reach the run-wide error rate, which
+    this backend feeds at task granularity only (see
+    ``BenchmarkResult.result_counts``).
+    """
+    return {
+        'input': '',
+        'expected': '',
+        'output': '',
+        'raw_output': '',
+        'score': None,
+        'score_details': {},
+        'success': False,
+        'status': 'errored',
+        'reason': f'could not read review row {lineno}: {reason}',
+        'subset': '',
+        'metadata': {},
+    }
 
 
 class EvalScopeBackend:
@@ -420,7 +526,6 @@ class EvalScopeBackend:
                 else:
                     # Non-retryable error or max retries reached
                     logger.error(f"EvalScope evaluation failed: {e}")
-                    import traceback
                     logger.debug(traceback.format_exc())
                     raise
 
@@ -458,118 +563,38 @@ class EvalScopeBackend:
                 matches = [exact]
         for review_file in matches:
             logger.debug(f"Loading reviews from: {review_file}")
+            # Two nested handlers, doing different jobs. The inner one keeps a
+            # bad row from costing more than itself: the handler this replaced
+            # wrapped the whole file, so one malformed record - a truncated
+            # line, or a field holding the wrong type - abandoned every
+            # remaining row in that file, visible only as a warning. Guarding
+            # individual fields cannot close that class of failure; isolating
+            # the row can. The outer one still catches what is genuinely
+            # file-level (open, permissions, a read failing mid-iteration),
+            # where there is no row to attribute the failure to.
             try:
                 with open(review_file, 'r') as f:
-                    for line in f:
-                        if line.strip():
-                            sample = json.loads(line)
-
-                            # Extract score from EvalScope's nested structure
-                            # sample_score.score.value.acc
-                            score = 0.0
-                            score_details = {}
-                            sample_score = sample.get('sample_score') or {}
-                            if sample_score:
-                                score_obj = sample_score.get('score') or {}
-                                if score_obj:
-                                    value = score_obj.get('value') or {}
-                                    if isinstance(value, dict):
-                                        score_details = value
-                                        # Try main_score_name first (set by evalscope)
-                                        main_name = score_obj.get('main_score_name')
-                                        if main_name and main_name in value:
-                                            score = float(value[main_name])
-                                        else:
-                                            # Get 'acc' or first available metric
-                                            score = value.get('acc', 0.0)
-                                        if score == 0.0:
-                                            # Try common metric names across benchmarks
-                                            for key in [
-                                                'accuracy', 'correct', 'score',
-                                                'resolved', 'passed', 'pass',
-                                                'is_correct',          # simple_qa, simple_vqa
-                                                'prompt_level_strict', # IFEval/IFBench
-                                                'em', 'exact_match',   # DROP, drivelology
-                                                'f1',                  # DROP, tool_bench
-                                                'winrate',             # alpaca_eval
-                                                'overall_score',       # healthbench
-                                                'eq_bench_score',      # eq_bench
-                                                'total_score',         # mia_bench
-                                            ]:
-                                                if key in value:
-                                                    score = float(value[key])
-                                                    break
-                                            # Last resort: average all numeric values
-                                            if score == 0.0 and value:
-                                                nums = [v for v in value.values()
-                                                        if isinstance(v, (int, float))]
-                                                if nums:
-                                                    score = sum(nums) / len(nums)
-                                    elif isinstance(value, (int, float)):
-                                        score = float(value)
-
-                            # Extract input, target, and prediction
-                            input_text = sample.get('input', '')
-                            expected = sample.get('target', '')
-
-                            # For IFEval-style benchmarks: extract prompt from
-                            # messages or metadata when top-level fields are empty
-                            if not input_text:
-                                msgs = sample.get('messages', [])
-                                for m in msgs:
-                                    if isinstance(m, dict) and m.get('role') == 'user':
-                                        input_text = m.get('content', '')
-                                        break
-                            if not expected or len(expected) > 2000:
-                                # Build a human-readable expected from metadata
-                                meta = (sample_score.get('sample_metadata') or {})
-
-                                # IFEval/IFBench: instruction constraints
-                                instructions = meta.get('instruction_id_list', [])
-                                kwargs_list = meta.get('kwargs', [])
-                                if instructions:
-                                    parts = []
-                                    for idx, inst in enumerate(instructions):
-                                        kw = kwargs_list[idx] if idx < len(kwargs_list) else {}
-                                        kw_str = ', '.join(
-                                            f'{k}={v}' for k, v in (kw or {}).items()
-                                            if v is not None
-                                        )
-                                        parts.append(f'{inst}({kw_str})' if kw_str else inst)
-                                    expected = ' | '.join(parts)
-
-                                # SWE-bench: show instance_id + repo instead of full patch
-                                elif meta.get('instance_id'):
-                                    instance_id = meta['instance_id']
-                                    repo = meta.get('repo', '')
-                                    difficulty = meta.get('difficulty', '')
-                                    expected = f'{instance_id} ({repo})' + (
-                                        f' [{difficulty}]' if difficulty else ''
-                                    )
-
-                            # Get the model's prediction/output
-                            prediction = ''
-                            extracted = ''
-                            if sample_score:
-                                score_obj = sample_score.get('score') or {}
-                                prediction = score_obj.get('prediction', '') or ''
-                                extracted = score_obj.get('extracted_prediction', '') or ''
-
-                            detailed_results.append({
-                                'input': input_text,
-                                'expected': expected,
-                                'output': extracted or prediction[:500],
-                                'raw_output': prediction,
-                                'score': float(score),
-                                'score_details': score_details,
-                                'success': float(score) > 0,
-                                'subset': (sample_score.get('sample_metadata') or {}).get('subject', ''),
-                                'metadata': sample
-                            })
-
+                    # Streamed rather than read into a list: a record's raw row
+                    # is kept in ``metadata``, so buffering the file as well
+                    # would hold every row twice at peak.
+                    for lineno, line in enumerate(f, 1):
+                        if not line.strip():
+                            continue
+                        try:
+                            detailed_results.append(
+                                self._review_row_to_record(json.loads(line))
+                            )
+                        except Exception as e:
+                            logger.error(
+                                f"Review row {review_file.name}:{lineno} "
+                                f"could not be read: {e}"
+                            )
+                            logger.debug(traceback.format_exc())
+                            detailed_results.append(
+                                _unreadable_row_record(f"{type(e).__name__}: {e}", lineno)
+                            )
             except Exception as e:
-                logger.warning(f"Failed to load reviews from {review_file}: {e}")
-                import traceback
+                logger.warning(f"Failed to read reviews from {review_file}: {e}")
                 logger.debug(traceback.format_exc())
 
         logger.info(f"Loaded {len(detailed_results)} detailed predictions")
@@ -646,6 +671,102 @@ class EvalScopeBackend:
             return None
 
 
+    def _review_row_to_record(self, sample: Dict[str, Any]) -> Dict[str, Any]:
+        """Build one detailed-result record from one evalscope review row.
+
+        Split out of the review-file loop so that a row which cannot be
+        read costs exactly one row: the caller wraps this call, and
+        anything raised in here is contained to the record it was
+        building rather than to the rest of the file.
+        """
+
+        # Extract score from EvalScope's nested structure
+        # sample_score.score.value.<metric>. A row we
+        # cannot read a score from is unmeasured, which
+        # includes a row carrying no score object at all.
+        # A malformed file can carry a non-dict in either
+        # spot (e.g. a list from a truncated write); guard
+        # sample_score itself here so a bad one cannot
+        # raise before _extract_sample_score is reached -
+        # a bad nested score_obj is handled there instead.
+        sample_score = sample.get('sample_score')
+        if not isinstance(sample_score, dict):
+            sample_score = {}
+        score_obj = sample_score.get('score') or {}
+        score, score_details, score_reason = _extract_sample_score(score_obj)
+
+        # Read once, guarded: a truthy non-dict here would otherwise reach
+        # ``.get`` at both use sites below. The caller isolates the row, so
+        # the cost of that would be this row rather than the file; the guard
+        # is what keeps the rest of the row usable, with only its metadata
+        # discarded, instead of losing the whole record to the handler.
+        sample_meta = sample_score.get('sample_metadata')
+        if not isinstance(sample_meta, dict):
+            sample_meta = {}
+
+        # Extract input, target, and prediction
+        input_text = sample.get('input', '')
+        expected = sample.get('target', '')
+
+        # For IFEval-style benchmarks: extract prompt from
+        # messages or metadata when top-level fields are empty
+        if not input_text:
+            msgs = sample.get('messages', [])
+            for m in msgs:
+                if isinstance(m, dict) and m.get('role') == 'user':
+                    input_text = m.get('content', '')
+                    break
+        if not expected or len(expected) > 2000:
+            # Build a human-readable expected from metadata
+            meta = sample_meta
+
+            # IFEval/IFBench: instruction constraints
+            instructions = meta.get('instruction_id_list', [])
+            kwargs_list = meta.get('kwargs', [])
+            if instructions:
+                parts = []
+                for idx, inst in enumerate(instructions):
+                    kw = kwargs_list[idx] if idx < len(kwargs_list) else {}
+                    kw_str = ', '.join(
+                        f'{k}={v}' for k, v in (kw or {}).items()
+                        if v is not None
+                    )
+                    parts.append(f'{inst}({kw_str})' if kw_str else inst)
+                expected = ' | '.join(parts)
+
+            # SWE-bench: show instance_id + repo instead of full patch
+            elif meta.get('instance_id'):
+                instance_id = meta['instance_id']
+                repo = meta.get('repo', '')
+                difficulty = meta.get('difficulty', '')
+                expected = f'{instance_id} ({repo})' + (
+                    f' [{difficulty}]' if difficulty else ''
+                )
+
+        # Get the model's prediction/output. score_obj can
+        # still be a non-dict here (e.g. a malformed row's
+        # nested score is a list); _extract_sample_score
+        # already turned that into an unmeasured score
+        # above, so treat prediction/extracted as absent
+        # here too rather than raising on .get().
+        score_fields = score_obj if isinstance(score_obj, dict) else {}
+        prediction = score_fields.get('prediction', '') or ''
+        extracted = score_fields.get('extracted_prediction', '') or ''
+
+        return {
+            'input': input_text,
+            'expected': expected,
+            'output': extracted or prediction[:500],
+            'raw_output': prediction,
+            'score': score,
+            'score_details': score_details,
+            'success': score is not None and score > 0,
+            'status': 'errored' if score is None else 'scored',
+            'reason': score_reason,
+            'subset': sample_meta.get('subject', ''),
+            'metadata': sample
+        }
+
     def _parse_results(
             self,
             results: Dict[str, Any],
@@ -656,6 +777,18 @@ class EvalScopeBackend:
         Parse EvalScope results into standardized format.
         """
         task_results = {}
+
+        # An empty payload means the report file was missing. That is already
+        # handled downstream: no task parses, and BenchmarkResult.result_counts
+        # charges one errored unit. A payload that loaded but has no 'score' is
+        # different - it is what an upstream key rename looks like - and
+        # defaulting it to 0.0 reports a model that scored zero.
+        if results and results.get('score') is None:
+            raise BenchmarkSchemaError(
+                f"evalscope report for {benchmark_name!r} has no usable 'score'; "
+                f"got keys: {sorted(results)}"
+            )
+
         overall_score = results.get('score', 0.0)
 
         # Extract subset scores from metrics
@@ -671,16 +804,41 @@ class EvalScopeBackend:
 
                 for subset in subsets:
                     subset_name = subset.get('name')
-                    subset_score = subset.get('score', 0.0)
+                    if not subset_name:
+                        continue
+
+                    # A missing score is a schema we cannot read, not a model
+                    # that scored zero: defaulting it would have
+                    # ``result_counts()`` count this subset as scored on a
+                    # fabricated number. Recorded as failed rather than
+                    # raised, so it costs one subset and not the whole
+                    # report - the same rule a bad row follows. The
+                    # report-level guard above still raises, because a report
+                    # with no score has nothing left to salvage.
+                    if subset.get('score') is None:
+                        logger.error(
+                            f"evalscope subset {subset_name!r} in {benchmark_name!r} "
+                            f"has no usable 'score'; got keys: {sorted(subset)}"
+                        )
+                        task_results[subset_name] = {
+                            'status': 'failed',
+                            'score': None,
+                            'n_samples': subset.get('num', 0),
+                            'reason': (
+                                f"no usable 'score'; got keys: {sorted(subset)}"
+                            ),
+                        }
+                        continue
+
+                    subset_score = subset['score']
                     subset_num = subset.get('num', 0)
 
-                    if subset_name:
-                        task_results[subset_name] = {
-                            'score': subset_score,
-                            'accuracy': subset_score,
-                            'n_samples': subset_num,
-                        }
-                        total_samples += subset_num
+                    task_results[subset_name] = {
+                        'score': subset_score,
+                        'accuracy': subset_score,
+                        'n_samples': subset_num,
+                    }
+                    total_samples += subset_num
 
         return {
             'overall_score': overall_score,

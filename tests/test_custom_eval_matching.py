@@ -207,6 +207,33 @@ def test_malformed_regex_config_values_raise_config_error_not_a_raw_exception(cf
         build_matcher(cfg)
 
 
+# --- fix round 2 -------------------------------------------------------
+
+
+@pytest.mark.parametrize("bad_timeout", [0, -1])
+def test_a_non_positive_timeout_is_rejected_at_build_time(bad_timeout):
+    """A zero or negative timeout disables the backtracking guard entirely:
+    ``regex.search(..., timeout=-1)`` never raises, so a catastrophic pattern
+    hangs the row (and the run) instead of costing it a `MatchTimeout`. This
+    is the one property the module claims to give a tenant's own pattern, so
+    it must be validated at build time like every other matcher config."""
+    with pytest.raises(ConfigError) as excinfo:
+        build_matcher(
+            {"mode": "regex", "pattern": r"(\w+)", "timeout": bad_timeout}
+        )
+
+    assert "timeout" in str(excinfo.value)
+    assert str(bad_timeout) in str(excinfo.value)
+
+
+def test_an_explicit_zero_timeout_is_not_silently_replaced_by_the_default():
+    """``cfg.get('timeout') or DEFAULT`` cannot tell an explicit ``0`` apart
+    from unset, unlike ``group`` three lines above which does. An explicit
+    ``0`` must be rejected, not quietly coerced to the 2s default."""
+    with pytest.raises(ConfigError):
+        build_matcher({"mode": "regex", "pattern": r"(\w+)", "timeout": 0})
+
+
 def test_regex_is_a_declared_dependency():
     """``matching.py`` imports ``regex`` unguarded for the ``timeout=`` kwarg
     the catastrophic-backtracking safety net depends on. It was present in

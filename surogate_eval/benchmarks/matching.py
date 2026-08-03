@@ -166,12 +166,28 @@ def build_matcher(cfg: Optional[Dict[str, Any]]) -> Matcher:
             f"{compiled.groups} capture group(s)"
         )
 
-    timeout_cfg = cfg.get('timeout') or DEFAULT_TIMEOUT_SECONDS
-    try:
-        timeout = float(timeout_cfg)
-    except (TypeError, ValueError) as exc:
-        raise ConfigError(
-            f"matcher timeout must be a number, got {cfg.get('timeout')!r}"
-        ) from exc
+    # `cfg.get('timeout')` rather than `... or DEFAULT_TIMEOUT_SECONDS`: the
+    # latter cannot tell an explicit `0` apart from unset, unlike `group`
+    # above, and would silently replace it with the default instead of
+    # rejecting it below.
+    timeout_cfg = cfg.get('timeout')
+    if timeout_cfg is None:
+        timeout = DEFAULT_TIMEOUT_SECONDS
+    else:
+        try:
+            timeout = float(timeout_cfg)
+        except (TypeError, ValueError) as exc:
+            raise ConfigError(
+                f"matcher timeout must be a number, got {timeout_cfg!r}"
+            ) from exc
+        # A zero or negative timeout does not raise `MatchTimeout` at all -
+        # `regex`'s own `timeout=` kwarg treats it as "no limit" - so it
+        # would silently disable the only safety property this module
+        # claims, and a catastrophic pattern would hang the row instead of
+        # costing it one.
+        if timeout <= 0:
+            raise ConfigError(
+                f"matcher timeout must be positive, got {timeout_cfg!r}"
+            )
     logger.debug(f"Matcher: mode={mode} group={group} timeout={timeout}s")
     return Matcher(mode, compiled=compiled, group=group, timeout=timeout)

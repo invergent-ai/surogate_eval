@@ -145,10 +145,19 @@ alone lets `"score": null` through and the fabrication happens anyway one step l
 
 **Subset-level score, added after review.** The same read exists one loop down
 (`subset.get('score', 0.0)`), and `BenchmarkResult.result_counts()` then counts that subset as
-scored on the defaulted number. It raises on the same rule, naming the subset. Mitigating context,
-recorded so the priority is not overstated: evalscope declares `score` at report, metric, category
-and subset level in one model, so a rename trips the report-level guard first. This is consistency
-rather than a second live hole.
+scored on the defaulted number. Mitigating context, recorded so the priority is not overstated:
+evalscope declares `score` at report, metric, category and subset level in one model, so a rename
+trips the report-level guard first. This is consistency rather than a second live hole.
+
+It is **recorded as failed rather than raised**. Raising was the first implementation and an
+independent review was right to call it out: it discarded every subset already parsed in the same
+report, so one bad subset in fifty-six cost the whole benchmark. That made the subset case the only
+place the module escalated rather than isolated, when a bad row costs one row. A failed subset is
+charged as one errored unit by `result_counts()`, which is not the same as defaulting it to zero:
+it is marked unmeasured, not scored.
+
+The report-level guard still raises, because a report with no usable score has nothing left to
+salvage.
 
 **Row-level isolation, added after review.** The field guards above close the instances of the
 non-dict hazard we found, but not the class: `instruction_id_list`, for one, is fed straight to

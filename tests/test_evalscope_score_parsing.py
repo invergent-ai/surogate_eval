@@ -419,32 +419,59 @@ def test_a_malformed_sample_metadata_does_not_drop_the_rest_of_the_file(tmp_path
     assert rows[1]["subset"] == ""
 
 
-def test_a_subset_without_a_score_raises_like_the_report_does():
-    """The subset-level twin of the report-level guard.
+def test_a_subset_without_a_score_is_errored_without_losing_the_others():
+    """One bad subset costs one subset, the same rule rows follow.
 
-    `_parse_results` raises when the report has no top-level `score`, on the
-    grounds that defaulting it reports a model that scored zero. One loop
-    down, each subset's score was still read with `.get('score', 0.0)`, which
-    is the same fabrication at a level the report guard does not cover, and
-    `result_counts()` then counts that subset as scored.
+    A missing subset score is still not a model that scored zero: defaulting
+    it to 0.0 would have `result_counts()` count the subset as scored on a
+    fabricated number. But raising discarded every subset already parsed in
+    the same report, so one bad subset in fifty-six cost the whole benchmark.
+    It is recorded as failed instead, which `result_counts()` charges as one
+    errored unit, and the good subsets survive.
     """
+    from surogate_eval.benchmarks.base import BenchmarkResult
+
     backend = EvalScopeBackend.__new__(EvalScopeBackend)
-    renamed_subset = {
-        "score": 0.83,
-        "metrics": [
-            {
-                "name": "acc",
-                "categories": [
-                    {"subsets": [{"name": "default", "value": 0.83, "num": 100}]}
-                ],
-            }
-        ],
-    }
+    parsed = backend._parse_results(
+        {
+            "score": 0.8,
+            "metrics": [
+                {
+                    "name": "acc",
+                    "categories": [
+                        {
+                            "subsets": [
+                                {"name": "algebra", "score": 0.9, "num": 10},
+                                {"name": "geometry", "value": 0.5, "num": 10},
+                                {"name": "calculus", "score": 0.7, "num": 10},
+                            ]
+                        }
+                    ],
+                }
+            ],
+        },
+        "gsm8k",
+        [],
+    )
 
-    with pytest.raises(BenchmarkSchemaError) as excinfo:
-        backend._parse_results(renamed_subset, "gsm8k", [])
+    tasks = parsed["task_results"]
+    assert set(tasks) == {"algebra", "geometry", "calculus"}
+    assert tasks["algebra"]["score"] == 0.9
+    assert tasks["calculus"]["score"] == 0.7
+    assert tasks["geometry"].get("score") is None
+    assert tasks["geometry"]["status"] == "failed"
 
-    assert "default" in str(excinfo.value)
+    # And the run outcome charges it as one errored unit, not a scored zero.
+    scored, errored = BenchmarkResult(
+        benchmark_name="gsm8k",
+        overall_score=parsed["overall_score"],
+        num_samples=parsed["num_samples"],
+        backend="evalscope",
+        task_results=tasks,
+        detailed_results=[],
+        metadata={},
+    ).result_counts()
+    assert (scored, errored) == (2, 1)
 
 
 def test_an_unparseable_line_does_not_lose_the_rest_of_the_file(tmp_path):
@@ -507,39 +534,39 @@ def test_an_unanticipated_field_failure_is_contained_to_its_row(tmp_path):
     assert rows[1]["reason"]
 
 
-@pytest.mark.parametrize(
-    "label, payload",
-    [
-        (
-            "report-level score is explicitly null",
-            {"score": None, "metrics": []},
-        ),
-        (
-            "subset-level score is explicitly null",
-            {
-                "score": 0.8,
-                "metrics": [
-                    {
-                        "name": "acc",
-                        "categories": [
-                            {"subsets": [{"name": "default", "score": None, "num": 10}]}
-                        ],
-                    }
-                ],
-            },
-        ),
-    ],
-    ids=["report", "subset"],
-)
-def test_an_explicitly_null_score_is_a_schema_problem_too(label, payload):
+def test_an_explicitly_null_report_score_is_a_schema_problem_too():
     """A present-but-null score is as unreadable as an absent one.
 
     Guarding on key absence alone lets `"score": null` through, and the
-    fabrication it was meant to stop happens anyway one step later: the
-    subset counts as scored, and the run fails much further downstream on a
-    generic TypeError from formatting rather than saying what was wrong.
+    fabrication it was meant to stop happens anyway one step later: the run
+    fails much further downstream on a generic TypeError from formatting
+    rather than saying what was wrong.
     """
     backend = EvalScopeBackend.__new__(EvalScopeBackend)
 
     with pytest.raises(BenchmarkSchemaError):
-        backend._parse_results(payload, "gsm8k", [])
+        backend._parse_results({"score": None, "metrics": []}, "gsm8k", [])
+
+
+def test_an_explicitly_null_subset_score_is_errored_not_raised():
+    """Same unreadability rule as the report, same isolation rule as a row."""
+    backend = EvalScopeBackend.__new__(EvalScopeBackend)
+
+    parsed = backend._parse_results(
+        {
+            "score": 0.8,
+            "metrics": [
+                {
+                    "name": "acc",
+                    "categories": [
+                        {"subsets": [{"name": "default", "score": None, "num": 10}]}
+                    ],
+                }
+            ],
+        },
+        "gsm8k",
+        [],
+    )
+
+    assert parsed["task_results"]["default"]["status"] == "failed"
+    assert parsed["task_results"]["default"]["score"] is None

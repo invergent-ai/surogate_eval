@@ -804,25 +804,41 @@ class EvalScopeBackend:
 
                 for subset in subsets:
                     subset_name = subset.get('name')
-                    # Same rule as the report-level guard above: a missing
-                    # score is a schema we cannot read, not a model that
-                    # scored zero. ``result_counts()`` would otherwise count
-                    # this subset as scored on a fabricated number.
+                    if not subset_name:
+                        continue
+
+                    # A missing score is a schema we cannot read, not a model
+                    # that scored zero: defaulting it would have
+                    # ``result_counts()`` count this subset as scored on a
+                    # fabricated number. Recorded as failed rather than
+                    # raised, so it costs one subset and not the whole
+                    # report - the same rule a bad row follows. The
+                    # report-level guard above still raises, because a report
+                    # with no score has nothing left to salvage.
                     if subset.get('score') is None:
-                        raise BenchmarkSchemaError(
+                        logger.error(
                             f"evalscope subset {subset_name!r} in {benchmark_name!r} "
                             f"has no usable 'score'; got keys: {sorted(subset)}"
                         )
+                        task_results[subset_name] = {
+                            'status': 'failed',
+                            'score': None,
+                            'n_samples': subset.get('num', 0),
+                            'reason': (
+                                f"no usable 'score'; got keys: {sorted(subset)}"
+                            ),
+                        }
+                        continue
+
                     subset_score = subset['score']
                     subset_num = subset.get('num', 0)
 
-                    if subset_name:
-                        task_results[subset_name] = {
-                            'score': subset_score,
-                            'accuracy': subset_score,
-                            'n_samples': subset_num,
-                        }
-                        total_samples += subset_num
+                    task_results[subset_name] = {
+                        'score': subset_score,
+                        'accuracy': subset_score,
+                        'n_samples': subset_num,
+                    }
+                    total_samples += subset_num
 
         return {
             'overall_score': overall_score,

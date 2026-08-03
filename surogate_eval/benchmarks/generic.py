@@ -49,6 +49,14 @@ class GenericBenchmark(BaseBenchmark):
             'path': self.config.path,
             'dataset_hub': self.config.dataset_hub,
             'batch_size': self.config.batch_size or self.config.backend_params.get('batch_size', 1),
+            # Passed whole, and it already carries ``judge_target``: runners.py
+            # puts the resolved judge in here before the benchmark runs. Do not
+            # rebuild this entry to "add" the judge - assigning a fresh dict
+            # drops every other key the backend reads (``use_sandbox``,
+            # ``max_turns``, ``timeout_multiplier``, ...) with no warning, and
+            # the evalscope backend reads several of them inside its
+            # ``if judge_target:`` branch, which such an assignment makes
+            # unreachable by construction.
             'backend_params': self.config.backend_params,
             'tokenizer': tokenizer,
             # Generation params
@@ -66,11 +74,6 @@ class GenericBenchmark(BaseBenchmark):
             'judge_criteria': self.config.judge_criteria,
             'eval_type': self.config.eval_type,
         }
-
-        if self.config.backend_params.get('judge_target'):
-            backend_config['backend_params'] = {
-                'judge_target': self.config.backend_params['judge_target']
-            }
 
         backend_results = self.backend.evaluate(
             target=target,

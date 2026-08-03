@@ -275,3 +275,91 @@ def test_a_healthy_report_parses_without_raising():
         "default": {"score": 0.83, "accuracy": 0.83, "n_samples": 100},
     }
     assert parsed["num_samples"] == 100
+
+
+def test_a_malformed_middle_row_does_not_drop_the_rest_of_the_file(tmp_path):
+    """One bad row must not lose itself and every row after it.
+
+    ``sample_score`` and its nested ``score`` are both supposed to be dicts.
+    A malformed file can carry a non-dict in either spot (e.g. a list from a
+    truncated write). Before this fix, ``.get(...)`` on that non-dict raised
+    ``AttributeError``, which the per-file ``except Exception`` in
+    ``_load_predictions`` caught - abandoning the whole file. A three-row
+    file with one bad row in the middle came back with only 1 row instead
+    of 3, and the loss was visible only as a ``logger.warning``.
+
+    No network: this reads one file from tmp_path.
+    """
+    import json
+
+    from surogate_eval.benchmarks.backends.evalscope_backend import EvalScopeBackend
+
+    reviews = tmp_path / "reviews" / "model-under-test"
+    reviews.mkdir(parents=True)
+    good_row_1 = {
+        "input": "2+2?",
+        "target": "4",
+        "sample_score": {
+            "score": {
+                "value": {"acc": 1.0},
+                "main_score_name": "acc",
+                "prediction": "4",
+                "extracted_prediction": "4",
+            },
+        },
+    }
+    malformed_row = {
+        "input": "3+3?",
+        "target": "6",
+        # A truncated/corrupt write: the nested score is a list, not a dict.
+        "sample_score": {"score": [1, 2, 3]},
+    }
+    good_row_2 = {
+        "input": "5+5?",
+        "target": "10",
+        "sample_score": {
+            "score": {
+                "value": {"acc": 0.0},
+                "main_score_name": "acc",
+                "prediction": "11",
+                "extracted_prediction": "11",
+            },
+        },
+    }
+    (reviews / "gsm8k_default.jsonl").write_text(
+        "\n".join(json.dumps(r) for r in (good_row_1, malformed_row, good_row_2)) + "\n"
+    )
+
+    backend = EvalScopeBackend.__new__(EvalScopeBackend)
+    rows = backend._load_predictions(str(tmp_path), "model-under-test", "gsm8k")
+
+    assert len(rows) == 3, "a malformed middle row must not lose itself or later rows"
+
+    first, middle, last = rows
+    assert first["score"] == 1.0
+    assert middle["score"] is None, "a non-dict score object cannot be given a number"
+    assert middle["success"] is False
+    assert middle["status"] == "errored"
+    assert middle["reason"]
+    assert last["score"] == 0.0
+
+
+def test_no_sample_score_and_no_value_get_distinct_reasons():
+    """Two different failure causes must not share one reason string.
+
+    A row with no score object at all (``sample_score`` missing, or present
+    without a nested ``score``) means the review process never produced a
+    score for this sample. A row whose score object exists but carries no
+    ``value`` field means scoring was attempted and something about the
+    value's shape broke. A whole-file wall of unmeasured rows is triaged
+    very differently depending on which of the two happened, so the two
+    reasons must read differently.
+    """
+    _, _, no_score_object_reason = _extract_sample_score({})
+    _, _, no_value_field_reason = _extract_sample_score(
+        {"main_score_name": "acc", "prediction": "some model output"}
+    )
+
+    assert no_score_object_reason
+    assert no_value_field_reason
+    assert no_score_object_reason != no_value_field_reason

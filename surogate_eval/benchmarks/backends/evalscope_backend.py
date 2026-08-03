@@ -107,16 +107,32 @@ def _extract_sample_score(
     wrong answer fell through to a fallback that averaged every number in the
     row and returned a fabricated non-zero score.
 
-    ``reason`` is set exactly when ``score`` is ``None``.
+    ``reason`` is set exactly when ``score`` is ``None``. Two distinct causes
+    are told apart deliberately, because they are triaged differently: no
+    score object at all (the review process never produced one) versus a
+    score object that exists but has no ``value`` field (scoring was
+    attempted and something about the value's shape broke).
     """
+    # A malformed review file can carry a non-dict here (e.g. a list from a
+    # truncated write). That must be unmeasured, not an AttributeError that
+    # takes the rest of the file down with it.
+    if not isinstance(score_obj, dict):
+        return None, {}, f"score object is not a dict (got {type(score_obj).__name__})"
+
+    if not score_obj:
+        return None, {}, "no score object for this sample (sample_score/score missing)"
+
     value = score_obj.get('value')
 
     # Some adapters write a bare number rather than a dict of named metrics.
     if isinstance(value, (int, float)):
         return float(value), {}, None
 
+    if value is None:
+        return None, {}, "score object has no 'value' field"
+
     if not isinstance(value, dict) or not value:
-        return None, {}, f"no readable score value (got {type(value).__name__})"
+        return None, {}, f"score 'value' field is unusable (got {type(value).__name__})"
 
     main_name = score_obj.get('main_score_name')
     candidates = ([main_name] if main_name else []) + ['acc'] + list(_KNOWN_SCORE_KEYS)
@@ -526,7 +542,14 @@ class EvalScopeBackend:
                             # sample_score.score.value.<metric>. A row we
                             # cannot read a score from is unmeasured, which
                             # includes a row carrying no score object at all.
-                            sample_score = sample.get('sample_score') or {}
+                            # A malformed file can carry a non-dict in either
+                            # spot (e.g. a list from a truncated write); guard
+                            # sample_score itself here so a bad one cannot
+                            # raise before _extract_sample_score is reached -
+                            # a bad nested score_obj is handled there instead.
+                            sample_score = sample.get('sample_score')
+                            if not isinstance(sample_score, dict):
+                                sample_score = {}
                             score_obj = sample_score.get('score') or {}
                             score, score_details, score_reason = _extract_sample_score(score_obj)
 
@@ -569,9 +592,15 @@ class EvalScopeBackend:
                                         f' [{difficulty}]' if difficulty else ''
                                     )
 
-                            # Get the model's prediction/output
-                            prediction = score_obj.get('prediction', '') or ''
-                            extracted = score_obj.get('extracted_prediction', '') or ''
+                            # Get the model's prediction/output. score_obj can
+                            # still be a non-dict here (e.g. a malformed row's
+                            # nested score is a list); _extract_sample_score
+                            # already turned that into an unmeasured score
+                            # above, so treat prediction/extracted as absent
+                            # here too rather than raising on .get().
+                            score_fields = score_obj if isinstance(score_obj, dict) else {}
+                            prediction = score_fields.get('prediction', '') or ''
+                            extracted = score_fields.get('extracted_prediction', '') or ''
 
                             detailed_results.append({
                                 'input': input_text,

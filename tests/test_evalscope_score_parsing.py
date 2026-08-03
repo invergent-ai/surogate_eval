@@ -498,3 +498,41 @@ def test_an_unanticipated_field_failure_is_contained_to_its_row(tmp_path):
     assert rows[1]["status"] == "errored"
     assert rows[1]["score"] is None
     assert rows[1]["reason"]
+
+
+@pytest.mark.parametrize(
+    "label, payload",
+    [
+        (
+            "report-level score is explicitly null",
+            {"score": None, "metrics": []},
+        ),
+        (
+            "subset-level score is explicitly null",
+            {
+                "score": 0.8,
+                "metrics": [
+                    {
+                        "name": "acc",
+                        "categories": [
+                            {"subsets": [{"name": "default", "score": None, "num": 10}]}
+                        ],
+                    }
+                ],
+            },
+        ),
+    ],
+    ids=["report", "subset"],
+)
+def test_an_explicitly_null_score_is_a_schema_problem_too(label, payload):
+    """A present-but-null score is as unreadable as an absent one.
+
+    Guarding on key absence alone lets `"score": null` through, and the
+    fabrication it was meant to stop happens anyway one step later: the
+    subset counts as scored, and the run fails much further downstream on a
+    generic TypeError from formatting rather than saying what was wrong.
+    """
+    backend = EvalScopeBackend.__new__(EvalScopeBackend)
+
+    with pytest.raises(BenchmarkSchemaError):
+        backend._parse_results(payload, "gsm8k", [])

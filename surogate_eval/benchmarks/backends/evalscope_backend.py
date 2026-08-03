@@ -2,6 +2,7 @@
 """EvalScope backend for benchmark evaluation."""
 import tempfile
 import time
+import traceback
 from typing import Dict, Any, List, Optional, Tuple
 from pathlib import Path
 
@@ -160,9 +161,12 @@ def _extract_sample_score(
 def _unreadable_row_record(reason: str, lineno: int) -> Dict[str, Any]:
     """A review row we could not read at all, recorded rather than dropped.
 
-    Dropping it would understate the sample count and hide the failure; the
-    row is kept as unmeasured so it is visible and counted, on the same rule
-    the rest of this module follows: a failure to measure is never a score.
+    Dropping it would understate the sample count and hide the failure, so
+    the row is kept as unmeasured, on the same rule the rest of this module
+    follows: a failure to measure is never a score. It shows in the report
+    and in the sample list; it does not reach the run-wide error rate, which
+    this backend feeds at task granularity only (see
+    ``BenchmarkResult.result_counts``).
     """
     return {
         'input': '',
@@ -522,7 +526,6 @@ class EvalScopeBackend:
                 else:
                     # Non-retryable error or max retries reached
                     logger.error(f"EvalScope evaluation failed: {e}")
-                    import traceback
                     logger.debug(traceback.format_exc())
                     raise
 
@@ -560,34 +563,39 @@ class EvalScopeBackend:
                 matches = [exact]
         for review_file in matches:
             logger.debug(f"Loading reviews from: {review_file}")
+            # Two nested handlers, doing different jobs. The inner one keeps a
+            # bad row from costing more than itself: the handler this replaced
+            # wrapped the whole file, so one malformed record - a truncated
+            # line, or a field holding the wrong type - abandoned every
+            # remaining row in that file, visible only as a warning. Guarding
+            # individual fields cannot close that class of failure; isolating
+            # the row can. The outer one still catches what is genuinely
+            # file-level (open, permissions, a read failing mid-iteration),
+            # where there is no row to attribute the failure to.
             try:
                 with open(review_file, 'r') as f:
-                    lines_in_file = f.readlines()
+                    # Streamed rather than read into a list: a record's raw row
+                    # is kept in ``metadata``, so buffering the file as well
+                    # would hold every row twice at peak.
+                    for lineno, line in enumerate(f, 1):
+                        if not line.strip():
+                            continue
+                        try:
+                            detailed_results.append(
+                                self._review_row_to_record(json.loads(line))
+                            )
+                        except Exception as e:
+                            logger.error(
+                                f"Review row {review_file.name}:{lineno} "
+                                f"could not be read: {e}"
+                            )
+                            logger.debug(traceback.format_exc())
+                            detailed_results.append(
+                                _unreadable_row_record(f"{type(e).__name__}: {e}", lineno)
+                            )
             except Exception as e:
-                logger.warning(f"Failed to open reviews from {review_file}: {e}")
-                continue
-
-            for lineno, line in enumerate(lines_in_file, 1):
-                if not line.strip():
-                    continue
-                # One unreadable row costs one row. The handler this replaces
-                # wrapped the whole file, so a single malformed record - a
-                # truncated line, or a field holding the wrong type - abandoned
-                # every remaining row in that file, and the loss showed up only
-                # as a warning. Guarding individual fields cannot close that
-                # class of failure; isolating the row can.
-                try:
-                    detailed_results.append(
-                        self._review_row_to_record(json.loads(line))
-                    )
-                except Exception as e:
-                    logger.error(
-                        f"Review row {review_file.name}:{lineno} could not be read: {e}"
-                    )
-                    detailed_results.append(
-                        _unreadable_row_record(f"{type(e).__name__}: {e}", lineno)
-                    )
-
+                logger.warning(f"Failed to read reviews from {review_file}: {e}")
+                logger.debug(traceback.format_exc())
 
         logger.info(f"Loaded {len(detailed_results)} detailed predictions")
         return detailed_results
@@ -774,9 +782,9 @@ class EvalScopeBackend:
         # charges one errored unit. A payload that loaded but has no 'score' is
         # different - it is what an upstream key rename looks like - and
         # defaulting it to 0.0 reports a model that scored zero.
-        if results and 'score' not in results:
+        if results and results.get('score') is None:
             raise BenchmarkSchemaError(
-                f"evalscope report for {benchmark_name!r} has no 'score' key; "
+                f"evalscope report for {benchmark_name!r} has no usable 'score'; "
                 f"got keys: {sorted(results)}"
             )
 
@@ -799,10 +807,10 @@ class EvalScopeBackend:
                     # score is a schema we cannot read, not a model that
                     # scored zero. ``result_counts()`` would otherwise count
                     # this subset as scored on a fabricated number.
-                    if 'score' not in subset:
+                    if subset.get('score') is None:
                         raise BenchmarkSchemaError(
                             f"evalscope subset {subset_name!r} in {benchmark_name!r} "
-                            f"has no 'score' key; got keys: {sorted(subset)}"
+                            f"has no usable 'score'; got keys: {sorted(subset)}"
                         )
                     subset_score = subset['score']
                     subset_num = subset.get('num', 0)

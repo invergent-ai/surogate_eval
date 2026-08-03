@@ -136,10 +136,36 @@ The list encodes real accumulated per-benchmark knowledge. The fix is to make it
 explicit rather than to guess past it.
 
 **Benchmark-level score.** Distinguish the two cases above. A report that loads and parses but
-carries no top-level `score` key raises a named schema-mismatch error, so the benchmark fails
+carries no usable top-level `score` raises a named schema-mismatch error, so the benchmark fails
 loudly instead of publishing a fabricated zero. This fires only when an upstream change breaks
 the parser, which is exactly when a run should stop. The parse runs inside the backend's retry
 loop, so the error must be non-retryable: a schema mismatch will not resolve on attempt two.
+"No usable" covers a present-but-null score as well as an absent key, since guarding on absence
+alone lets `"score": null` through and the fabrication happens anyway one step later.
+
+**Subset-level score, added after review.** The same read exists one loop down
+(`subset.get('score', 0.0)`), and `BenchmarkResult.result_counts()` then counts that subset as
+scored on the defaulted number. It raises on the same rule, naming the subset. Mitigating context,
+recorded so the priority is not overstated: evalscope declares `score` at report, metric, category
+and subset level in one model, so a rename trips the report-level guard first. This is consistency
+rather than a second live hole.
+
+**Row-level isolation, added after review.** The field guards above close the instances of the
+non-dict hazard we found, but not the class: `instruction_id_list`, for one, is fed straight to
+`enumerate()`, so a non-list there raises from a spot no guard covers. The review-file loop wrapped
+every row of a file in one `try`, so any such raise abandoned every remaining row in that file,
+visible only as a warning. The row builder moves into its own method and each row is read inside
+its own `try`; an unreadable row is recorded as unmeasured and costs exactly one row. A file-level
+handler remains for what is genuinely file-level (open, permissions, a read failing mid-iteration),
+where there is no row to attribute the failure to.
+
+The field guards stay rather than being replaced by the row handler. They are more precise: when
+only a row's score is malformed they salvage its input, expected output and subset and mark just
+the score unmeasured, where the row-level handler would lose all of it.
+
+An unreadable row produces a placeholder record rather than being skipped. Dropping it would
+understate the sample count and hide the failure, which is the same defect this design exists to
+remove, one level up.
 
 ## Downstream
 
@@ -157,7 +183,13 @@ Table-driven over real score shapes, no network:
   flow into the numeric average.
 - An unrecognised schema: must be unmeasured, never averaged.
 - A legitimate zero: must stay `0.0` and must not fall through.
-- A report missing its top-level `score`: must raise rather than report `0.0`.
+- A report missing its top-level `score`, a subset missing its own, and either of them present but
+  null: must raise rather than report `0.0`.
+- A healthy report: must parse without raising, with the right `overall_score` and `task_results`.
+  Without this the raise has no allow-direction coverage, and inverting its condition so that every
+  real report fails would leave the suite green.
+- A truncated JSON line, and a field no guard was written for (`instruction_id_list` as a non-list):
+  each must cost one row, with the rest of the file intact.
 
 ## Out of scope
 

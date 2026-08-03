@@ -307,7 +307,7 @@ Expected: PASS, no regressions against the 195 currently passing
 git add surogate_eval/benchmarks/backends/evalscope_backend.py tests/test_evalscope_score_parsing.py
 git commit -m "fix(benchmarks): stop the evalscope parser inventing a score it could not read
 
-The extraction used \`score == 0.0\` as its keep-looking signal, so a sample
+The extraction used `score == 0.0` as its keep-looking signal, so a sample
 evalscope genuinely scored zero was indistinguishable from one whose key was
 missing. The wrong answer then fell through to a fallback that averaged every
 number in the row. An IFEval sample that failed its prompt-level constraint

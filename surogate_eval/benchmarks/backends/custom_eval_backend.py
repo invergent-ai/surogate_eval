@@ -7,6 +7,7 @@ import tempfile
 from pathlib import Path
 from typing import Dict, Any, List, Optional
 
+from surogate_eval.benchmarks.matching import build_matcher, clean_formatting
 from surogate_eval.targets import BaseTarget
 from surogate_eval.utils.logger import get_logger
 
@@ -174,62 +175,6 @@ class CustomEvalBackend:
             return default
         return value
 
-    def _normalize_output(self, output: str, expected: str) -> str:
-        """Normalize model output for comparison."""
-        import re
-
-        try:
-            from bs4 import BeautifulSoup
-            import markdown
-
-            # Convert markdown to HTML, then extract plain text
-            html = markdown.markdown(output)
-            text = BeautifulSoup(html, 'html.parser').get_text(separator=' ')
-        except ImportError:
-            # Fallback: basic regex cleanup
-            text = output
-            text = re.sub(r'\*\*([^*]+)\*\*', r'\1', text)
-            text = re.sub(r'\*([^*]+)\*', r'\1', text)
-            text = re.sub(r'`([^`]+)`', r'\1', text)
-            text = re.sub(r'#{1,6}\s*', '', text)
-            text = re.sub(r'\[([^\]]+)\]\([^)]+\)', r'\1', text)
-
-        # Normalize whitespace
-        text = re.sub(r'\s+', ' ', text).strip()
-
-        # For short expected answers, extract matching pattern
-        expected_clean = expected.strip()
-
-        # Email
-        if '@' in expected_clean and len(expected_clean) < 100:
-            match = re.search(r'[\w\.-]+@[\w\.-]+\.\w+', text)
-            if match:
-                return match.group(0)
-
-        # Percentage
-        if re.match(r'^\d+%$', expected_clean):
-            match = re.search(r'\d+%', text)
-            if match:
-                return match.group(0)
-
-        # Date
-        if re.search(r'\b(Jan|Feb|Mar|Apr|May|Jun|Jul|Aug|Sep|Oct|Nov|Dec)\b', expected_clean, re.I):
-            match = re.search(r'(Jan|Feb|Mar|Apr|May|Jun|Jul|Aug|Sep|Oct|Nov|Dec)[a-z]*\.?\s+\d{1,2},?\s+\d{4}', text,
-                              re.I)
-            if match:
-                return match.group(0)
-
-        # Yes/No questions
-        if expected_clean.lower() in ['yes', 'no']:
-            if re.search(r'\bno\b', text, re.I) and 'not' in text.lower():
-                return 'No'
-            if re.search(r'\byes\b', text, re.I):
-                return 'Yes'
-            if 'is not responsible' in text.lower() or 'are not responsible' in text.lower():
-                return 'No'
-
-        return text
-
     def _split_by_eval_type(
             self,
             dataset: Dataset,
@@ -396,6 +341,9 @@ class CustomEvalBackend:
         from surogate_eval.targets.base import TargetRequest
 
         system_prompt = config.get('system_prompt')
+        # Built once: an unknown mode or a bad pattern would fail every row,
+        # so it is a config error and belongs here rather than in the loop.
+        matcher = build_matcher(config.get('matcher'))
         results = []
 
         for row in rows:
@@ -433,26 +381,22 @@ class CustomEvalBackend:
             success = False
 
             if row_error is None:
-                # Normalising and comparing can fail on their own, and a
-                # failure here is still a failure to measure. A numeric
-                # ``answer`` column is inferred as int64, so ``expected``
-                # arrives as an int and ``_normalize_output`` calls
-                # ``.strip()`` on it. Outside the protected region that
-                # AttributeError escaped the row loop and the function, and
-                # runners.py's top-level handler turned the whole benchmark
-                # into a status-only failure - discarding every row already
-                # measured, for a perfectly healthy target. Same rule as the
-                # request above, and the same shape as _evaluate_judge_rows:
-                # one row we could not compare is one errored row.
+                # Comparing can fail on its own, and a failure here is still
+                # a failure to measure, not a wrong answer. ``matcher.compare``
+                # coerces a non-string ``expected`` (a numeric ``answer``
+                # column is inferred as int64) with ``str()``, so that alone
+                # no longer raises - but a ``regex`` pattern that
+                # catastrophically backtracks on one row's output still
+                # raises ``MatchTimeout``. Outside the protected region that
+                # would escape the row loop and the function, and
+                # runners.py's top-level handler would turn the whole
+                # benchmark into a status-only failure - discarding every
+                # row already measured, for a perfectly healthy target. Same
+                # rule as the request above, and the same shape as
+                # _evaluate_judge_rows: one row we could not compare is one
+                # errored row.
                 try:
-                    normalized_output = self._normalize_output(raw_output, expected)
-                    expected_clean = expected.strip().lower()
-                    output_clean = normalized_output.strip().lower()
-                    success = (
-                        expected_clean == output_clean
-                        or expected_clean in output_clean
-                        or output_clean.startswith(expected_clean)
-                    )
+                    success, normalized_output = matcher.compare(raw_output, expected)
                 except Exception as e:
                     row_error = f'Comparison error: {e}'
 
@@ -566,8 +510,14 @@ class CustomEvalBackend:
                     request_error = response.error
                 else:
                     raw_output = response.content or ''
-                    # Normalize output for comparison
-                    normalized_output = self._normalize_output(raw_output, expected)
+                    # Formatting cleanup only, same as the direct exact_match
+                    # path's default mode. The judge path is not part of this
+                    # task's matcher wiring; this keeps it calling code that
+                    # still exists now that _normalize_output is gone, without
+                    # changing what it returns for any output already covered
+                    # by a test - clean_formatting is that method's own
+                    # formatting half, byte for byte.
+                    normalized_output = clean_formatting(raw_output)
                     logger.debug(f"Raw: {raw_output[:100]}... -> Normalized: {normalized_output[:100]}...")
             except Exception as e:
                 request_error = str(e)

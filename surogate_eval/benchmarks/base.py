@@ -58,6 +58,8 @@ class BenchmarkConfig:
     judge_model: Optional[Dict[str, Any]] = None
     judge_criteria: Optional[str] = None
     eval_type: str = 'exact_match'
+    #: How string rows decide correctness. See benchmarks/matching.py.
+    matcher: Optional[Dict[str, Any]] = None
 
 
 @dataclass

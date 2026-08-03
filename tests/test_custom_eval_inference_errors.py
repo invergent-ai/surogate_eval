@@ -97,31 +97,60 @@ def test_exact_match_healthy_target_still_scores():
 
 # --- rows that cannot be compared ------------------------------------------
 
-NUMERIC_ROWS = [
-    {"instruction": "What is 6 * 7?", "answer": 42, "_original_idx": 0},
-    {"instruction": "Say something", "answer": "something", "_original_idx": 1},
+# A numeric ``answer`` column no longer makes a row uncomparable: the
+# matcher coerces ``expected`` with ``str()`` before comparing (see
+# ``surogate_eval/benchmarks/matching.py``), so an int answer is just
+# compared as its string form. What can still fail to measure is the
+# comparison itself: a ``regex`` pattern that catastrophically backtracks on
+# one row's output raises ``MatchTimeout``, and that is still a failure to
+# measure rather than a wrong answer.
+CATASTROPHIC_PATTERN = r"(a+)+$"
+
+TIMEOUT_ROWS = [
+    {"instruction": "explode", "answer": "boom", "_original_idx": 0},
+    {"instruction": "Say aaaa", "answer": "aaaa", "_original_idx": 1},
 ]
 
 
+class RowAwareTarget:
+    """Row 0 gets an answer built to blow up catastrophic backtracking under
+    the shared pattern; row 1 gets a plain answer the same pattern matches
+    immediately, so it stays scored."""
+
+    name = "t1"
+    config = {}
+
+    def send_request(self, request):
+        if request.prompt == "explode":
+            return TargetResponse(content="a" * 5000 + "!", raw_response={}, error=None)
+        return TargetResponse(content="aaaa", raw_response={}, error=None)
+
+
 def test_exact_match_row_that_cannot_be_compared_errors_only_that_row():
-    """A numeric ``answer`` column is inferred as int64, so ``expected``
-    arrives as an int and ``_normalize_output`` calls ``.strip()`` on it.
-    Left outside the protected region the AttributeError escaped the row
-    loop and the whole benchmark - every row already measured with it."""
+    """A row whose output makes the configured pattern catastrophically
+    backtrack cannot be measured in time: ``Matcher.compare`` raises
+    ``MatchTimeout``, caught by the same ``except Exception`` that turns any
+    other comparison failure into an errored row. Left unguarded, that
+    exception would escape the row loop and the whole benchmark - every row
+    already measured with it. The row next to it, matched by the same
+    pattern in the ordinary way, is untouched and still scored."""
     backend = CustomEvalBackend()
-    results = backend._evaluate_exact_match_rows(NUMERIC_ROWS, FakeTarget(), {}, {})
+    config = {"matcher": {"mode": "regex", "pattern": CATASTROPHIC_PATTERN, "timeout": 0.1}}
+    results = backend._evaluate_exact_match_rows(TIMEOUT_ROWS, RowAwareTarget(), config, {})
 
     assert [r["status"] for r in results] == ["errored", "scored"]
     assert results[0]["score"] is None
     assert results[0]["success"] is False
-    # The healthy row is still measured: "something" matches row 1's answer.
+    # The healthy row is still measured: the pattern matches "aaaa" outright.
     assert results[1]["score"] == 1.0
 
 
 def test_numeric_answer_column_benchmark_still_reports_counts(tmp_path):
     """End to end through ``evaluate()`` with a numeric answer column, the
-    shape any numeric-QA dataset has. The benchmark must come back with its
-    counts, not raise and be flattened into a status-only failure node."""
+    shape any numeric-QA dataset has. A numeric answer is compared by
+    coercing it to a string rather than erroring, so the benchmark comes
+    back with its rows scored - not flattened into a status-only failure
+    node, and not errored either."""
     import json
 
     dataset_path = tmp_path / "numeric.jsonl"
@@ -141,8 +170,11 @@ def test_numeric_answer_column_benchmark_still_reports_counts(tmp_path):
     )
 
     em = result["task_results"]["exact_match"]
-    assert (em["scored_n"], em["errored_n"]) == (0, 2)
-    assert all(r["score"] is None for r in result["detailed_results"])
+    assert (em["scored_n"], em["errored_n"]) == (2, 0)
+    # FakeTarget always answers "something", which contains neither "42" nor
+    # "2" under the default `contains` mode - both rows are measured, and
+    # both are wrong.
+    assert all(r["score"] == 0.0 for r in result["detailed_results"])
 
 
 # --- judge -------------------------------------------------------------

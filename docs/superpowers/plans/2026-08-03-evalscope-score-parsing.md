@@ -32,7 +32,7 @@
 - Consumes: nothing from earlier tasks.
 - Produces: module-level `_extract_sample_score(score_obj: Dict[str, Any]) -> Tuple[Optional[float], Dict[str, Any], Optional[str]]`, returning `(score, score_details, reason)`. `score is None` means not measured; `reason` is non-`None` exactly when `score is None`. Task 2 calls this same function.
 
-- [ ] **Step 1: Write the failing test**
+- [x] **Step 1: Write the failing test**
 
 Create `tests/test_evalscope_score_parsing.py`:
 
@@ -153,12 +153,12 @@ def test_the_averaging_fallback_is_gone():
     assert score == 0.0, "must not average the latency into the score"
 ```
 
-- [ ] **Step 2: Run test to verify it fails**
+- [x] **Step 2: Run test to verify it fails**
 
 Run: `./.venv/bin/python -m pytest tests/test_evalscope_score_parsing.py -v`
 Expected: FAIL at import, `ImportError: cannot import name '_extract_sample_score'`
 
-- [ ] **Step 3: Write the extraction function**
+- [x] **Step 3: Write the extraction function**
 
 In `surogate_eval/benchmarks/backends/evalscope_backend.py`, add near the top of the module (after the existing imports and module-level constants, before the backend class):
 
@@ -223,12 +223,12 @@ def _extract_sample_score(
 Change line 5 from `from typing import Dict, Any, List` to
 `from typing import Dict, Any, List, Optional, Tuple`.
 
-- [ ] **Step 4: Run test to verify it passes**
+- [x] **Step 4: Run test to verify it passes**
 
 Run: `./.venv/bin/python -m pytest tests/test_evalscope_score_parsing.py -v`
 Expected: PASS, 14 tests
 
-- [ ] **Step 5: Replace the inline block with a call**
+- [x] **Step 5: Replace the inline block with a call**
 
 In `_load_predictions`, replace lines 466-508 (from `# Extract score from EvalScope's nested structure` through `score = float(value)`) with:
 
@@ -247,7 +247,7 @@ In `_load_predictions`, replace lines 466-508 (from `# Extract score from EvalSc
                                     )
 ```
 
-- [ ] **Step 6: Update the sample record so a null score is representable**
+- [x] **Step 6: Update the sample record so a null score is representable**
 
 Replace the `detailed_results.append({...})` call (currently `:558-568`) with:
 
@@ -269,7 +269,7 @@ Replace the `detailed_results.append({...})` call (currently `:558-568`) with:
 
 `float(score)` is gone from both places: it raises on `None`.
 
-- [ ] **Step 7: Add the record-level test**
+- [x] **Step 7: Add the record-level test**
 
 Append to `tests/test_evalscope_score_parsing.py`:
 
@@ -296,12 +296,12 @@ def test_an_unmeasured_sample_is_not_reported_as_a_pass():
     assert 'unrecognised score schema' in record['reason']
 ```
 
-- [ ] **Step 8: Run the full suite**
+- [x] **Step 8: Run the full suite**
 
 Run: `./.venv/bin/python -m pytest -q`
 Expected: PASS, no regressions against the 195 currently passing
 
-- [ ] **Step 9: Commit**
+- [x] **Step 9: Commit**
 
 ```bash
 git add surogate_eval/benchmarks/backends/evalscope_backend.py tests/test_evalscope_score_parsing.py
@@ -333,7 +333,7 @@ score=None, success=False, status=errored, with a reason naming what it saw."
 
 **Reviewer note:** this is the one step in the plan with real behavioural reach, and it is a separate task so it can be rejected on its own. Task 1 leaves a row with no `sample_score` (or no `score` inside it) scoring 0.0, which is the same fabrication in a quieter place. Changing it is correct, but if any benchmark omits `sample_score` routinely, it moves many samples to unmeasured at once. Nothing in the repo indicates that, and it cannot be confirmed without a real run.
 
-- [ ] **Step 1: Write the failing test**
+- [x] **Step 1: Write the failing test**
 
 Append to `tests/test_evalscope_score_parsing.py`:
 
@@ -369,12 +369,12 @@ def test_a_row_with_no_score_object_is_unmeasured(tmp_path):
     assert rows[0]["reason"]
 ```
 
-- [ ] **Step 2: Run test to verify it fails**
+- [x] **Step 2: Run test to verify it fails**
 
 Run: `./.venv/bin/python -m pytest tests/test_evalscope_score_parsing.py::test_a_row_with_no_score_object_is_unmeasured -v`
 Expected: FAIL, `assert 0.0 is None` — the loop's initialiser still supplies a zero
 
-- [ ] **Step 3: Change the initialiser**
+- [x] **Step 3: Change the initialiser**
 
 In `_load_predictions`, change the block from Task 1 Step 5 to:
 
@@ -413,17 +413,17 @@ to:
 
 This removes a second, now-redundant derivation of `score_obj` from the same `sample_score`.
 
-- [ ] **Step 4: Run test to verify it passes**
+- [x] **Step 4: Run test to verify it passes**
 
 Run: `./.venv/bin/python -m pytest tests/test_evalscope_score_parsing.py -v`
 Expected: PASS
 
-- [ ] **Step 5: Run the full suite**
+- [x] **Step 5: Run the full suite**
 
 Run: `./.venv/bin/python -m pytest -q`
 Expected: PASS
 
-- [ ] **Step 6: Commit**
+- [x] **Step 6: Commit**
 
 ```bash
 git add surogate_eval/benchmarks/backends/evalscope_backend.py tests/test_evalscope_score_parsing.py
@@ -447,7 +447,7 @@ quieter place."
 - Consumes: nothing from earlier tasks.
 - Produces: `surogate_eval.errors.BenchmarkSchemaError(EvalError)`.
 
-- [ ] **Step 1: Write the failing test**
+- [x] **Step 1: Write the failing test**
 
 Append to `tests/test_evalscope_score_parsing.py`:
 
@@ -491,12 +491,12 @@ def test_an_empty_report_still_parses_so_the_existing_backstop_handles_it():
     assert parsed["task_results"] == {}
 ```
 
-- [ ] **Step 2: Run test to verify it fails**
+- [x] **Step 2: Run test to verify it fails**
 
 Run: `./.venv/bin/python -m pytest tests/test_evalscope_score_parsing.py -k top_level_score -v`
 Expected: FAIL, `ImportError: cannot import name 'BenchmarkSchemaError'`
 
-- [ ] **Step 3: Add the error type**
+- [x] **Step 3: Add the error type**
 
 Append to `surogate_eval/errors.py`:
 
@@ -510,7 +510,7 @@ class BenchmarkSchemaError(EvalError):
     """
 ```
 
-- [ ] **Step 4: Raise it in the parser**
+- [x] **Step 4: Raise it in the parser**
 
 In `_parse_results`, replace:
 
@@ -547,24 +547,24 @@ from surogate_eval.errors import BenchmarkSchemaError
 
 This file uses absolute imports throughout; do not use a relative one here.
 
-- [ ] **Step 5: Run test to verify it passes**
+- [x] **Step 5: Run test to verify it passes**
 
 Run: `./.venv/bin/python -m pytest tests/test_evalscope_score_parsing.py -v`
 Expected: PASS
 
-- [ ] **Step 6: Confirm the error is not retried**
+- [x] **Step 6: Confirm the error is not retried**
 
 Run: `./.venv/bin/python -c "from surogate_eval.benchmarks.backends.evalscope_backend import EvalScopeBackend; from surogate_eval.errors import BenchmarkSchemaError; b = EvalScopeBackend.__new__(EvalScopeBackend); print('retryable:', b._is_retryable_error(BenchmarkSchemaError('evalscope report has no score key')))"`
 Expected: `retryable: False`
 
 If this prints `True`, stop: the message overlaps a `RETRYABLE_ERRORS` substring and must be reworded.
 
-- [ ] **Step 7: Run the full suite**
+- [x] **Step 7: Run the full suite**
 
 Run: `./.venv/bin/python -m pytest -q`
 Expected: PASS
 
-- [ ] **Step 8: Commit**
+- [x] **Step 8: Commit**
 
 ```bash
 git add surogate_eval/errors.py surogate_eval/benchmarks/backends/evalscope_backend.py tests/test_evalscope_score_parsing.py

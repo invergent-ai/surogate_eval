@@ -10,9 +10,37 @@ constraint was recorded at 0.375 and flagged as a pass.
 No network: these are plain dicts shaped like evalscope review rows.
 """
 
+import json
+
 import pytest
 
-from surogate_eval.benchmarks.backends.evalscope_backend import _extract_sample_score
+from surogate_eval.benchmarks.backends.evalscope_backend import (
+    EvalScopeBackend,
+    _extract_sample_score,
+)
+from surogate_eval.errors import BenchmarkSchemaError
+
+#: The model id every file-driven test writes under. Arbitrary, but the
+#: reviews directory is keyed on it, so writer and reader must agree.
+_MODEL_ID = "model-under-test"
+
+
+def _load_rows(tmp_path, *rows, dataset="gsm8k"):
+    """Write ``rows`` as an evalscope review file and read them back.
+
+    Returns whatever the real ``_load_predictions`` produced, so a test can
+    assert on the records the backend actually builds. The scaffolding is
+    identical for every file-driven test here; only the rows differ, and
+    keeping it in one place makes the row under test the visible part.
+    """
+    reviews = tmp_path / "reviews" / _MODEL_ID
+    reviews.mkdir(parents=True, exist_ok=True)
+    (reviews / f"{dataset}_default.jsonl").write_text(
+        "".join(json.dumps(r) + "\n" for r in rows)
+    )
+
+    backend = EvalScopeBackend.__new__(EvalScopeBackend)
+    return backend._load_predictions(str(tmp_path), _MODEL_ID, dataset)
 
 # (label, score_obj, expected_score)
 CASES = [
@@ -153,12 +181,7 @@ def test_a_row_with_no_score_object_is_unmeasured(tmp_path):
     the defect is in the loop's initialiser, not in the extraction. No
     network: this reads one file from tmp_path.
     """
-    import json
 
-    from surogate_eval.benchmarks.backends.evalscope_backend import EvalScopeBackend
-
-    reviews = tmp_path / "reviews" / "model-under-test"
-    reviews.mkdir(parents=True)
     unmeasured_row = {"input": "2+2?", "target": "4"}
     scored_row = {
         "input": "What is 6 times 7?",
@@ -173,12 +196,7 @@ def test_a_row_with_no_score_object_is_unmeasured(tmp_path):
             "sample_metadata": {"subject": "arithmetic"},
         },
     }
-    (reviews / "gsm8k_default.jsonl").write_text(
-        json.dumps(unmeasured_row) + "\n" + json.dumps(scored_row) + "\n"
-    )
-
-    backend = EvalScopeBackend.__new__(EvalScopeBackend)
-    rows = backend._load_predictions(str(tmp_path), "model-under-test", "gsm8k")
+    rows = _load_rows(tmp_path, unmeasured_row, scored_row)
 
     assert len(rows) == 2
 
@@ -206,8 +224,6 @@ def test_a_report_without_a_top_level_score_raises_rather_than_reporting_zero():
     case is a report that loads and whose subsets parse, but that carries no
     top-level ``score`` key.
     """
-    from surogate_eval.benchmarks.backends.evalscope_backend import EvalScopeBackend
-    from surogate_eval.errors import BenchmarkSchemaError
 
     backend = EvalScopeBackend.__new__(EvalScopeBackend)
     renamed = {
@@ -227,7 +243,6 @@ def test_a_report_without_a_top_level_score_raises_rather_than_reporting_zero():
 
 def test_an_empty_report_still_parses_so_the_existing_backstop_handles_it():
     """The missing-file case must keep its current behaviour."""
-    from surogate_eval.benchmarks.backends.evalscope_backend import EvalScopeBackend
 
     backend = EvalScopeBackend.__new__(EvalScopeBackend)
 
@@ -247,7 +262,6 @@ def test_a_healthy_report_parses_without_raising():
     must parse cleanly and produce correct ``overall_score``, ``task_results``
     and ``num_samples``.
     """
-    from surogate_eval.benchmarks.backends.evalscope_backend import EvalScopeBackend
 
     backend = EvalScopeBackend.__new__(EvalScopeBackend)
     healthy_report = {
@@ -290,12 +304,7 @@ def test_a_malformed_middle_row_does_not_drop_the_rest_of_the_file(tmp_path):
 
     No network: this reads one file from tmp_path.
     """
-    import json
 
-    from surogate_eval.benchmarks.backends.evalscope_backend import EvalScopeBackend
-
-    reviews = tmp_path / "reviews" / "model-under-test"
-    reviews.mkdir(parents=True)
     good_row_1 = {
         "input": "2+2?",
         "target": "4",
@@ -326,12 +335,7 @@ def test_a_malformed_middle_row_does_not_drop_the_rest_of_the_file(tmp_path):
             },
         },
     }
-    (reviews / "gsm8k_default.jsonl").write_text(
-        "\n".join(json.dumps(r) for r in (good_row_1, malformed_row, good_row_2)) + "\n"
-    )
-
-    backend = EvalScopeBackend.__new__(EvalScopeBackend)
-    rows = backend._load_predictions(str(tmp_path), "model-under-test", "gsm8k")
+    rows = _load_rows(tmp_path, good_row_1, malformed_row, good_row_2)
 
     assert len(rows) == 3, "a malformed middle row must not lose itself or later rows"
 
@@ -378,9 +382,6 @@ def test_a_malformed_sample_metadata_does_not_drop_the_rest_of_the_file(tmp_path
 
     No network: this reads one file from tmp_path.
     """
-    import json
-
-    from surogate_eval.benchmarks.backends.evalscope_backend import EvalScopeBackend
 
     def row(idx, metadata):
         return {
@@ -396,22 +397,12 @@ def test_a_malformed_sample_metadata_does_not_drop_the_rest_of_the_file(tmp_path
             },
         }
 
-    reviews = tmp_path / "reviews" / "model-under-test"
-    reviews.mkdir(parents=True)
-    (reviews / "gsm8k_default.jsonl").write_text(
-        "\n".join(
-            json.dumps(r)
-            for r in [
-                row(0, {"subject": "algebra"}),
-                row(1, ["not", "a", "dict"]),  # the malformed one
-                row(2, {"subject": "geometry"}),
-            ]
-        )
-        + "\n"
+    rows = _load_rows(
+        tmp_path,
+        row(0, {"subject": "algebra"}),
+        row(1, ["not", "a", "dict"]),  # the malformed one
+        row(2, {"subject": "geometry"}),
     )
-
-    backend = EvalScopeBackend.__new__(EvalScopeBackend)
-    rows = backend._load_predictions(str(tmp_path), "model-under-test", "gsm8k")
 
     assert len(rows) == 3, "a bad sample_metadata must not lose the rest of the file"
     assert rows[0]["subset"] == "algebra"

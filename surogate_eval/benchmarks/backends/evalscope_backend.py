@@ -94,9 +94,13 @@ _KNOWN_SCORE_KEYS = (
     'total_score',          # mia_bench
 )
 
+#: The fallback order, built once. ``main_score_name`` is evalscope's own
+#: per-sample signal and is tried ahead of these when the row carries one.
+_SCORE_KEY_FALLBACKS = ('acc',) + _KNOWN_SCORE_KEYS
+
 
 def _extract_sample_score(
-        score_obj: Dict[str, Any]
+        score_obj: Any
 ) -> Tuple[Optional[float], Dict[str, Any], Optional[str]]:
     """Read one sample's score out of an evalscope review row.
 
@@ -135,7 +139,9 @@ def _extract_sample_score(
         return None, {}, f"score 'value' field is unusable (got {type(value).__name__})"
 
     main_name = score_obj.get('main_score_name')
-    candidates = ([main_name] if main_name else []) + ['acc'] + list(_KNOWN_SCORE_KEYS)
+    candidates = (
+        (main_name, *_SCORE_KEY_FALLBACKS) if main_name else _SCORE_KEY_FALLBACKS
+    )
 
     for key in candidates:
         if key not in value:

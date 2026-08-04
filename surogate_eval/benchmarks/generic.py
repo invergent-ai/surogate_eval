@@ -70,6 +70,7 @@ class GenericBenchmark(BaseBenchmark):
             'judge_model': self.config.judge_model,
             'judge_criteria': self.config.judge_criteria,
             'eval_type': self.config.eval_type,
+            'matcher': self.config.matcher,
         }
 
         backend_results = self.backend.evaluate(

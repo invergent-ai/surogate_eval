@@ -7,6 +7,7 @@ import tempfile
 from pathlib import Path
 from typing import Dict, Any, List, Optional
 
+from surogate_eval.benchmarks.matching import Matcher, build_matcher, clean_formatting
 from surogate_eval.targets import BaseTarget
 from surogate_eval.utils.logger import get_logger
 
@@ -174,62 +175,6 @@ class CustomEvalBackend:
             return default
         return value
 
-    def _normalize_output(self, output: str, expected: str) -> str:
-        """Normalize model output for comparison."""
-        import re
-
-        try:
-            from bs4 import BeautifulSoup
-            import markdown
-
-            # Convert markdown to HTML, then extract plain text
-            html = markdown.markdown(output)
-            text = BeautifulSoup(html, 'html.parser').get_text(separator=' ')
-        except ImportError:
-            # Fallback: basic regex cleanup
-            text = output
-            text = re.sub(r'\*\*([^*]+)\*\*', r'\1', text)
-            text = re.sub(r'\*([^*]+)\*', r'\1', text)
-            text = re.sub(r'`([^`]+)`', r'\1', text)
-            text = re.sub(r'#{1,6}\s*', '', text)
-            text = re.sub(r'\[([^\]]+)\]\([^)]+\)', r'\1', text)
-
-        # Normalize whitespace
-        text = re.sub(r'\s+', ' ', text).strip()
-
-        # For short expected answers, extract matching pattern
-        expected_clean = expected.strip()
-
-        # Email
-        if '@' in expected_clean and len(expected_clean) < 100:
-            match = re.search(r'[\w\.-]+@[\w\.-]+\.\w+', text)
-            if match:
-                return match.group(0)
-
-        # Percentage
-        if re.match(r'^\d+%$', expected_clean):
-            match = re.search(r'\d+%', text)
-            if match:
-                return match.group(0)
-
-        # Date
-        if re.search(r'\b(Jan|Feb|Mar|Apr|May|Jun|Jul|Aug|Sep|Oct|Nov|Dec)\b', expected_clean, re.I):
-            match = re.search(r'(Jan|Feb|Mar|Apr|May|Jun|Jul|Aug|Sep|Oct|Nov|Dec)[a-z]*\.?\s+\d{1,2},?\s+\d{4}', text,
-                              re.I)
-            if match:
-                return match.group(0)
-
-        # Yes/No questions
-        if expected_clean.lower() in ['yes', 'no']:
-            if re.search(r'\bno\b', text, re.I) and 'not' in text.lower():
-                return 'No'
-            if re.search(r'\byes\b', text, re.I):
-                return 'Yes'
-            if 'is not responsible' in text.lower() or 'are not responsible' in text.lower():
-                return 'No'
-
-        return text
-
     def _split_by_eval_type(
             self,
             dataset: Dataset,
@@ -279,17 +224,28 @@ class CustomEvalBackend:
         if not rows:
             return []
 
+        # Built here, above the path choice, for two reasons. A bad pattern or
+        # an unknown mode would fail every row, so it is a config error rather
+        # than a per-row failure. And building it inside the lm-eval path put
+        # it under the blanket `except` below, which reported a matcher typo as
+        # `lm-eval exact_match failed, falling back to...` before the direct
+        # path rebuilt it and raised the same error - pointing the first
+        # diagnostic at lm-eval, which was not what was broken.
+        matcher = build_matcher(config.get('matcher'))
+
         # Use lm-eval only when a tokenizer is explicitly set (local models).
         # For API-only models, direct inference is more reliable (lm-eval
         # uses /completions which many providers don't support).
         tokenizer = config.get('tokenizer') or target.config.get('tokenizer')
         if tokenizer:
             try:
-                return self._evaluate_exact_match_lm_eval(rows, target, config, columns, tokenizer)
+                return self._evaluate_exact_match_lm_eval(
+                    rows, target, config, columns, tokenizer, matcher
+                )
             except Exception as e:
                 logger.warning(f"lm-eval exact_match failed, falling back to direct inference: {e}")
 
-        return self._evaluate_exact_match_direct(rows, target, config, columns)
+        return self._evaluate_exact_match_direct(rows, target, config, columns, matcher)
 
     def _evaluate_exact_match_lm_eval(
             self,
@@ -298,6 +254,7 @@ class CustomEvalBackend:
             config: Dict[str, Any],
             columns: Dict[str, str],
             tokenizer: str,
+            matcher: Matcher,
     ) -> List[Dict[str, Any]]:
         """Evaluate exact_match rows using LM-Eval backend."""
         logger.info(f"Evaluating {len(rows)} exact_match rows with lm-eval")
@@ -344,22 +301,81 @@ class CustomEvalBackend:
 
             # Map results back to original indices
             detailed_results = lm_results.get('detailed_results', [])
+            # `LMEvalBackend.evaluate` does not raise when `simple_evaluate`
+            # fails: it returns a payload with no `detailed_results` and the
+            # real cause in `metadata['error']` (lm_eval_backend.py:350-366).
+            # So the most likely real failure - an unreachable target, a bad
+            # tokenizer - arrives here as "zero rows returned", every row
+            # takes the unmeasured branch below, and the actual diagnostic is
+            # dropped unless it is carried into the reason. Same principle as
+            # building the matcher above the path fork: an error should name
+            # what actually broke.
+            lm_error = (lm_results.get('metadata') or {}).get('error')
+            no_result_reason = (
+                f'lm-eval returned no result for this row: {lm_error}'
+                if lm_error else 'lm-eval returned no result for this row'
+            )
             results = []
 
             for i, row in enumerate(lm_eval_rows):
-                if i < len(detailed_results):
-                    detail = detailed_results[i]
-                    score = 1.0 if detail.get('metrics', {}).get('exact_match', 0) else 0.0
-                    success = bool(detail.get('metrics', {}).get('exact_match', 0))
-                    output = detail.get('output', '')
-                    raw_output = detail.get('raw_output', '')
-                    reason = 'Exact match' if success else 'No match'
-                else:
-                    score = 0.0
+                if i >= len(detailed_results):
+                    # lm-eval returned fewer rows than we sent. This row was
+                    # never scored, which is not the same as scoring it wrong.
+                    results.append({
+                        'original_idx': row['_original_idx'],
+                        'eval_type': 'exact_match',
+                        'instruction': row['instruction'],
+                        'expected': row['answer'],
+                        'output': '',
+                        'raw_output': '',
+                        'status': 'errored',
+                        'score': None,
+                        'success': False,
+                        'reason': no_result_reason,
+                    })
+                    continue
+
+                detail = detailed_results[i]
+                # lm-eval generated; the comparison is ours. Its own
+                # exact_match metric is deliberately not read, and neither is
+                # its `output`, which is its own extraction heuristic - a
+                # third extractor beside the matcher.
+                raw_output = detail.get('raw_output', '') or ''
+                status = 'scored'
+                reason = None
+                try:
+                    # Pairing detail[i] with lm_eval_rows[i] is now score-
+                    # bearing, not just cosmetic: before this change the score
+                    # came from lm-eval's own per-sample metric, so a reordered
+                    # sample list only mislabeled the displayed columns. Now
+                    # one row's generation would be compared against another
+                    # row's answer key, silently. lm-eval hands each sample its
+                    # own `target` back, so a disagreement is detectable - and
+                    # a row we cannot pair confidently is unmeasured, not wrong.
+                    detail_expected = detail.get('expected')
+                    if (
+                        detail_expected is not None
+                        and str(detail_expected).strip() != str(row['answer']).strip()
+                    ):
+                        raise ValueError(
+                            f"lm-eval returned sample {i} with target "
+                            f"{str(detail_expected)[:80]!r}, expected "
+                            f"{str(row['answer'])[:80]!r}; results are not in the "
+                            f"order they were sent"
+                        )
+                    success, output = matcher.compare(raw_output, row['answer'])
+                    score = 1.0 if success else 0.0
+                    # Named after the configured mode, not hardcoded as
+                    # "exact match": the branch's whole point is that the
+                    # rule need not be exact match, and the direct path
+                    # reports success the same way (see there for why).
+                    reason = f'{matcher.mode} match' if success else 'No match'
+                except Exception as e:
+                    status = 'errored'
+                    score = None
                     success = False
                     output = ''
-                    raw_output = ''
-                    reason = 'No result'
+                    reason = f'Comparison error: {e}'
 
                 result = {
                     'original_idx': row['_original_idx'],
@@ -368,13 +384,20 @@ class CustomEvalBackend:
                     'expected': row['answer'],
                     'output': output,
                     'raw_output': raw_output,
+                    'status': status,
                     'score': score,
                     'success': success,
                     'reason': reason,
                 }
                 results.append(result)
 
-            logger.info(f"Completed exact_match (lm-eval): {sum(r['success'] for r in results)}/{len(results)} correct")
+            errored_n = sum(1 for r in results if r['status'] == 'errored')
+            scored_n = len(results) - errored_n
+            logger.info(
+                f"Completed exact_match (lm-eval): "
+                f"{sum(r['success'] for r in results)}/{scored_n} correct "
+                f"({errored_n} not measured)"
+            )
             return results
 
         finally:
@@ -388,7 +411,8 @@ class CustomEvalBackend:
             rows: List[Dict[str, Any]],
             target: BaseTarget,
             config: Dict[str, Any],
-            columns: Dict[str, str]
+            columns: Dict[str, str],
+            matcher: Matcher,
     ) -> List[Dict[str, Any]]:
         """Evaluate exact_match rows via direct inference + string comparison."""
         logger.info(f"Evaluating {len(rows)} exact_match rows (direct inference)")
@@ -433,26 +457,22 @@ class CustomEvalBackend:
             success = False
 
             if row_error is None:
-                # Normalising and comparing can fail on their own, and a
-                # failure here is still a failure to measure. A numeric
-                # ``answer`` column is inferred as int64, so ``expected``
-                # arrives as an int and ``_normalize_output`` calls
-                # ``.strip()`` on it. Outside the protected region that
-                # AttributeError escaped the row loop and the function, and
-                # runners.py's top-level handler turned the whole benchmark
-                # into a status-only failure - discarding every row already
-                # measured, for a perfectly healthy target. Same rule as the
-                # request above, and the same shape as _evaluate_judge_rows:
-                # one row we could not compare is one errored row.
+                # Comparing can fail on its own, and a failure here is still
+                # a failure to measure, not a wrong answer. ``matcher.compare``
+                # coerces a non-string ``expected`` (a numeric ``answer``
+                # column is inferred as int64) with ``str()``, so that alone
+                # no longer raises - but a ``regex`` pattern that
+                # catastrophically backtracks on one row's output still
+                # raises ``MatchTimeout``. Outside the protected region that
+                # would escape the row loop and the function, and
+                # runners.py's top-level handler would turn the whole
+                # benchmark into a status-only failure - discarding every
+                # row already measured, for a perfectly healthy target. Same
+                # rule as the request above, and the same shape as
+                # _evaluate_judge_rows: one row we could not compare is one
+                # errored row.
                 try:
-                    normalized_output = self._normalize_output(raw_output, expected)
-                    expected_clean = expected.strip().lower()
-                    output_clean = normalized_output.strip().lower()
-                    success = (
-                        expected_clean == output_clean
-                        or expected_clean in output_clean
-                        or output_clean.startswith(expected_clean)
-                    )
+                    success, normalized_output = matcher.compare(raw_output, expected)
                 except Exception as e:
                     row_error = f'Comparison error: {e}'
 
@@ -482,7 +502,13 @@ class CustomEvalBackend:
                 'status': 'scored',
                 'score': 1.0 if success else 0.0,
                 'success': success,
-                'reason': 'Exact match' if success else 'No match',
+                # Named after the configured mode, not hardcoded as "exact
+                # match": that word is only true under `mode: exact`, and
+                # was misleading under `contains` (the default) and `regex`.
+                # Matches the lm-eval path's wording so the two paths agree
+                # in user-visible report text, same as they agree on the
+                # score itself.
+                'reason': f'{matcher.mode} match' if success else 'No match',
             })
 
         errored_n = sum(1 for r in results if r['status'] == 'errored')
@@ -566,8 +592,16 @@ class CustomEvalBackend:
                     request_error = response.error
                 else:
                     raw_output = response.content or ''
-                    # Normalize output for comparison
-                    normalized_output = self._normalize_output(raw_output, expected)
+                    # Formatting cleanup only. The judge path is not part of
+                    # the matcher wiring, but it did call `_normalize_output`,
+                    # so retiring that method changed what the judge sees: the
+                    # email/percentage/date/yes-no heuristics used to hand
+                    # G-Eval a *fragment* of the answer when the expected value
+                    # had one of those shapes, and now it gets the whole
+                    # cleaned response. That is the better input - a judge
+                    # scoring an answer should see the answer, not a regex's
+                    # guess at it - but it is a real change, not a no-op.
+                    normalized_output = clean_formatting(raw_output)
                     logger.debug(f"Raw: {raw_output[:100]}... -> Normalized: {normalized_output[:100]}...")
             except Exception as e:
                 request_error = str(e)
@@ -831,19 +865,23 @@ class CustomEvalBackend:
             # Rate over what was actually measured. The errored rows are
             # reported separately so the run outcome can see them.
             overall_score = safe_count / scored_n if scored_n else 0.0
+            # No rate when nothing was measured, same rule as the exact-match
+            # and judge tasks below: `safety_rate: 0.0` is indistinguishable
+            # from a model that was toxic on every row, and the report's
+            # "not measured" branch keys on the metric being absent.
+            toxicity_task = {
+                'total': total,
+                'safe': safe_count,
+                'toxic': scored_n - safe_count,
+                'scored_n': scored_n,
+                'errored_n': errored_n,
+            }
+            if scored_n:
+                toxicity_task['safety_rate'] = overall_score
             return {
                 'overall_score': overall_score,
                 'num_samples': total,
-                'task_results': {
-                    'toxicity': {
-                        'total': total,
-                        'safe': safe_count,
-                        'toxic': scored_n - safe_count,
-                        'safety_rate': overall_score,
-                        'scored_n': scored_n,
-                        'errored_n': errored_n,
-                    },
-                },
+                'task_results': {'toxicity': toxicity_task},
                 'detailed_results': all_results,
                 'metadata': {
                     'backend': 'custom_eval',
@@ -898,27 +936,47 @@ class CustomEvalBackend:
                 judge_avg * judge_scored
             ) / scored_total
 
+        # A task nobody could measure reports no rate at all, rather than a
+        # rate of zero. `accuracy: 0.0` is indistinguishable from a model that
+        # answered everything wrong, and the report's "not measured" branch
+        # keys on the metric being ABSENT, so filling it in with a zero is
+        # what stopped that branch ever firing. This branch made the case
+        # reachable on a healthy target: a blank answer column, a match
+        # timeout and a short lm-eval return all error every row.
+        exact_match_task = {
+            'total': em_total,
+            'correct': em_correct,
+            'scored_n': em_scored,
+            'errored_n': em_errored,
+        }
+        if em_scored:
+            exact_match_task['accuracy'] = em_correct / em_scored
+
+        judge_task = {
+            'total': judge_total,
+            'scored_n': judge_scored,
+            'errored_n': judge_errored,
+        }
+        if judge_scored:
+            judge_task['avg_score'] = judge_avg
+            judge_task['success_rate'] = (
+                sum(1 for r in judge_scored_rows if r['success']) / judge_scored
+            )
+
+        # A task with no rows at all is not a task. Emitting both keys
+        # unconditionally meant every exact-match-only benchmark reported a
+        # judge task over zero rows, which the change above would otherwise
+        # have promoted from a misleading 0.000 to a misleading "not measured".
+        task_results = {}
+        if em_total:
+            task_results['exact_match'] = exact_match_task
+        if judge_total:
+            task_results['judge'] = judge_task
+
         return {
             'overall_score': overall_score,
             'num_samples': total,
-            'task_results': {
-                'exact_match': {
-                    'total': em_total,
-                    'correct': em_correct,
-                    'accuracy': em_correct / em_scored if em_scored else 0.0,
-                    'scored_n': em_scored,
-                    'errored_n': em_errored,
-                },
-                'judge': {
-                    'total': judge_total,
-                    'avg_score': judge_avg,
-                    'success_rate': (
-                        sum(1 for r in judge_scored_rows if r['success']) / judge_scored
-                    ) if judge_scored else 0.0,
-                    'scored_n': judge_scored,
-                    'errored_n': judge_errored,
-                },
-            },
+            'task_results': task_results,
             'detailed_results': all_results,
             'metadata': {
                 'backend': 'custom_eval',

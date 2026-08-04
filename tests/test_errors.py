@@ -7,14 +7,17 @@ from surogate_eval.errors import (
     JudgeError,
     JudgeParseError,
     JudgeUnavailableError,
+    MatchTimeout,
     TargetUnhealthyError,
+    UnscorableRow,
 )
 
 
 @pytest.mark.parametrize(
     "cls",
     [ConfigError, TargetUnhealthyError, JudgeError,
-     JudgeUnavailableError, JudgeParseError, BenchmarkSchemaError],
+     JudgeUnavailableError, JudgeParseError, BenchmarkSchemaError,
+     MatchTimeout, UnscorableRow],
 )
 def test_every_error_is_an_eval_error(cls):
     assert issubclass(cls, EvalError)

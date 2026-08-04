@@ -38,3 +38,23 @@ class BenchmarkSchemaError(EvalError):
     number we did not measure. Not retryable: an upstream schema change will
     not resolve on the next attempt.
     """
+
+
+class MatchTimeout(EvalError):
+    """A user-supplied pattern took longer than its budget on one row.
+
+    Raised rather than returning "no match", because a pattern we abandoned
+    tells us nothing about whether the answer was right. The caller records
+    the row as unmeasured.
+    """
+
+
+class UnscorableRow(EvalError):
+    """A row carries nothing to score against, so no verdict is available.
+
+    Raised rather than returning a verdict, because both verdicts are wrong:
+    "correct" is the fail-open case a blank answer key would otherwise
+    produce under ``contains`` (every output contains the empty string), and
+    "incorrect" records a row nobody measured as one the model got wrong.
+    The caller records the row as unmeasured.
+    """

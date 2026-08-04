@@ -175,3 +175,159 @@ def test_the_task_table_never_renders_a_ragged_html_row():
         start = html.index(f"<td>{task}</td>")
         row = html[start:html.index("</tr>", start)]
         assert row.count("<td") == 4, f"{task}: ragged row with {row.count('<td')} cells"
+
+
+# --- unmeasured rows are not failures ----------------------------------
+
+
+def _rows(*specs):
+    """Build detailed_results rows. ``specs`` are (status, success) pairs."""
+    rows = []
+    for i, (status, success) in enumerate(specs):
+        row = {
+            "original_idx": i,
+            "eval_type": "exact_match",
+            "instruction": f"q{i}",
+            "expected": "A",
+            "output": "A" if success else "B",
+            "raw_output": "A" if success else "B",
+            "score": None if status == "errored" else (1.0 if success else 0.0),
+            "success": success,
+            "reason": "unreachable target" if status == "errored" else "contains match",
+        }
+        if status is not None:
+            row["status"] = status
+        rows.append(row)
+    return rows
+
+
+def _render_rows(rows, task_results=None):
+    from surogate_eval.benchmarks.base import BenchmarkResult
+    from surogate_eval.report import ReportGenerator
+
+    result = BenchmarkResult(
+        benchmark_name="custom_bench",
+        overall_score=1.0,
+        num_samples=len(rows),
+        backend="custom_eval",
+        task_results=task_results or {},
+        detailed_results=rows,
+        metadata={},
+    ).to_dict()
+    result["status"] = "completed"
+    consolidated = {
+        "targets": [{"name": "t1", "status": "success", "benchmarks": [result]}]
+    }
+    return ReportGenerator().generate_markdown(consolidated)
+
+
+def test_an_unmeasured_row_is_not_counted_as_a_failure():
+    """Four rows scored, all correct; six nobody could measure.
+
+    Counting the unmeasured six as failures reported a model that got
+    everything right as 40%. The rate is over what was measured, matching how
+    the backend already computes ``overall_score``.
+    """
+    rows = _rows(*([("scored", True)] * 4 + [("errored", False)] * 6))
+
+    markdown = _render_rows(rows)
+
+    assert "4 passed" in markdown
+    assert "0 failed" in markdown
+    assert "6 not measured" in markdown
+    assert "40" not in markdown.split("Performance by Evaluation Type")[0].split(
+        "Total Test Cases"
+    )[-1], "the pass rate must not be diluted by rows nobody scored"
+
+
+def test_a_benchmark_where_nothing_could_be_measured_does_not_read_as_zero_percent():
+    """The case that reads as "this model is broken" when the truth is "we
+    tested nothing". A healthy target reaches this through a blank answer
+    column, a match timeout, or a short lm-eval return."""
+    markdown = _render_rows(_rows(*([("errored", False)] * 3)))
+
+    assert "- **Passed / Failed:** not measured, no row could be scored" in markdown
+    assert "- **Not measured:** 3" in markdown
+    assert "- Exact Match: ⚠️ not measured (3 cases)" in markdown
+    # The per-type and summary lines must carry no rate at all. Asserted on
+    # the lines that would carry one rather than on the whole document, since
+    # a bare "0.0%" substring also matches the unrelated "100.0%".
+    rate_lines = [
+        line for line in markdown.splitlines()
+        if line.startswith(("- **Passed:**", "- **Failed:**", "- Exact Match:"))
+    ]
+    assert not any("%" in line for line in rate_lines)
+
+
+def test_an_unmeasured_row_keeps_its_diagnostic():
+    """Dropping unmeasured rows from "Failed Cases" must not drop the reason
+    with them: it is the only place the real cause appears."""
+    markdown = _render_rows(_rows(("scored", False), ("errored", False)))
+
+    assert "Not Measured (1)" in markdown
+    assert "unreachable target" in markdown
+    assert "Failed Cases Details (1)" in markdown, "the genuinely wrong row still lists"
+
+
+def test_rows_without_a_status_key_still_count_as_scored():
+    """`lm_eval`'s direct results carry neither `status` nor `success`, and
+    other backends predate the key. "No status" must mean scored, or those
+    benchmarks silently start reporting every row as unmeasured."""
+    rows = _rows((None, True), (None, False))
+
+    markdown = _render_rows(rows)
+
+    assert "1 passed" in markdown
+    assert "1 failed" in markdown
+    assert "not measured" not in markdown
+
+
+def test_a_task_that_measured_nothing_reports_no_rate(dataset, monkeypatch):
+    """Driven through the real backend, not a hand-written `task_results`.
+
+    The template's "not measured" branch keys on the metric being ABSENT, and
+    it already existed. What stopped it firing was the backend filling the key
+    in with a zero, so a test that hand-writes the task dict without the key
+    proves only that the branch works, and would pass against the unfixed
+    backend. This asserts the shape the backend actually emits.
+    """
+    result_dict, markdown = markdown_for(dataset, monkeypatch)
+
+    # The judge is dead, so every toxicity row errored. Or this proves nothing.
+    assert all(row["score"] is None for row in result_dict["detailed_results"])
+
+    task = result_dict["task_results"]["toxicity"]
+    assert task["scored_n"] == 0 and task["errored_n"] == 2
+    assert "safety_rate" not in task, (
+        "a rate over zero measured rows is indistinguishable from a model "
+        "that failed every row"
+    )
+    assert "not measured" in markdown
+
+
+def test_an_unmeasured_row_is_not_listed_as_a_model_failure_pattern():
+    """"Common Failure Patterns" is about how the model failed. A row that
+    could not be scored is a defect in the dataset or the run, so listing
+    "row has no expected answer" there sends an operator looking at the model
+    for a problem that is not in it."""
+    rows = _rows(("scored", False), ("errored", False))
+
+    markdown = _render_rows(rows)
+
+    patterns = markdown.split("**Common Failure Patterns:**")[-1]
+    assert "contains match" in patterns or "No match" in patterns or "1 case" in patterns
+    assert "unreachable target" not in patterns
+
+
+def test_an_errored_row_that_claims_success_cannot_make_failures_negative():
+    """Defensive: `failed` is `scored - passed`, so counting passes over ALL
+    rows would go negative if an errored row ever carried `success: True`.
+    Counted over scored rows instead, so the arithmetic holds regardless."""
+    rows = _rows(("scored", True), ("errored", False))
+    rows[1]["success"] = True  # the shape that would break the subtraction
+
+    markdown = _render_rows(rows)
+
+    assert "- **Passed:** 1 " in markdown
+    assert "- **Failed:** 0 " in markdown
+    assert "- **Not measured:** 1" in markdown

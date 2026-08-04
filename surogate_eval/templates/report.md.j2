@@ -101,20 +101,30 @@
 {% endfor %}
 
 {% for eval_type, type_results in results_by_type.items() %}
-{% set passed = type_results | selectattr('success') | list | length %}
-{% set failed = type_results | length - passed %}
+{#- A row we could not measure is neither a pass nor a fail. Counting it as
+    failed reads as "the model got this wrong" for a row nobody scored.
+    `status` is absent on rows from backends that never error a single row
+    (lm_eval's direct results carry neither `status` nor `success`), so
+    "no status" has to mean scored, or those benchmarks change silently. -#}
+{% set unmeasured_cases = type_results | selectattr('status', 'defined') | selectattr('status', 'equalto', 'errored') | list %}
+{% set scored_cases = type_results | rejectattr('status', 'defined') | list + (type_results | selectattr('status', 'defined') | rejectattr('status', 'equalto', 'errored') | list) %}
+{% set passed = scored_cases | selectattr('success') | list | length %}
+{% set failed = scored_cases | length - passed %}
 
 ###### {{ eval_type | replace('_', ' ') | title }} ({{ type_results | length }} cases)
 
-**Summary:** ✅ {{ passed }} passed, ❌ {{ failed }} failed
+**Summary:** ✅ {{ passed }} passed, ❌ {{ failed }} failed{% if unmeasured_cases %}, ⚠️ {{ unmeasured_cases | length }} not measured{% endif %}
 
 | # | Instruction | Expected | Output | Score | Status | Reason |
 |---|-------------|----------|--------|-------|--------|--------|
 {% for detail in type_results %}
-| {{ detail.original_idx | default('?') }} | {{ detail.instruction | default('') | truncate(50) | replace('\n', ' ') | replace('|', '\\|') }} | `{{ detail.expected | default('') | truncate(20) | replace('\n', ' ') | replace('|', '\\|') }}` | `{{ detail.output | default('') | truncate(20) | replace('\n', ' ') | replace('|', '\\|') }}` | {{ detail.score | format_score(2) if detail.score is number else 'not measured' }} | {{ "✅" if detail.success else "❌" }} | {{ detail.reason | default('') | truncate(40) | replace('\n', ' ') | replace('|', '\\|') }} |
+| {{ detail.original_idx | default('?') }} | {{ detail.instruction | default('') | truncate(50) | replace('\n', ' ') | replace('|', '\\|') }} | `{{ detail.expected | default('') | truncate(20) | replace('\n', ' ') | replace('|', '\\|') }}` | `{{ detail.output | default('') | truncate(20) | replace('\n', ' ') | replace('|', '\\|') }}` | {{ detail.score | format_score(2) if detail.score is number else 'not measured' }} | {{ "⚠️" if detail.status is defined and detail.status == 'errored' else ("✅" if detail.success else "❌") }} | {{ detail.reason | default('') | truncate(40) | replace('\n', ' ') | replace('|', '\\|') }} |
 {% endfor %}
 
-{% set failed_cases = type_results | rejectattr('success') | list %}
+{#- Unmeasured rows are excluded: a "Failed Cases" block is where an operator
+    looks to see what the model got wrong, and a row nobody scored says
+    nothing about the model. Its reason is already on its own line above. -#}
+{% set failed_cases = scored_cases | rejectattr('success') | list %}
 {% if failed_cases %}
 <details>
 <summary>🔍 Failed Cases Details ({{ failed_cases | length }})</summary>
@@ -152,35 +162,96 @@
 </details>
 
 {% endif %}
+{#- Its own block rather than folded into "Failed Cases": these rows say
+    nothing about the model, but they say a great deal about the run, and
+    their `reason` is the only place the real cause appears (an unreachable
+    target, a match timeout, a blank answer key). Dropping them from the
+    failed list must not drop the diagnostic with them. -#}
+{% if unmeasured_cases %}
+<details>
+<summary>⚠️ Not Measured ({{ unmeasured_cases | length }})</summary>
+
+{% for detail in unmeasured_cases %}
+---
+
+**Case #{{ detail.original_idx | default('?') }}**
+
+**Instruction:**
+```
+{{ detail.instruction | default('') }}
+```
+
+**Expected:** `{{ detail.expected | default('') }}`
+
+{% if detail.raw_output %}
+**Raw Output:**
+```
+{{ detail.raw_output }}
+```
+
+{% endif %}
+**Score:** {{ detail.score | format_score(2) if detail.score is number else 'not measured' }}
+
+**Reason:** {{ detail.reason | default('') }}
+
+{% endfor %}
+</details>
+
+{% endif %}
 {% endfor %}
 
 ##### Analysis
 
+{#- Rates are over what was measured, matching how the backend already
+    computes `overall_score`. Dividing by every row instead reports a model
+    that answered 4 of 4 correctly as 40% when 6 rows could not be read. -#}
 {% set total_cases = bench.detailed_results | length %}
-{% set total_passed = bench.detailed_results | selectattr('success') | list | length %}
-{% set total_failed = total_cases - total_passed %}
-{% set pass_rate = total_passed / total_cases if total_cases > 0 else 0 %}
+{% set total_unmeasured = bench.detailed_results | selectattr('status', 'defined') | selectattr('status', 'equalto', 'errored') | list | length %}
+{% set total_scored = total_cases - total_unmeasured %}
+{#- Counted over scored rows, not all rows. Equivalent today, since an
+    errored row always carries `success: False`, but relying on that would
+    make `failed` go negative the day one does not. -#}
+{% set total_passed = bench.detailed_results | rejectattr('status', 'defined') | selectattr('success') | list | length + (bench.detailed_results | selectattr('status', 'defined') | rejectattr('status', 'equalto', 'errored') | selectattr('success') | list | length) %}
+{% set total_failed = total_scored - total_passed %}
+{% set pass_rate = total_passed / total_scored if total_scored > 0 else 0 %}
 
 - **Total Test Cases:** {{ total_cases }}
-- **Passed:** {{ total_passed }} ({{ pass_rate | format_percent }})
-- **Failed:** {{ total_failed }} ({{ (1 - pass_rate) | format_percent }})
+{% if total_scored > 0 %}
+- **Passed:** {{ total_passed }} ({{ pass_rate | format_percent }} of {{ total_scored }} measured)
+- **Failed:** {{ total_failed }} ({{ (1 - pass_rate) | format_percent }} of {{ total_scored }} measured)
+{% else %}
+- **Passed / Failed:** not measured, no row could be scored
+{% endif %}
+{% if total_unmeasured %}
+- **Not measured:** {{ total_unmeasured }}
+{% endif %}
 
 **Performance by Evaluation Type:**
 
 {% for eval_type, type_results in results_by_type.items() %}
-{% set type_passed = type_results | selectattr('success') | list | length %}
+{% set type_unmeasured = type_results | selectattr('status', 'defined') | selectattr('status', 'equalto', 'errored') | list | length %}
 {% set type_total = type_results | length %}
-{% set type_rate = type_passed / type_total if type_total > 0 else 0 %}
+{% set type_scored = type_total - type_unmeasured %}
+{% set type_passed = type_results | rejectattr('status', 'defined') | selectattr('success') | list | length + (type_results | selectattr('status', 'defined') | rejectattr('status', 'equalto', 'errored') | selectattr('success') | list | length) %}
+{% if type_scored > 0 %}
+{% set type_rate = type_passed / type_scored %}
 {% set type_status = "✅" if type_rate >= 0.8 else "⚠️" if type_rate >= 0.5 else "❌" %}
-- {{ eval_type | replace('_', ' ') | title }}: {{ type_status }} {{ type_passed }}/{{ type_total }} ({{ type_rate | format_percent }})
+- {{ eval_type | replace('_', ' ') | title }}: {{ type_status }} {{ type_passed }}/{{ type_scored }} ({{ type_rate | format_percent }}){% if type_unmeasured %}, {{ type_unmeasured }} not measured{% endif %}
+{% else %}
+- {{ eval_type | replace('_', ' ') | title }}: ⚠️ not measured ({{ type_total }} case{{ 's' if type_total != 1 }})
+{% endif %}
 {% endfor %}
 
 {% if total_failed > 0 %}
 **Common Failure Patterns:**
 
+{# Failure patterns are about how the MODEL failed, so a row nobody could
+   score does not belong here: "row has no expected answer" is a defect in
+   the dataset, not a pattern in the answers. Those rows are counted under
+   "Not measured" above and detailed in their own block. #}
 {% set failure_reasons = {} %}
 {% for detail in bench.detailed_results %}
-{% if not detail.success %}
+{% if not detail.success and not (detail.status is defined and detail.status == 'errored') %}
 {% set reason_key = (detail.reason | default('Unknown')).split('.')[0] %}
 {% set _ = failure_reasons.update({reason_key: failure_reasons.get(reason_key, 0) + 1}) %}
 {% endif %}

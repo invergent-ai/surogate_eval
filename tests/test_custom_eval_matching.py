@@ -552,3 +552,27 @@ def test_the_shipped_example_configs_use_that_pattern():
 
         assert matcher["pattern"] == MCQ_PATTERN, name
         assert "flags" not in matcher, f"{name}: `i` makes prose extract the article 'a'"
+
+
+def test_the_documented_scores_match_the_shipped_corpus():
+    """The design doc quotes scores for each candidate pattern. Those numbers
+    were once measured against a scratch corpus rather than this one, so a
+    reader re-running them got different denominators than the prose
+    promised. Pinned here so the doc and the corpus cannot drift again.
+    """
+    full = list(MCQ_CORPUS) + [("A good answer is B", "B")]
+    expected = {
+        (MCQ_PATTERN, None): 15,
+        (MCQ_PATTERN, "i"): 12,
+        (r".*\b([ABCD])\b", None): 11,
+    }
+
+    assert len(full) == 16, "the doc quotes /16"
+    for (pattern, flags), score in expected.items():
+        cfg = {"mode": "regex", "pattern": pattern, "group": 1}
+        if flags:
+            cfg["flags"] = flags
+        matcher = build_matcher(cfg)
+        got = sum(1 for output, key in full if matcher.compare(output, key)[0])
+
+        assert got == score, f"{pattern!r} flags={flags!r}: {got}/16, doc says {score}/16"

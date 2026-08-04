@@ -71,10 +71,22 @@ the usual option marker ("a) no  d) yes"), so `i` makes ordinary prose extract t
 Taking the **first** capital A-D rather than the last is also deliberate, and was measured. First-
 match breaks on a sentence-opening "A" ("A good answer is B" extracts `A`). Last-match fixes that and
 breaks on elimination phrasing, which is a normal way for a reasoning model to close ("the answer is
-B, not A, C or D" extracts `D`). Against a corpus of real generations plus both failure directions,
-first-match scored 17/18 and last-match 13/18, so first-match wins on the evidence rather than on
-argument. `tests/test_custom_eval_matching.py` holds that corpus, with both directions in it, so a
-future change that fixes one by trading it for the other fails rather than looking like a win.
+B, not A, C or D" extracts `D`).
+
+Measured rather than argued, against the 16 cases `tests/test_custom_eval_matching.py` ships
+(`MCQ_CORPUS` plus the blind-spot case below), which hold both failure directions:
+
+| pattern | |
+|---|---|
+| `\b([ABCD])\b`, no flags | **15/16** |
+| `\b([ABCD])\b` + `flags: i` | 12/16 |
+| `.*\b([ABCD])\b` (greedy, last-match) | 11/16 |
+| `(?:answer\|choose\|pick)\D{0,20}\b([ABCD])\b` | 5/16 |
+
+Both directions being in that corpus is the point: a future change that fixes one by trading it for
+the other fails the suite rather than looking like a win. The first attempt at this pattern was
+measured against a corpus drawn only from the failure it set out to fix, which is why it scored well
+and made things worse.
 
 Known costs, both of which under-score rather than over-score: a sentence-opening "A", and a model
 answering in lowercase (which extracts nothing). A benchmark that needs this to be robust should

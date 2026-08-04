@@ -56,17 +56,29 @@ every non-judge benchmark a user builds lands on this comparison.
 eval_type: exact_match      # who scores the row: string comparison, judge, hybrid
 matcher:
   mode: regex               # how the string comparison decides
-  pattern: '.*\b([ABCD])\b'
+  pattern: '\b([ABCD])\b'
   group: 1
 ```
 
-Two details of that pattern are load-bearing, and both were learned by getting them wrong. The
-leading `.*` is greedy, so it anchors on the **last** standalone A-D rather than the first: without
-it, a model that reasons before answering ("A good answer is B") scores its own preamble. And there
-is no `flags: i`, because case-insensitively a lone a-d is the English article "a" and the usual
-option marker ("a) no  d) yes"), so `i` makes ordinary prose extract the wrong letter. The residual
-cost is a model answering purely in lowercase, which extracts nothing and scores wrong: the safe
-direction, and rare, since MCQ letters are near-always capitalised.
+**That pattern is a heuristic, and it is worth being plain about it.** Pulling one letter out of
+free-form prose has no rule that survives every shape, which is the same problem `_normalize_output`
+had. The difference, and the point of the design, is that this heuristic is explicit, user-owned and
+overridable rather than hardcoded and invisible.
+
+The absence of `flags: i` is deliberate: case-insensitively a lone a-d is the English article "a" and
+the usual option marker ("a) no  d) yes"), so `i` makes ordinary prose extract the wrong letter.
+
+Taking the **first** capital A-D rather than the last is also deliberate, and was measured. First-
+match breaks on a sentence-opening "A" ("A good answer is B" extracts `A`). Last-match fixes that and
+breaks on elimination phrasing, which is a normal way for a reasoning model to close ("the answer is
+B, not A, C or D" extracts `D`). Against a corpus of real generations plus both failure directions,
+first-match scored 17/18 and last-match 13/18, so first-match wins on the evidence rather than on
+argument. `tests/test_custom_eval_matching.py` holds that corpus, with both directions in it, so a
+future change that fixes one by trading it for the other fails rather than looking like a win.
+
+Known costs, both of which under-score rather than over-score: a sentence-opening "A", and a model
+answering in lowercase (which extracts nothing). A benchmark that needs this to be robust should
+prompt for a bare letter rather than lean harder on the pattern.
 
 `eval_type` keeps meaning *who scores this*; `matcher.mode` means *how*. The alternative, adding a
 `regex` value to `eval_type`, was rejected: `hybrid` reads a per-row `eval_type` column to route rows
@@ -226,7 +238,7 @@ No network; all cases are plain strings through the real comparison.
 
 - The four false positives above must fail under `exact`, and still pass under
   `contains`, so the default is pinned as today's behaviour.
-- MCQ extraction: expected `A`, output `The answer is C.`, pattern `.*\b([ABCD])\b` → extracts `C`,
+- MCQ extraction: expected `A`, output `The answer is C.`, pattern `\b([ABCD])\b` → extracts `C`,
   scores 0.0.
 - Formatting cleanup survives in all modes: expected `42`, output `**42**` → passes under `exact`.
 - The retired heuristics: expected `a@b.com`, output `Contact: a@b.com` → now fails under `exact`,

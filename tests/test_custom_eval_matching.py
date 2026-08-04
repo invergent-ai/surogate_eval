@@ -472,17 +472,30 @@ def test_a_symbolic_answer_key_is_still_a_real_key(key):
 MCQ_CORPUS = [
     # Real gpt-4o-mini generations from the live run.
     ("C. Paris", "C"),
-    ("D. Pacific  The Pacific Ocean is the largest ocean on Earth.", "D"),
+    ("D. Pacific", "D"),
     ("The chemical symbol for gold is B. Au.", "B"),
     ("A. 300,000 km/s", "A"),
-    # Prose shapes that broke the first pattern shipped for this.
+    ("Answer: D", "D"),
+    ("B. Mars is known as the Red Planet.", "B"),
+    # Reasoning BEFORE the answer. `flags: i` broke all of these by matching
+    # the article "a" or the lowercase option marker.
     ("I think a good answer is B", "B"),
     ("Looking at a few options, C is correct", "C"),
     ("a) no  d) yes, so D", "D"),
-    ("A good answer is B", "B"),
-    ("The answer is B, not a", "B"),
-    ("I pick C. Not a or b.", "C"),
+    ("The answer is B", "B"),
+    # Reasoning AFTER the answer, naming the rejected options. Taking the
+    # LAST match instead of the first breaks all of these, which is how the
+    # first attempt at fixing the "a" problem went wrong: its corpus only
+    # contained the shapes above, so it pinned the fix without probing the
+    # direction the fix opened.
+    ("So the answer is B. (Not A, C, or D.)", "B"),
+    ("B. The other options A, C, D are incorrect.", "B"),
+    ("I choose B. The options were A, B, C, D.", "B"),
+    ("B is my answer. Ruling out A, C and D.", "B"),
+    ("The answer is C, not A or B.", "C"),
 ]
+
+MCQ_PATTERN = r"\b([ABCD])\b"
 
 
 @pytest.mark.parametrize("output, key", MCQ_CORPUS)
@@ -490,21 +503,37 @@ def test_the_documented_mcq_pattern_survives_real_model_prose(output, key):
     """The pattern in `examples/` is the one users copy, so it is worth a
     test rather than an eyeball.
 
-    Two things make it work, and both were learned the hard way. The leading
-    `.*` is greedy, so it anchors on the LAST standalone A-D: without it a
-    model that reasons before answering scores its own preamble. And there is
-    no `flags: i`, because case-insensitively a lone a-d is the English
-    article "a" and the usual option marker, so `i` makes ordinary prose
-    extract the wrong letter.
+    Extracting one letter from free-form prose is a heuristic and no
+    position-based rule survives every shape. This corpus deliberately holds
+    BOTH failure directions, so a change that fixes one by trading it for the
+    other fails here rather than looking like an improvement.
     """
-    matcher = build_matcher({"mode": "regex", "pattern": r".*\b([ABCD])\b"})
+    matcher = build_matcher({"mode": "regex", "pattern": MCQ_PATTERN})
 
     assert matcher.compare(output, key)[0] is True
 
 
+@pytest.mark.parametrize(
+    "output, key, extracted",
+    [("A good answer is B", "B", "A")],
+)
+def test_the_mcq_pattern_has_a_known_and_accepted_blind_spot(output, key, extracted):
+    """Pinned so it is a documented cost rather than a latent surprise.
+
+    A sentence-opening "A" is a capitalised article, indistinguishable from
+    an answer by position alone. The obvious repair is to take the last match
+    instead, which costs five of the elimination-phrasing cases above. This
+    test exists to make that trade visible to whoever tries it.
+    """
+    matcher = build_matcher({"mode": "regex", "pattern": MCQ_PATTERN})
+    success, got = matcher.compare(output, key)
+
+    assert success is False and got == extracted
+
+
 def test_the_mcq_pattern_still_rejects_a_wrong_answer():
     """Tolerating prose must not mean matching anything."""
-    matcher = build_matcher({"mode": "regex", "pattern": r".*\b([ABCD])\b"})
+    matcher = build_matcher({"mode": "regex", "pattern": MCQ_PATTERN})
 
     assert matcher.compare("The answer is C", "B")[0] is False
     assert matcher.compare("I am not sure", "B")[0] is False
@@ -521,5 +550,5 @@ def test_the_shipped_example_configs_use_that_pattern():
         target = next(t for t in cfg["targets"] if t.get("evaluations"))
         matcher = target["evaluations"][0]["benchmarks"][0]["matcher"]
 
-        assert matcher["pattern"] == r".*\b([ABCD])\b", name
+        assert matcher["pattern"] == MCQ_PATTERN, name
         assert "flags" not in matcher, f"{name}: `i` makes prose extract the article 'a'"

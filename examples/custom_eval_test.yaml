@@ -60,17 +60,18 @@ targets:
             # mode that fits: a chatty model answers "The answer is B", which
             # `exact` scores wrong and `contains` scores right for the wrong
             # reason (every output containing a "b" would pass).
-            # The leading `.*` is greedy, so this anchors on the LAST
-            # standalone A-D, not the first. Without it a model that reasons
-            # before answering ("A good answer is B") scores its preamble.
+            # Takes the FIRST standalone capital A-D. Extracting one letter
+            # from prose is a heuristic and no positional rule wins every
+            # shape; this one scored best on a corpus of real generations.
             # No `flags: i`: case-insensitively a lone a-d is the article "a"
             # and the usual option marker ("a) no  d) yes"), so `i` makes
-            # ordinary prose extract the wrong letter. A model answering in
-            # lowercase then extracts nothing and scores wrong, which is the
-            # safe direction and rare for MCQ letters.
+            # ordinary prose extract the wrong letter. Known limits, both
+            # under-scoring: a sentence-opening "A" is read as the answer,
+            # and a lowercase answer extracts nothing. Prompt for a bare
+            # letter if you need this to be robust.
             matcher:
               mode: regex
-              pattern: '.*\b([ABCD])\b'  # group 1 is the extracted answer
+              pattern: '\b([ABCD])\b'    # group 1 is the extracted answer
               group: 1                   # default: 1, or 0 with no groups
               timeout: 2.0               # seconds per row; must be > 0
               # flags: i                 # `i` only; `m`/`s` are rejected,

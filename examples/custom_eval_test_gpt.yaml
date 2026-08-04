@@ -50,20 +50,25 @@ targets:
             # `contains`, under which expected "B" is satisfied by any output
             # containing a "b" ("probably", "best", "because"), so the
             # benchmark scores near 100% whatever the model answers.
-            # `.*` before the letter is load-bearing: it is greedy, so the
-            # pattern anchors on the LAST standalone A-D rather than the
-            # first. A model that reasons before answering ("A good answer
-            # is B") otherwise scores its own preamble.
+            # Pulling one letter out of free-form prose is a heuristic, and
+            # no position-based rule survives every shape. This one takes the
+            # FIRST standalone capital A-D, which scored best (17/18) on a
+            # corpus of real generations; see tests/test_custom_eval_matching.
             #
-            # No `flags: i`, also deliberate. Case-insensitively, a single
-            # lowercase a-d is the English article "a" and the usual option
-            # marker ("a) no  d) yes"), so `i` makes ordinary prose extract
-            # the wrong letter. The cost is a model that answers purely in
-            # lowercase, which extracts nothing and scores wrong: the safe
-            # direction, and rare, since MCQ letters are near-always capital.
+            # No `flags: i`, deliberately. Case-insensitively a lone a-d is
+            # the English article "a" and the usual option marker ("a) no
+            # d) yes"), so `i` makes ordinary prose extract the wrong letter.
+            #
+            # Two known limits, both under-scoring rather than over-scoring:
+            #   - a sentence-opening "A" is read as the answer
+            #     ("A good answer is B" extracts A)
+            #   - a model answering in lowercase extracts nothing
+            # Taking the LAST match instead trades these for a worse problem:
+            # elimination phrasing ("the answer is B, not A, C or D") then
+            # extracts D. Prompt for a bare letter if you need robustness.
             matcher:
               mode: regex
-              pattern: '.*\b([ABCD])\b'
+              pattern: '\b([ABCD])\b'
 
             # Evaluation settings
             limit: 20

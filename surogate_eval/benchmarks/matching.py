@@ -15,7 +15,7 @@ from typing import Any, Dict, Optional, Tuple
 
 import regex
 
-from surogate_eval.errors import ConfigError, MatchTimeout
+from surogate_eval.errors import ConfigError, MatchTimeout, UnscorableRow
 from surogate_eval.utils.logger import get_logger
 
 logger = get_logger()
@@ -33,9 +33,14 @@ DEFAULT_TIMEOUT_SECONDS = 2.0
 
 _FLAG_CHARS = {
     'i': regex.IGNORECASE,
-    'm': regex.MULTILINE,
-    's': regex.DOTALL,
 }
+
+#: `m` and `s` are the two stdlib flags that only change behaviour around
+#: newlines, and `clean_formatting` collapses every newline into a space
+#: before the pattern ever runs. Accepting them would validate happily and
+#: then do nothing, so an anchored `^Answer: (\w+)$` would score every row 0.0
+#: with no signal that the flag was inert. Rejected at build time instead.
+_INERT_FLAG_CHARS = ('m', 's')
 
 
 def clean_formatting(text: str) -> str:
@@ -44,29 +49,24 @@ def clean_formatting(text: str) -> str:
     Formatting only. This deliberately does not try to find the answer inside
     the text: that is the matcher's job, and having two of them is how you get
     a result nobody can explain.
-    """
-    try:
-        from bs4 import BeautifulSoup
-        import markdown
 
-        html = markdown.markdown(text)
-        # Not `separator=' '`: that padded every inline-markup boundary with
-        # a space (`**A**.` -> `A .`), which `contains` never noticed
-        # (`"a" in "a ."`) but `exact` and `regex` compare verbatim, so a
-        # correct answer was scored wrong. `separator=''` does not merge
-        # words across BLOCK boundaries instead: `markdown.markdown` always
-        # joins top-level block elements (paragraphs, list items, headings)
-        # with a literal `\n` in the HTML it emits, and that text node
-        # survives regardless of `separator`; the whitespace collapse below
-        # turns it back into a single space.
-        cleaned = BeautifulSoup(html, 'html.parser').get_text(separator='')
-    except ImportError:
-        cleaned = text
-        cleaned = stdlib_re.sub(r'\*\*([^*]+)\*\*', r'\1', cleaned)
-        cleaned = stdlib_re.sub(r'\*([^*]+)\*', r'\1', cleaned)
-        cleaned = stdlib_re.sub(r'`([^`]+)`', r'\1', cleaned)
-        cleaned = stdlib_re.sub(r'#{1,6}\s*', '', cleaned)
-        cleaned = stdlib_re.sub(r'\[([^\]]+)\]\([^)]+\)', r'\1', cleaned)
+    Model output only. It is lossy by design - it renders markdown and drops
+    anything HTML-shaped - so running it on an *expected* value would rewrite
+    the answer key the row is scored against. See ``Matcher.compare``.
+    """
+    from bs4 import BeautifulSoup
+    import markdown
+
+    html = markdown.markdown(text)
+    # Not `separator=' '`: that padded every inline-markup boundary with a
+    # space (`**A**.` -> `A .`), which `contains` never noticed
+    # (`"a" in "a ."`) but `exact` and `regex` compare verbatim, so a correct
+    # answer was scored wrong. `separator=''` does not merge words across
+    # BLOCK boundaries instead: `markdown.markdown` always joins top-level
+    # block elements (paragraphs, list items, headings) with a literal `\n`
+    # in the HTML it emits, and that text node survives regardless of
+    # `separator`; the whitespace collapse below turns it back into a space.
+    cleaned = BeautifulSoup(html, 'html.parser').get_text(separator='')
 
     return stdlib_re.sub(r'\s+', ' ', cleaned).strip()
 
@@ -86,16 +86,26 @@ class Matcher:
 
         ``cleaned_output`` is what was actually compared, so the row's record
         can show it rather than the raw generation. Raises ``MatchTimeout``
-        when a pattern exceeds its budget; the caller treats that as a failure
-        to measure, since an abandoned match says nothing either way.
+        when a pattern exceeds its budget, and ``UnscorableRow`` when the row
+        carries no answer key; the caller treats both as a failure to measure.
         """
         # `or ''` only guards falsy values; a truthy non-string (a numeric
         # answer key authored as `42` rather than `"42"`, or a bool) must
         # still not crash inside `clean_formatting`, so coerce explicitly.
         cleaned = clean_formatting('' if raw_output is None else str(raw_output))
-        wanted = clean_formatting(
-            '' if expected is None else str(expected)
-        ).strip().lower()
+        # Only `.strip().lower()`, deliberately not `clean_formatting`. The
+        # expected value is an answer key, not model prose, and the cleanup
+        # is lossy: it renders markdown and drops HTML-shaped tokens, so a
+        # literal `<answer>` cleaned to `''` and a `1. Paris` to `Paris`.
+        # An erased key then matched everything under `contains`, turning a
+        # benchmark that should score 0% into one reporting 100%.
+        wanted = ('' if expected is None else str(expected)).strip().lower()
+
+        if not wanted:
+            # Every output contains the empty string, so `contains` would
+            # score the whole benchmark 1.0 off one blank answer column.
+            # A blank key is a dataset defect, and neither verdict is honest.
+            raise UnscorableRow('row has no expected answer to compare against')
 
         if self.mode == 'regex':
             try:
@@ -129,7 +139,12 @@ def build_matcher(cfg: Optional[Dict[str, Any]]) -> Matcher:
     that stops being true, ``EvalConfig._validate_evaluations`` already walks
     every benchmark dict at load and is where the eager check belongs.
     """
-    cfg = cfg or {}
+    # Order matters: `cfg or {}` first would swallow every *falsy* non-mapping
+    # (`matcher: []`, `matcher: ""`) as "no matcher" and quietly run the
+    # default, while rejecting only the truthy ones (`matcher: exact`). Only
+    # an absent block counts as unset.
+    if cfg is None:
+        cfg = {}
     if not isinstance(cfg, dict):
         raise ConfigError(f"matcher must be a mapping, got {type(cfg).__name__}")
 
@@ -148,6 +163,12 @@ def build_matcher(cfg: Optional[Dict[str, Any]]) -> Matcher:
 
     flags = 0
     for char in str(cfg.get('flags') or ''):
+        if char in _INERT_FLAG_CHARS:
+            raise ConfigError(
+                f"regex flag {char!r} has no effect here: the output's newlines "
+                f"are collapsed to spaces before the pattern runs, so write the "
+                f"pattern against a single line"
+            )
         if char not in _FLAG_CHARS:
             raise ConfigError(
                 f"unknown regex flag {char!r}; expected any of {', '.join(_FLAG_CHARS)}"

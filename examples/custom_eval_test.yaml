@@ -41,6 +41,33 @@ targets:
               eval_type: eval_type
               judge_criteria: judge_criteria
 
+            # How exact_match rows decide whether an answer is correct.
+            # Omit the whole block to get `mode: contains`, which is the
+            # historical behaviour: `expected in output`. That is permissive
+            # enough to score an MCQ benchmark 100% (expected "A" is
+            # contained in "The answer is C."), so set a mode explicitly.
+            #
+            #   contains  expected appears anywhere in the output (default)
+            #   exact     output equals expected, case-insensitively
+            #   regex     pull the answer out of the output with `pattern`,
+            #             then compare that to expected like `exact` does
+            #
+            # Markdown is stripped and whitespace collapsed before any of
+            # them run, so `**42**` still matches `42` under `exact`. The
+            # expected value itself is compared as written.
+            #
+            # This dataset's answers are single letters, so `regex` is the
+            # mode that fits: a chatty model answers "The answer is B", which
+            # `exact` scores wrong and `contains` scores right for the wrong
+            # reason (every output containing a "b" would pass).
+            matcher:
+              mode: regex
+              pattern: '\b([ABCD])\b'   # group 1 is the extracted answer
+              flags: i                  # `i` only; `m`/`s` are rejected,
+                                        # newlines are already collapsed
+              group: 1                  # default: 1, or 0 with no groups
+              timeout: 2.0              # seconds per row; must be > 0
+
             # Evaluation settings
             limit: 20
             max_tokens: 256

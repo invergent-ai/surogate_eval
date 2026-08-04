@@ -7,7 +7,7 @@ import tempfile
 from pathlib import Path
 from typing import Dict, Any, List, Optional
 
-from surogate_eval.benchmarks.matching import build_matcher, clean_formatting
+from surogate_eval.benchmarks.matching import Matcher, build_matcher, clean_formatting
 from surogate_eval.targets import BaseTarget
 from surogate_eval.utils.logger import get_logger
 
@@ -224,17 +224,28 @@ class CustomEvalBackend:
         if not rows:
             return []
 
+        # Built here, above the path choice, for two reasons. A bad pattern or
+        # an unknown mode would fail every row, so it is a config error rather
+        # than a per-row failure. And building it inside the lm-eval path put
+        # it under the blanket `except` below, which reported a matcher typo as
+        # `lm-eval exact_match failed, falling back to...` before the direct
+        # path rebuilt it and raised the same error - pointing the first
+        # diagnostic at lm-eval, which was not what was broken.
+        matcher = build_matcher(config.get('matcher'))
+
         # Use lm-eval only when a tokenizer is explicitly set (local models).
         # For API-only models, direct inference is more reliable (lm-eval
         # uses /completions which many providers don't support).
         tokenizer = config.get('tokenizer') or target.config.get('tokenizer')
         if tokenizer:
             try:
-                return self._evaluate_exact_match_lm_eval(rows, target, config, columns, tokenizer)
+                return self._evaluate_exact_match_lm_eval(
+                    rows, target, config, columns, tokenizer, matcher
+                )
             except Exception as e:
                 logger.warning(f"lm-eval exact_match failed, falling back to direct inference: {e}")
 
-        return self._evaluate_exact_match_direct(rows, target, config, columns)
+        return self._evaluate_exact_match_direct(rows, target, config, columns, matcher)
 
     def _evaluate_exact_match_lm_eval(
             self,
@@ -243,10 +254,10 @@ class CustomEvalBackend:
             config: Dict[str, Any],
             columns: Dict[str, str],
             tokenizer: str,
+            matcher: Matcher,
     ) -> List[Dict[str, Any]]:
         """Evaluate exact_match rows using LM-Eval backend."""
         logger.info(f"Evaluating {len(rows)} exact_match rows with lm-eval")
-        matcher = build_matcher(config.get('matcher'))
 
         from .lm_eval_backend import LMEvalBackend
 
@@ -319,6 +330,25 @@ class CustomEvalBackend:
                 status = 'scored'
                 reason = None
                 try:
+                    # Pairing detail[i] with lm_eval_rows[i] is now score-
+                    # bearing, not just cosmetic: before this change the score
+                    # came from lm-eval's own per-sample metric, so a reordered
+                    # sample list only mislabeled the displayed columns. Now
+                    # one row's generation would be compared against another
+                    # row's answer key, silently. lm-eval hands each sample its
+                    # own `target` back, so a disagreement is detectable - and
+                    # a row we cannot pair confidently is unmeasured, not wrong.
+                    detail_expected = detail.get('expected')
+                    if (
+                        detail_expected is not None
+                        and str(detail_expected).strip() != str(row['answer']).strip()
+                    ):
+                        raise ValueError(
+                            f"lm-eval returned sample {i} with target "
+                            f"{str(detail_expected)[:80]!r}, expected "
+                            f"{str(row['answer'])[:80]!r}; results are not in the "
+                            f"order they were sent"
+                        )
                     success, output = matcher.compare(raw_output, row['answer'])
                     score = 1.0 if success else 0.0
                     # Named after the configured mode, not hardcoded as
@@ -347,7 +377,13 @@ class CustomEvalBackend:
                 }
                 results.append(result)
 
-            logger.info(f"Completed exact_match (lm-eval): {sum(r['success'] for r in results)}/{len(results)} correct")
+            errored_n = sum(1 for r in results if r['status'] == 'errored')
+            scored_n = len(results) - errored_n
+            logger.info(
+                f"Completed exact_match (lm-eval): "
+                f"{sum(r['success'] for r in results)}/{scored_n} correct "
+                f"({errored_n} not measured)"
+            )
             return results
 
         finally:
@@ -361,7 +397,8 @@ class CustomEvalBackend:
             rows: List[Dict[str, Any]],
             target: BaseTarget,
             config: Dict[str, Any],
-            columns: Dict[str, str]
+            columns: Dict[str, str],
+            matcher: Matcher,
     ) -> List[Dict[str, Any]]:
         """Evaluate exact_match rows via direct inference + string comparison."""
         logger.info(f"Evaluating {len(rows)} exact_match rows (direct inference)")
@@ -369,9 +406,6 @@ class CustomEvalBackend:
         from surogate_eval.targets.base import TargetRequest
 
         system_prompt = config.get('system_prompt')
-        # Built once: an unknown mode or a bad pattern would fail every row,
-        # so it is a config error and belongs here rather than in the loop.
-        matcher = build_matcher(config.get('matcher'))
         results = []
 
         for row in rows:
@@ -544,13 +578,15 @@ class CustomEvalBackend:
                     request_error = response.error
                 else:
                     raw_output = response.content or ''
-                    # Formatting cleanup only, same as the direct exact_match
-                    # path's default mode. The judge path is not part of this
-                    # task's matcher wiring; this keeps it calling code that
-                    # still exists now that _normalize_output is gone, without
-                    # changing what it returns for any output already covered
-                    # by a test - clean_formatting is that method's own
-                    # formatting half, byte for byte.
+                    # Formatting cleanup only. The judge path is not part of
+                    # the matcher wiring, but it did call `_normalize_output`,
+                    # so retiring that method changed what the judge sees: the
+                    # email/percentage/date/yes-no heuristics used to hand
+                    # G-Eval a *fragment* of the answer when the expected value
+                    # had one of those shapes, and now it gets the whole
+                    # cleaned response. That is the better input - a judge
+                    # scoring an answer should see the answer, not a regex's
+                    # guess at it - but it is a real change, not a no-op.
                     normalized_output = clean_formatting(raw_output)
                     logger.debug(f"Raw: {raw_output[:100]}... -> Normalized: {normalized_output[:100]}...")
             except Exception as e:

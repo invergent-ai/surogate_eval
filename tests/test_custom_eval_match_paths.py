@@ -30,12 +30,17 @@ COLUMNS = {"instruction": "instruction", "answer": "answer"}
 
 
 def _score(answer, expected, matcher=None):
-    """Run one row through the real direct-inference evaluator."""
+    """Run one row through the real direct-inference evaluator.
+
+    Routed through `_evaluate_exact_match_rows` rather than calling the
+    direct path itself, so the matcher is built by the code under test.
+    With no tokenizer anywhere, that entry point picks the direct path.
+    """
     backend = CustomEvalBackend.__new__(CustomEvalBackend)
     rows = [{"instruction": "q", "answer": expected, "_original_idx": 0}]
     config = {"matcher": matcher} if matcher is not None else {}
 
-    return backend._evaluate_exact_match_direct(
+    return backend._evaluate_exact_match_rows(
         rows, FakeTarget(answer), config, COLUMNS
     )[0]
 
@@ -111,11 +116,17 @@ def _score_lm_eval(answer, expected, matcher=None, returned_rows=1):
     config = {"matcher": matcher} if matcher is not None else {}
 
     import surogate_eval.benchmarks.backends.lm_eval_backend as lm
+    from surogate_eval.benchmarks.matching import build_matcher
     saved = lm.LMEvalBackend
     lm.LMEvalBackend = StubLMEval
     try:
+        # Called directly rather than through `_evaluate_exact_match_rows`:
+        # that entry point catches everything from this path and silently
+        # falls back to direct inference, which would turn a real lm-eval
+        # scoring failure into a passing test against the other path.
         return backend._evaluate_exact_match_lm_eval(
-            rows, FakeTarget(answer), config, COLUMNS, tokenizer="gpt2"
+            rows, FakeTarget(answer), config, COLUMNS, tokenizer="gpt2",
+            matcher=build_matcher(matcher),
         )
     finally:
         lm.LMEvalBackend = saved
@@ -182,12 +193,15 @@ def test_a_row_lm_eval_never_returned_is_unmeasured():
                 {"output": "A", "raw_output": "A", "metrics": {"exact_match": 1}}
             ]}
 
+    from surogate_eval.benchmarks.matching import build_matcher
+
     backend = ceb.CustomEvalBackend.__new__(ceb.CustomEvalBackend)
     saved = lm.LMEvalBackend
     lm.LMEvalBackend = ShortStub
     try:
         results = backend._evaluate_exact_match_lm_eval(
-            rows, FakeTarget("A"), {}, COLUMNS, tokenizer="gpt2"
+            rows, FakeTarget("A"), {}, COLUMNS, tokenizer="gpt2",
+            matcher=build_matcher(None),
         )
     finally:
         lm.LMEvalBackend = saved
@@ -196,3 +210,83 @@ def test_a_row_lm_eval_never_returned_is_unmeasured():
     assert results[1]["success"] is False
     assert results[1]["status"] == "errored"
     assert results[1]["reason"]
+
+
+def test_a_bad_matcher_is_not_reported_as_an_lm_eval_failure():
+    """The matcher is built before the path choice, so a config error names
+    itself.
+
+    It used to be built inside the lm-eval path, under the caller's blanket
+    `except Exception`, so `matcher: {mode: nonsense}` on a benchmark with a
+    tokenizer logged `lm-eval exact_match failed, falling back to direct
+    inference: unknown matcher mode 'nonsense'` and then raised the same
+    error again from the direct path. The first thing a user saw pointed at
+    lm-eval, which was not what was broken.
+    """
+    from surogate_eval.errors import ConfigError
+
+    backend = CustomEvalBackend.__new__(CustomEvalBackend)
+    rows = [{"instruction": "q", "answer": "A", "_original_idx": 0}]
+
+    # Asserting `raises(ConfigError)` alone would pass either way, because the
+    # direct path rebuilt the matcher and raised the same error one step
+    # later. What changed is that the lm-eval path is never entered at all, so
+    # that is what this pins - with a flag rather than a raising sentinel,
+    # since the blanket `except Exception` below would swallow the sentinel
+    # and fall through to the direct path exactly as it did before.
+    entered = []
+    backend._evaluate_exact_match_lm_eval = lambda *a, **k: entered.append(1)
+
+    with pytest.raises(ConfigError, match="nonsense"):
+        backend._evaluate_exact_match_rows(
+            rows,
+            FakeTarget("A"),
+            {"tokenizer": "gpt2", "matcher": {"mode": "nonsense"}},
+            COLUMNS,
+        )
+
+    assert not entered, "the matcher must be validated before the path choice"
+
+
+def test_a_reordered_lm_eval_result_is_unmeasured_not_miscored():
+    """Positional pairing became score-bearing, so it must fail closed.
+
+    Before the matcher moved in, the score came from lm-eval's own per-sample
+    metric, so a reordered sample list only mislabeled the displayed columns.
+    Now `detail[i]`'s generation is compared against `rows[i]`'s answer key,
+    which would silently score one row's output against another row's answer.
+    """
+    from surogate_eval.benchmarks.backends import custom_eval_backend as ceb
+    from surogate_eval.benchmarks.matching import build_matcher
+    import surogate_eval.benchmarks.backends.lm_eval_backend as lm
+
+    rows = [
+        {"instruction": "q1", "answer": "A", "_original_idx": 0},
+        {"instruction": "q2", "answer": "B", "_original_idx": 1},
+    ]
+
+    class ReorderedStub:
+        """Returns the two samples back to front, each with its own target."""
+
+        def evaluate(self, target, benchmark_name, config):
+            return {"detailed_results": [
+                {"expected": "B", "raw_output": "B", "metrics": {}},
+                {"expected": "A", "raw_output": "A", "metrics": {}},
+            ]}
+
+    backend = ceb.CustomEvalBackend.__new__(ceb.CustomEvalBackend)
+    saved = lm.LMEvalBackend
+    lm.LMEvalBackend = ReorderedStub
+    try:
+        results = backend._evaluate_exact_match_lm_eval(
+            rows, FakeTarget("A"), {}, COLUMNS, tokenizer="gpt2",
+            matcher=build_matcher(None),
+        )
+    finally:
+        lm.LMEvalBackend = saved
+
+    # Paired positionally and unguarded, both rows would have scored 1.0:
+    # "B" contains "B" and "A" contains "A". They are the wrong pairs.
+    assert [r["status"] for r in results] == ["errored", "errored"]
+    assert all(r["score"] is None for r in results)
+    assert "order" in results[0]["reason"]

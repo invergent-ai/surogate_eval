@@ -72,7 +72,15 @@ already reaches the backend (`base.py:60`, `generic.py:72`, `runners.py:381`).
 ### Three modes
 
 **`contains`** — the default, and today's behaviour minus the heuristics. Formatting cleanup, then
-substring. Chosen as the default so nothing regresses before callers set a mode explicitly.
+substring. Chosen as the default so the *direct* path does not regress before callers set a mode
+explicitly.
+
+Stated precisely, because "nothing regresses" is not true of both paths: the lm-eval path previously
+took its verdict from lm-eval's own `exact_match` metric, which is stricter than containment. Rows
+scored there get *looser* under the default, and an MCQ benchmark with a tokenizer configured gains
+the same false positive the direct path already had. That is the cost of having one rule instead of
+two, and it is bounded: the platform sets no tokenizer on eval targets, so only a runner-direct
+config with a local model reaches that path, and setting `mode: exact` removes it.
 
 **`exact`** — formatting cleanup, then case-insensitive equality.
 
@@ -80,6 +88,11 @@ substring. Chosen as the default so nothing regresses before callers set a mode 
 default 1, or 0 when the pattern has no groups), then compare that to `expected` by the same rule
 `exact` uses: case-insensitive equality after stripping. The pattern sees the cleaned output rather
 than the raw one, so a pattern does not have to anticipate markdown the runner is about to remove.
+
+Only the `i` flag is accepted. `m` and `s` are the two that exist to change behaviour around
+newlines, and the cleanup collapses every newline into a space before the pattern runs, so they
+would validate and then do nothing: an anchored `^Answer: (\w+)$` with `flags: m` scores every row
+0.0 with no signal the flag was inert. Rejected at build time rather than accepted-and-ignored.
 
 Extraction rather than matching is deliberate. Models bury the answer in prose, which is the problem
 the heuristics in `_normalize_output` were reaching for. A regex extractor is the same idea with the
@@ -91,6 +104,19 @@ has, where a pure "does the output match this pattern" mode would ignore `expect
 Formatting cleanup stays in all three modes: markdown stripping and whitespace collapsing are about
 presentation, not about deciding the answer.
 
+**It applies to the model's output only, never to `expected`.** The cleanup is lossy by design: it
+renders markdown and drops anything HTML-shaped. That is right for model prose and wrong for an
+answer key, which is a literal the dataset chose. Run on `expected`, a literal `<answer>` cleans to
+`''` and `1. Paris` to `Paris`, so the benchmark silently measures something the dataset never asked
+for. The `<answer>` case is the worst, because it compounds with the rule below. `expected` gets
+`.strip().lower()`, which is all it ever got before this change.
+
+**A row whose `expected` is blank cannot be scored at all.** Every output contains the empty string,
+so `contains` would score an entire benchmark 1.0 off one empty answer column, and a null cell or the
+literal string `null` reaches the comparison as `''`. Neither verdict is honest: "correct" is that
+fail-open, and "incorrect" records a row nobody measured as one the model got wrong. It raises, and
+both call sites already record a raised comparison as `status: 'errored'`.
+
 The email/percentage/date extraction retires. It is exactly what `regex` mode does explicitly, and
 keeping both means two competing extractors and results nobody can explain. `_normalize_output`
 splits into a formatting-only helper the string modes share.
@@ -98,6 +124,12 @@ splits into a formatting-only helper the string modes share.
 **Verified safe for the one benchmark in production:** those heuristics are gated on the *expected*
 value's shape (containing an `@`, being a bare percentage, matching a date). `greeting-check`'s
 expected value is a long greeting, so none of them fire for it.
+
+**The judge path is affected too, though it is otherwise out of scope here.** It also called
+`_normalize_output`, so retiring that method changes what G-Eval receives: where the expected value
+had one of those shapes, the judge used to be handed a *fragment* of the response and now gets the
+whole cleaned text. That is the better input, since a judge scoring an answer should see the answer
+rather than a regex's guess at it, but it is a real change and not a no-op.
 
 ### Outcomes
 
@@ -109,6 +141,13 @@ expected value is a long greeting, so none of them fire for it.
 | Pattern is invalid | benchmark fails before scoring | config error, every row would hit it |
 | Match exceeds the timeout | that row is errored | a failure to measure, not the model's fault |
 | `matcher.mode` is unrecognised | benchmark fails before scoring | it currently falls into the containment bucket silently (`custom_eval_backend.py:250-262`) |
+| `matcher` is present but not a mapping | benchmark fails before scoring | including the falsy ones (`matcher: []`), which a `cfg or {}` would quietly read as "no matcher" |
+| `expected` is blank for a row | that row is errored | nothing to score against; see above |
+
+The matcher is built once per benchmark, before the direct/lm-eval path choice. Building it inside
+the lm-eval path put it under that call's blanket `except Exception`, so a matcher typo was reported
+as `lm-eval exact_match failed, falling back to direct inference: ...` and then raised again from the
+direct path, pointing the first diagnostic at something that was not broken.
 
 Not a load-time check: it runs when the benchmark first scores a string row, so a matcher block on a
 benchmark that scores none is never validated. Harmless, since it has no effect there either way.
@@ -149,6 +188,13 @@ the direct path, the record's `output` then holds our cleaned value and `raw_out
 `_extract_answer` is left in place; lm-eval's own benchmark path still uses it. It simply stops
 deciding custom-eval scores.
 
+**Pairing rows to results becomes score-bearing, so it fails closed.** Results are matched to sent
+rows by position. While the score came from lm-eval's own per-sample metric that was cosmetic: a
+reordered sample list only mislabeled the displayed columns. Now `detail[i]`'s generation is compared
+against `row[i]`'s answer key, so a reorder would score one row's output against another row's
+answer, silently and plausibly. lm-eval returns each sample's own `target`, so a disagreement is
+detectable; a row that cannot be paired confidently is recorded unmeasured rather than guessed at.
+
 **A row lm-eval never returned is unmeasured.** When it returns fewer rows than were sent, the
 remainder currently become `score: 0.0, success: False, reason: 'No result'`
 (`custom_eval_backend.py:357-362`) — a row that was never scored, recorded as an answer the model got
@@ -176,6 +222,13 @@ No network; all cases are plain strings through the real comparison.
 - The same rows, scored through both paths, agree: a case that fails under `exact` on the direct path
   fails on the lm-eval path too, rather than depending on the tokenizer setting.
 - A row lm-eval did not return is unmeasured, not a wrong answer.
+- An `expected` that the formatting cleanup would rewrite (`1. Paris`, `# 42`, `<answer>`) is
+  compared as written: an output matching only the cleaned form scores 0.0.
+- A blank, whitespace-only or absent `expected` raises rather than scoring the row correct.
+- A non-mapping `matcher` is rejected whether it is truthy or falsy.
+- `flags: m` and `flags: s` are rejected; `flags: i` still works.
+- A reordered lm-eval result set errors both rows instead of scoring them against each other's keys.
+- A bad matcher never enters the lm-eval path, so it is not reported as an lm-eval failure.
 
 ## Out of scope
 

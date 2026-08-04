@@ -15,11 +15,12 @@ from pathlib import Path
 import pytest
 
 from surogate_eval.benchmarks.matching import (
+    DEFAULT_MODE,
     MatchTimeout,
     build_matcher,
     clean_formatting,
 )
-from surogate_eval.errors import ConfigError
+from surogate_eval.errors import ConfigError, UnscorableRow
 
 # The false positives that motivated this, as (expected, output).
 FALSE_POSITIVES = [
@@ -291,3 +292,97 @@ def test_regex_is_a_declared_dependency():
     names = [re.split(r"[<>=!\[; ]", dep, maxsplit=1)[0] for dep in deps]
 
     assert "regex" in names
+
+
+# --- review round ------------------------------------------------------
+
+
+@pytest.mark.parametrize(
+    "expected, output_matching_only_the_cleaned_form",
+    [
+        ("1. Paris", "Paris"),
+        ("# 42", "42"),
+        ("The tag is <br> here", "The tag is here"),
+    ],
+    ids=["ordered-list", "heading", "inline-tag"],
+)
+def test_the_expected_value_is_not_run_through_the_markdown_cleanup(
+    expected, output_matching_only_the_cleaned_form
+):
+    """``clean_formatting`` is lossy by design: it renders markdown and drops
+    anything HTML-shaped. That is right for model prose and wrong for an
+    answer key. Applied to ``expected`` it rewrote the value the row is scored
+    against - ``1. Paris`` became ``Paris`` - so the benchmark measured
+    something the dataset never asked for. Pre-branch, ``expected`` only ever
+    got ``.strip().lower()``.
+
+    Each output here matches the *cleaned* expected and not the literal one,
+    so it succeeds exactly when the cleanup is wrongly applied to the key.
+    """
+    success, _cleaned = build_matcher({"mode": "exact"}).compare(
+        output_matching_only_the_cleaned_form, expected
+    )
+
+    assert success is False, "the answer key must be compared as written"
+
+
+def test_an_html_shaped_expected_no_longer_matches_everything():
+    """The worst instance of the above, because it compounds with the
+    empty-``wanted`` fail-open below: ``<answer>`` cleaned to ``''``, and
+    ``'' in anything`` is True, so a benchmark keyed on a literal tag scored
+    every row correct under the default mode."""
+    with pytest.raises(UnscorableRow):
+        build_matcher(None).compare("the model said something else", "")
+
+    success, _cleaned = build_matcher(None).compare(
+        "the model said something else", "<answer>"
+    )
+    assert success is False
+
+
+@pytest.mark.parametrize("blank", ["", "   ", None])
+def test_a_row_with_no_expected_answer_is_unscorable(blank):
+    """A blank answer column reaches here as ``''`` (``_get_column_value``
+    maps a null cell and the literal string 'null' onto its default). Every
+    output contains the empty string, so ``contains`` scored the entire
+    benchmark 1.0 off one blank column. Neither verdict is honest: raising
+    lets both call sites record the row as unmeasured, which is what it is."""
+    with pytest.raises(UnscorableRow):
+        build_matcher(None).compare("any output at all", blank)
+
+
+@pytest.mark.parametrize("falsy", [[], "", 0])
+def test_a_falsy_non_mapping_matcher_is_rejected_not_ignored(falsy):
+    """``cfg = cfg or {}`` ran before the ``isinstance`` check, so a falsy
+    non-mapping (``matcher: []``, a plausible typo for ``matcher: {...}``)
+    was swallowed as "no matcher" and ran the default, while the truthy
+    ``matcher: exact`` was correctly rejected. A validator whose job is
+    catching every-row misconfiguration accepted half of them."""
+    with pytest.raises(ConfigError, match="mapping"):
+        build_matcher(falsy)
+
+
+def test_an_absent_matcher_block_is_still_the_default():
+    """The other half of the check above: only ``None`` counts as unset."""
+    assert build_matcher(None).mode == DEFAULT_MODE
+
+
+@pytest.mark.parametrize("flag", ["m", "s"])
+def test_newline_only_regex_flags_are_rejected_rather_than_silently_inert(flag):
+    """``clean_formatting`` collapses every newline into a space before the
+    pattern runs, so MULTILINE and DOTALL cannot change any outcome. Accepted,
+    they validated happily and did nothing: an anchored ``^Answer: (\\w+)$``
+    with ``flags: m`` scored every row 0.0 with reason 'No match' and no
+    signal that the flag was inert."""
+    with pytest.raises(ConfigError, match="no effect"):
+        build_matcher({"mode": "regex", "pattern": r"^(\w+)$", "flags": flag})
+
+
+def test_the_ignorecase_flag_still_works():
+    """The rejection above must not take the one flag that does something."""
+    matcher = build_matcher(
+        {"mode": "regex", "pattern": r"answer: (\w+)", "flags": "i"}
+    )
+
+    success, extracted = matcher.compare("ANSWER: B", "B")
+    assert success is True and extracted == "B"

@@ -47,3 +47,14 @@ class MatchTimeout(EvalError):
     tells us nothing about whether the answer was right. The caller records
     the row as unmeasured.
     """
+
+
+class UnscorableRow(EvalError):
+    """A row carries nothing to score against, so no verdict is available.
+
+    Raised rather than returning a verdict, because both verdicts are wrong:
+    "correct" is the fail-open case a blank answer key would otherwise
+    produce under ``contains`` (every output contains the empty string), and
+    "incorrect" records a row nobody measured as one the model got wrong.
+    The caller records the row as unmeasured.
+    """

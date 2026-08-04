@@ -386,3 +386,52 @@ def test_the_ignorecase_flag_still_works():
 
     success, extracted = matcher.compare("ANSWER: B", "B")
     assert success is True and extracted == "B"
+
+
+# --- external review 2026-08-04 ----------------------------------------
+
+
+@pytest.mark.parametrize("bad", [float("inf"), float("-inf"), float("nan")])
+def test_a_non_finite_timeout_is_rejected(bad):
+    """`<= 0` alone does not cover these. Every NaN comparison is False, so
+    NaN slipped straight through, and `inf` is positive so it passed too.
+    Measured against `regex` 2025.11.3: `inf` raises `TimeoutError`
+    immediately, the same as `0`, so every row would error and nothing would
+    ever be measured."""
+    with pytest.raises(ConfigError, match="finite"):
+        build_matcher({"mode": "regex", "pattern": r"(\w+)", "timeout": bad})
+
+
+@pytest.mark.parametrize("literal", [".inf", ".nan", "-.inf"])
+def test_the_yaml_spellings_of_non_finite_reach_that_check(literal):
+    """`timeout: .inf` in a config is not the string '.inf': YAML resolves it
+    to a float before `build_matcher` sees it. Pinned so the check above is
+    known to guard the shape a user can actually author, rather than one that
+    only exists in a test."""
+    import yaml
+
+    value = yaml.safe_load(f"t: {literal}")["t"]
+
+    assert isinstance(value, float)
+    with pytest.raises(ConfigError, match="finite"):
+        build_matcher({"mode": "regex", "pattern": r"(\w+)", "timeout": value})
+
+
+def test_regex_mode_is_case_sensitive_without_the_i_flag():
+    """`contains` and `exact` lowercase both sides unconditionally; a pattern
+    owns its own case instead, because case is part of what a pattern
+    expresses. Worth pinning: it is the one place the three modes disagree
+    about case, and nothing else documents it."""
+    sensitive = build_matcher({"mode": "regex", "pattern": r"(YES)"})
+    insensitive = build_matcher({"mode": "regex", "pattern": r"(YES)", "flags": "i"})
+
+    assert sensitive.compare("yes", "yes")[0] is False, "pattern case is the pattern's own"
+    assert insensitive.compare("yes", "yes")[0] is True
+
+
+def test_the_expected_value_is_still_compared_case_insensitively_under_regex():
+    """The pattern owning its case must not leak into the comparison: an
+    extracted `D` still matches an answer key authored as `d`."""
+    matcher = build_matcher({"mode": "regex", "pattern": r"\b([A-D])\b"})
+
+    assert matcher.compare("The answer is D", "d")[0] is True

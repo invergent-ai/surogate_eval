@@ -290,3 +290,85 @@ def test_a_reordered_lm_eval_result_is_unmeasured_not_miscored():
     assert [r["status"] for r in results] == ["errored", "errored"]
     assert all(r["score"] is None for r in results)
     assert "order" in results[0]["reason"]
+
+
+def test_the_default_mode_on_the_lm_eval_path_is_containment_not_lm_evals_metric():
+    """The default's blast radius on this path, pinned rather than described.
+
+    Every other lm-eval test here passes an explicit `{"mode": "exact"}`, so
+    nothing covered what a config with no `matcher` block actually does here.
+    It matters more on this path than on the direct one: scoring used to come
+    from lm-eval's own `exact_match` metric (full-string equality), so the
+    unified default is *looser* than what this path did before, and on a
+    single-letter answer key that is close to unscoreable.
+    """
+    row = _score_lm_eval("Hmm, I'll probably go with D.", "B")[0]
+
+    assert row["success"] is True, (
+        "expected 'B' is contained in 'probably', so containment passes a "
+        "wrong answer; this is why a tokenizer-bearing MCQ config must set a "
+        "mode explicitly"
+    )
+    assert row["reason"] == "contains match"
+
+    strict = _score_lm_eval("Hmm, I'll probably go with D.", "B", {"mode": "exact"})[0]
+    assert strict["success"] is False
+
+
+def test_the_shipped_tokenizer_config_sets_a_mode():
+    """`examples/custom_eval_test_gpt.yaml` sets a tokenizer and scores
+    single-letter answer keys, which is exactly the combination the default
+    scores near 100% on regardless of the model. It must not rely on the
+    default."""
+    import yaml
+    from pathlib import Path
+
+    cfg = yaml.safe_load(
+        (Path(__file__).resolve().parents[1] / "examples" / "custom_eval_test_gpt.yaml").read_text()
+    )
+    target = next(t for t in cfg["targets"] if t.get("evaluations"))
+    benchmark = target["evaluations"][0]["benchmarks"][0]
+
+    assert target.get("tokenizer"), "guard assumes this config takes the lm-eval path"
+    assert benchmark.get("matcher", {}).get("mode"), "must not rely on the default"
+
+
+def test_an_lm_eval_failure_carries_its_real_cause_into_the_row_reason():
+    """`LMEvalBackend.evaluate` does not raise when `simple_evaluate` fails.
+
+    It returns a payload with no `detailed_results` and the real cause in
+    `metadata['error']`, so the most likely production failure (unreachable
+    target, bad tokenizer) arrives here as "zero rows returned". Every row
+    then takes the unmeasured branch, and without this the user sees N
+    identical rows saying only "lm-eval returned no result for this row"
+    while the actual diagnostic is discarded. The documented fall-back to
+    direct inference never fires for this either, because nothing raised.
+    """
+    from surogate_eval.benchmarks.backends import custom_eval_backend as ceb
+    from surogate_eval.benchmarks.matching import build_matcher
+    import surogate_eval.benchmarks.backends.lm_eval_backend as lm
+
+    class FailedStub:
+        def evaluate(self, target, benchmark_name, config):
+            return {
+                "overall_score": 0.0,
+                "num_samples": 0,
+                "task_results": {},
+                "metadata": {"status": "failed", "error": "Connection refused: :8000"},
+            }
+
+    backend = ceb.CustomEvalBackend.__new__(ceb.CustomEvalBackend)
+    rows = [{"instruction": "q", "answer": "A", "_original_idx": 0}]
+    saved = lm.LMEvalBackend
+    lm.LMEvalBackend = FailedStub
+    try:
+        results = backend._evaluate_exact_match_lm_eval(
+            rows, FakeTarget("A"), {}, COLUMNS, tokenizer="gpt2",
+            matcher=build_matcher(None),
+        )
+    finally:
+        lm.LMEvalBackend = saved
+
+    assert results[0]["status"] == "errored"
+    assert results[0]["score"] is None
+    assert "Connection refused" in results[0]["reason"]

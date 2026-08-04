@@ -10,6 +10,7 @@ Formatting cleanup survives that split; guessing does not, since that is what
 ``regex`` mode now does explicitly and visibly.
 """
 
+import math
 import re as stdlib_re
 from typing import Any, Dict, Optional, Tuple
 
@@ -20,8 +21,19 @@ from surogate_eval.utils.logger import get_logger
 
 logger = get_logger()
 
-#: The mode used when a benchmark names none. Today's behaviour, so an
-#: existing config keeps its results until it opts into something stricter.
+#: The mode used when a benchmark names none.
+#:
+#: On the direct-inference path this is today's behaviour, so an existing
+#: config keeps its results until it opts into something stricter.
+#:
+#: On the lm-eval path it is LOOSER than what that path did before. Scoring
+#: there used to come from lm-eval's own ``exact_match`` metric, which is
+#: full-string equality; unifying the two paths onto one matcher means a
+#: config that names no mode now gets containment there. On a single-letter
+#: answer key that is close to unscoreable - expected ``B`` is contained in
+#: "probably", "best" and "because" - so an MCQ benchmark scores near 100%
+#: whatever the model says. Any config with a tokenizer and short answer keys
+#: should set a mode explicitly; see ``examples/custom_eval_test_gpt.yaml``.
 DEFAULT_MODE = 'contains'
 
 VALID_MODES = ('contains', 'exact', 'regex')
@@ -216,14 +228,24 @@ def build_matcher(cfg: Optional[Dict[str, Any]]) -> Matcher:
             raise ConfigError(
                 f"matcher timeout must be a number, got {timeout_cfg!r}"
             ) from exc
-        # A zero or negative timeout does not raise `MatchTimeout` at all -
-        # `regex`'s own `timeout=` kwarg treats it as "no limit" - so it
-        # would silently disable the only safety property this module
-        # claims, and a catastrophic pattern would hang the row instead of
-        # costing it one.
-        if timeout <= 0:
+        # Both ends are rejected, for opposite reasons, both measured against
+        # `regex` 2025.11.3 rather than assumed:
+        #
+        #   timeout=-1   no limit at all, so a catastrophic pattern hangs the
+        #                row and the safety property this module claims is
+        #                silently off.
+        #   timeout=0    the reverse - `TimeoutError` fires immediately, even
+        #                on a trivial instant match, so every row errors and
+        #                nothing is ever measured.
+        #   timeout=inf  also raises immediately, same as 0.
+        #   timeout=nan  slips past a `<= 0` test, since every NaN comparison
+        #                is False.
+        #
+        # So the guard is "finite and positive", not just "positive".
+        if not math.isfinite(timeout) or timeout <= 0:
             raise ConfigError(
-                f"matcher timeout must be positive, got {timeout_cfg!r}"
+                f"matcher timeout must be a finite positive number, "
+                f"got {timeout_cfg!r}"
             )
     logger.debug(f"Matcher: mode={mode} group={group} timeout={timeout}s")
     return Matcher(mode, compiled=compiled, group=group, timeout=timeout)

@@ -12,6 +12,12 @@
 
 - **The default is `contains`**, which is today's behaviour minus the retired heuristics. This plan
   must not change the result of any existing config that sets no `matcher`.
+
+  **Two exceptions, both deliberate, recorded after the fact.** A blank answer key now raises rather
+  than matching every output, which does change a default config's result and is the point: fail-open
+  on an unscoreable row is worse than the change. And on the **lm-eval path** the default is looser
+  than what that path did before, because scoring there used to come from lm-eval's own `exact_match`
+  metric rather than from us. See the design doc's mode section.
 - **A failure to measure is never a score.** An unmeasured row is `score=None`, `success=False`,
   `status='errored'` with a reason, matching `_evaluate_exact_match_direct`'s existing rows.
 - **A non-matching pattern is a wrong answer** (`score=0.0`), not an unmeasured row. An invalid

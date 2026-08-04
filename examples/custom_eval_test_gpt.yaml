@@ -44,6 +44,17 @@ targets:
             choices_columns: [option_a, option_b, option_c, option_d]
             choices_labels: [A, B, C, D]
 
+            # Required here, not optional. This target sets a `tokenizer`, so
+            # exact_match rows take the lm-eval path, and the answer keys in
+            # this dataset are single letters. Without a mode the default is
+            # `contains`, under which expected "B" is satisfied by any output
+            # containing a "b" ("probably", "best", "because"), so the
+            # benchmark scores near 100% whatever the model answers.
+            matcher:
+              mode: regex
+              pattern: '\b([ABCD])\b'
+              flags: i
+
             # Evaluation settings
             limit: 20
             max_tokens: 256

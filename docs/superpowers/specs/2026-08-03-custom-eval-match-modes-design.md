@@ -79,8 +79,14 @@ Stated precisely, because "nothing regresses" is not true of both paths: the lm-
 took its verdict from lm-eval's own `exact_match` metric, which is stricter than containment. Rows
 scored there get *looser* under the default, and an MCQ benchmark with a tokenizer configured gains
 the same false positive the direct path already had. That is the cost of having one rule instead of
-two, and it is bounded: the platform sets no tokenizer on eval targets, so only a runner-direct
-config with a local model reaches that path, and setting `mode: exact` removes it.
+two. The platform sets no tokenizer on eval targets, so no ops-launched run reaches that path today.
+
+That bound is narrower than it sounds, though, and it should not be read as "nobody is exposed". A
+runner-direct config with a local model is exactly what `examples/custom_eval_test_gpt.yaml` is, and
+its dataset is single-letter MCQ rows. On a single-letter key containment is close to unscoreable:
+expected `B` is satisfied by "probably", "best" and "because", so the benchmark scores near 100%
+whatever the model answers. That config now sets `mode: regex` explicitly rather than relying on the
+default, and any config pairing a tokenizer with short answer keys should do the same.
 
 **`exact`** — formatting cleanup, then case-insensitive equality.
 
@@ -156,7 +162,11 @@ benchmark that scores none is never validated. Harmless, since it has no effect 
 
 The `regex` module, already installed as a transitive dependency (2025.11.3), used for its `timeout`
 parameter. Patterns are user input and stdlib `re` backtracks with no timeout, so a catastrophic
-pattern would hang the eval pod. No new dependency is added, and `google-re2` is not needed.
+pattern would hang the eval pod. `google-re2` is not needed.
+
+`regex` is now a **declared** dependency (`pyproject.toml`), not merely a transitive one. It was
+present only via `evalscope`/`lm-eval`, so an upstream bump dropping it would have broken this module
+at import time; declaring it costs no install footprint, since it was already being installed.
 
 Worth stating plainly: this is a self-inflicted foot-gun rather than an attack surface. The pattern
 comes from the tenant running their own benchmark, on their own per-run pod. The timeout exists so a
@@ -206,7 +216,7 @@ convention its sibling `_evaluate_exact_match_direct` already follows. It also c
 
 No network; all cases are plain strings through the real comparison.
 
-- The four false positives above must fail under `exact` and under `regex`, and still pass under
+- The four false positives above must fail under `exact`, and still pass under
   `contains`, so the default is pinned as today's behaviour.
 - MCQ extraction: expected `A`, output `The answer is C.`, pattern `\b([ABCD])\b` → extracts `C`,
   scores 0.0.

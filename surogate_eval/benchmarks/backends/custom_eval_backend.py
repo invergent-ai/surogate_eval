@@ -301,6 +301,20 @@ class CustomEvalBackend:
 
             # Map results back to original indices
             detailed_results = lm_results.get('detailed_results', [])
+            # `LMEvalBackend.evaluate` does not raise when `simple_evaluate`
+            # fails: it returns a payload with no `detailed_results` and the
+            # real cause in `metadata['error']` (lm_eval_backend.py:350-366).
+            # So the most likely real failure - an unreachable target, a bad
+            # tokenizer - arrives here as "zero rows returned", every row
+            # takes the unmeasured branch below, and the actual diagnostic is
+            # dropped unless it is carried into the reason. Same principle as
+            # building the matcher above the path fork: an error should name
+            # what actually broke.
+            lm_error = (lm_results.get('metadata') or {}).get('error')
+            no_result_reason = (
+                f'lm-eval returned no result for this row: {lm_error}'
+                if lm_error else 'lm-eval returned no result for this row'
+            )
             results = []
 
             for i, row in enumerate(lm_eval_rows):
@@ -317,7 +331,7 @@ class CustomEvalBackend:
                         'status': 'errored',
                         'score': None,
                         'success': False,
-                        'reason': 'lm-eval returned no result for this row',
+                        'reason': no_result_reason,
                     })
                     continue
 

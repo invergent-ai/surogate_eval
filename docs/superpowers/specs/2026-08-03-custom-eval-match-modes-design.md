@@ -56,10 +56,17 @@ every non-judge benchmark a user builds lands on this comparison.
 eval_type: exact_match      # who scores the row: string comparison, judge, hybrid
 matcher:
   mode: regex               # how the string comparison decides
-  pattern: '\b([ABCD])\b'
-  flags: i
+  pattern: '.*\b([ABCD])\b'
   group: 1
 ```
+
+Two details of that pattern are load-bearing, and both were learned by getting them wrong. The
+leading `.*` is greedy, so it anchors on the **last** standalone A-D rather than the first: without
+it, a model that reasons before answering ("A good answer is B") scores its own preamble. And there
+is no `flags: i`, because case-insensitively a lone a-d is the English article "a" and the usual
+option marker ("a) no  d) yes"), so `i` makes ordinary prose extract the wrong letter. The residual
+cost is a model answering purely in lowercase, which extracts nothing and scores wrong: the safe
+direction, and rare, since MCQ letters are near-always capitalised.
 
 `eval_type` keeps meaning *who scores this*; `matcher.mode` means *how*. The alternative, adding a
 `regex` value to `eval_type`, was rejected: `hybrid` reads a per-row `eval_type` column to route rows
@@ -149,6 +156,7 @@ rather than a regex's guess at it, but it is a real change and not a no-op.
 | `matcher.mode` is unrecognised | benchmark fails before scoring | it currently falls into the containment bucket silently (`custom_eval_backend.py:250-262`) |
 | `matcher` is present but not a mapping | benchmark fails before scoring | including the falsy ones (`matcher: []`), which a `cfg or {}` would quietly read as "no matcher" |
 | `expected` is blank for a row | that row is errored | nothing to score against; see above |
+| `expected` is punctuation only (`.`, `!?`) | that row is errored | not literally fail-open like a blank key, but a period occurs in almost every prose generation, so under `contains` it scores near everything correct. Only near-universal punctuation counts: a symbolic key (`+`, `=`, `%`) is a real key and is still compared |
 
 The matcher is built once per benchmark, before the direct/lm-eval path choice. Building it inside
 the lm-eval path put it under that call's blanket `except Exception`, so a matcher typo was reported
@@ -218,7 +226,7 @@ No network; all cases are plain strings through the real comparison.
 
 - The four false positives above must fail under `exact`, and still pass under
   `contains`, so the default is pinned as today's behaviour.
-- MCQ extraction: expected `A`, output `The answer is C.`, pattern `\b([ABCD])\b` → extracts `C`,
+- MCQ extraction: expected `A`, output `The answer is C.`, pattern `.*\b([ABCD])\b` → extracts `C`,
   scores 0.0.
 - Formatting cleanup survives in all modes: expected `42`, output `**42**` → passes under `exact`.
 - The retired heuristics: expected `a@b.com`, output `Contact: a@b.com` → now fails under `exact`,

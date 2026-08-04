@@ -435,3 +435,91 @@ def test_the_expected_value_is_still_compared_case_insensitively_under_regex():
     matcher = build_matcher({"mode": "regex", "pattern": r"\b([A-D])\b"})
 
     assert matcher.compare("The answer is D", "d")[0] is True
+
+
+# --- external review, follow-up pass ------------------------------------
+
+
+@pytest.mark.parametrize("key", ["", "   ", ".", "...", " . ", "!?", ",", None])
+def test_a_key_with_nothing_to_compare_is_unscorable(key):
+    """Blank is the obvious case. A key of `'.'` is the same failure wearing
+    a thinner disguise: a period occurs in almost every prose generation, so
+    under `contains` it scores near everything correct."""
+    with pytest.raises(UnscorableRow):
+        build_matcher(None).compare("The answer is Paris.", key)
+
+
+@pytest.mark.parametrize("key", ["+", "=", ">", "%", "@", "-", "0"])
+def test_a_symbolic_answer_key_is_still_a_real_key(key):
+    """The guard above must not swallow these. An operator or comparison
+    benchmark legitimately keys on a single symbol, and unlike a period they
+    are not near-universal substrings of prose.
+
+    Asserted as "the key is still compared" rather than as a round trip:
+    ``clean_formatting`` runs on the OUTPUT side and renders markdown, so a
+    generation of exactly ``>`` or ``-`` is read as a blockquote or a list
+    bullet and cleans to nothing. That is a separate, pre-existing property
+    of the cleanup and not what this guard decides.
+    """
+    matcher = build_matcher({"mode": "exact"})
+
+    # Reaches the comparison at all, rather than being rejected as unscorable.
+    assert matcher.compare("something else", key)[0] is False
+    assert matcher.compare(f"the answer is {key} today", key)[0] is False
+    assert build_matcher(None).compare(f"a {key} b", key)[0] is True
+
+
+MCQ_CORPUS = [
+    # Real gpt-4o-mini generations from the live run.
+    ("C. Paris", "C"),
+    ("D. Pacific  The Pacific Ocean is the largest ocean on Earth.", "D"),
+    ("The chemical symbol for gold is B. Au.", "B"),
+    ("A. 300,000 km/s", "A"),
+    # Prose shapes that broke the first pattern shipped for this.
+    ("I think a good answer is B", "B"),
+    ("Looking at a few options, C is correct", "C"),
+    ("a) no  d) yes, so D", "D"),
+    ("A good answer is B", "B"),
+    ("The answer is B, not a", "B"),
+    ("I pick C. Not a or b.", "C"),
+]
+
+
+@pytest.mark.parametrize("output, key", MCQ_CORPUS)
+def test_the_documented_mcq_pattern_survives_real_model_prose(output, key):
+    """The pattern in `examples/` is the one users copy, so it is worth a
+    test rather than an eyeball.
+
+    Two things make it work, and both were learned the hard way. The leading
+    `.*` is greedy, so it anchors on the LAST standalone A-D: without it a
+    model that reasons before answering scores its own preamble. And there is
+    no `flags: i`, because case-insensitively a lone a-d is the English
+    article "a" and the usual option marker, so `i` makes ordinary prose
+    extract the wrong letter.
+    """
+    matcher = build_matcher({"mode": "regex", "pattern": r".*\b([ABCD])\b"})
+
+    assert matcher.compare(output, key)[0] is True
+
+
+def test_the_mcq_pattern_still_rejects_a_wrong_answer():
+    """Tolerating prose must not mean matching anything."""
+    matcher = build_matcher({"mode": "regex", "pattern": r".*\b([ABCD])\b"})
+
+    assert matcher.compare("The answer is C", "B")[0] is False
+    assert matcher.compare("I am not sure", "B")[0] is False
+
+
+def test_the_shipped_example_configs_use_that_pattern():
+    """The tests above are worth nothing if the file users copy differs."""
+    import yaml
+    from pathlib import Path
+
+    examples = Path(__file__).resolve().parents[1] / "examples"
+    for name in ("custom_eval_test.yaml", "custom_eval_test_gpt.yaml"):
+        cfg = yaml.safe_load((examples / name).read_text())
+        target = next(t for t in cfg["targets"] if t.get("evaluations"))
+        matcher = target["evaluations"][0]["benchmarks"][0]["matcher"]
+
+        assert matcher["pattern"] == r".*\b([ABCD])\b", name
+        assert "flags" not in matcher, f"{name}: `i` makes prose extract the article 'a'"

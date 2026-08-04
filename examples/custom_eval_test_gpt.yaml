@@ -50,10 +50,20 @@ targets:
             # `contains`, under which expected "B" is satisfied by any output
             # containing a "b" ("probably", "best", "because"), so the
             # benchmark scores near 100% whatever the model answers.
+            # `.*` before the letter is load-bearing: it is greedy, so the
+            # pattern anchors on the LAST standalone A-D rather than the
+            # first. A model that reasons before answering ("A good answer
+            # is B") otherwise scores its own preamble.
+            #
+            # No `flags: i`, also deliberate. Case-insensitively, a single
+            # lowercase a-d is the English article "a" and the usual option
+            # marker ("a) no  d) yes"), so `i` makes ordinary prose extract
+            # the wrong letter. The cost is a model that answers purely in
+            # lowercase, which extracts nothing and scores wrong: the safe
+            # direction, and rare, since MCQ letters are near-always capital.
             matcher:
               mode: regex
-              pattern: '\b([ABCD])\b'
-              flags: i
+              pattern: '.*\b([ABCD])\b'
 
             # Evaluation settings
             limit: 20

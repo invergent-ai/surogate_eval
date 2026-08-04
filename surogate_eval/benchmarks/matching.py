@@ -43,6 +43,12 @@ VALID_MODES = ('contains', 'exact', 'regex')
 #: attack - but it must still cost a row instead of the run.
 DEFAULT_TIMEOUT_SECONDS = 2.0
 
+#: Punctuation common enough in ordinary prose that an answer key made only
+#: of it matches nearly any generation under ``contains``. Used to recognise
+#: a key with nothing to compare, not to normalise one: brackets and the
+#: symbolic characters a real answer might consist of are deliberately absent.
+_PROSE_PUNCT = ' .,;:!?'
+
 _FLAG_CHARS = {
     'i': regex.IGNORECASE,
 }
@@ -113,10 +119,18 @@ class Matcher:
         # benchmark that should score 0% into one reporting 100%.
         wanted = ('' if expected is None else str(expected)).strip().lower()
 
-        if not wanted:
+        if not wanted.strip(_PROSE_PUNCT):
             # Every output contains the empty string, so `contains` would
             # score the whole benchmark 1.0 off one blank answer column.
             # A blank key is a dataset defect, and neither verdict is honest.
+            #
+            # `strip(_PROSE_PUNCT)` rather than a bare truthiness test so a
+            # key of `'.'` is caught too. It is not literally fail-open, but
+            # a period occurs in almost every prose generation, so under
+            # `contains` it scores near everything correct - the same failure
+            # with a thinner disguise. Only the near-universal punctuation is
+            # stripped, so a genuinely symbolic answer key (`+`, `=`, `>`,
+            # `%`) is still a real key and still compared.
             raise UnscorableRow('row has no expected answer to compare against')
 
         if self.mode == 'regex':

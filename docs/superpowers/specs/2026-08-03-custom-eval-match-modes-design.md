@@ -106,9 +106,12 @@ expected value is a long greeting, so none of them fire for it.
 | Pattern matches, extracted value equals expected | score 1.0 | |
 | Pattern matches, extracted value differs | score 0.0 | wrong answer |
 | Pattern does not match the output | score 0.0 | the pattern is the answer format the benchmark asked for; a model that produced nothing matching it did not answer correctly |
-| Pattern is invalid | benchmark fails at start | config error, every row would hit it |
+| Pattern is invalid | benchmark fails before scoring | config error, every row would hit it |
 | Match exceeds the timeout | that row is errored | a failure to measure, not the model's fault |
-| `matcher.mode` is unrecognised | benchmark fails at start | it currently falls into the containment bucket silently (`custom_eval_backend.py:250-262`) |
+| `matcher.mode` is unrecognised | benchmark fails before scoring | it currently falls into the containment bucket silently (`custom_eval_backend.py:250-262`) |
+
+Not a load-time check: it runs when the benchmark first scores a string row, so a matcher block on a
+benchmark that scores none is never validated. Harmless, since it has no effect there either way.
 
 ### Engine
 

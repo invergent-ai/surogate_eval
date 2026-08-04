@@ -118,10 +118,16 @@ class Matcher:
 
 
 def build_matcher(cfg: Optional[Dict[str, Any]]) -> Matcher:
-    """Validate a benchmark's ``matcher`` block once, at benchmark start.
+    """Validate a benchmark's ``matcher`` block once, before its rows are scored.
 
     Every row would hit a bad pattern or an unknown mode, so both are config
     errors rather than per-row failures.
+
+    Not a load-time check: this runs when a benchmark first scores a string
+    row, so a matcher block on a benchmark that scores no string rows is never
+    validated. Harmless today, since such a block has no effect either way. If
+    that stops being true, ``EvalConfig._validate_evaluations`` already walks
+    every benchmark dict at load and is where the eager check belongs.
     """
     cfg = cfg or {}
     if not isinstance(cfg, dict):

@@ -865,19 +865,23 @@ class CustomEvalBackend:
             # Rate over what was actually measured. The errored rows are
             # reported separately so the run outcome can see them.
             overall_score = safe_count / scored_n if scored_n else 0.0
+            # No rate when nothing was measured, same rule as the exact-match
+            # and judge tasks below: `safety_rate: 0.0` is indistinguishable
+            # from a model that was toxic on every row, and the report's
+            # "not measured" branch keys on the metric being absent.
+            toxicity_task = {
+                'total': total,
+                'safe': safe_count,
+                'toxic': scored_n - safe_count,
+                'scored_n': scored_n,
+                'errored_n': errored_n,
+            }
+            if scored_n:
+                toxicity_task['safety_rate'] = overall_score
             return {
                 'overall_score': overall_score,
                 'num_samples': total,
-                'task_results': {
-                    'toxicity': {
-                        'total': total,
-                        'safe': safe_count,
-                        'toxic': scored_n - safe_count,
-                        'safety_rate': overall_score,
-                        'scored_n': scored_n,
-                        'errored_n': errored_n,
-                    },
-                },
+                'task_results': {'toxicity': toxicity_task},
                 'detailed_results': all_results,
                 'metadata': {
                     'backend': 'custom_eval',
@@ -932,27 +936,47 @@ class CustomEvalBackend:
                 judge_avg * judge_scored
             ) / scored_total
 
+        # A task nobody could measure reports no rate at all, rather than a
+        # rate of zero. `accuracy: 0.0` is indistinguishable from a model that
+        # answered everything wrong, and the report's "not measured" branch
+        # keys on the metric being ABSENT, so filling it in with a zero is
+        # what stopped that branch ever firing. This branch made the case
+        # reachable on a healthy target: a blank answer column, a match
+        # timeout and a short lm-eval return all error every row.
+        exact_match_task = {
+            'total': em_total,
+            'correct': em_correct,
+            'scored_n': em_scored,
+            'errored_n': em_errored,
+        }
+        if em_scored:
+            exact_match_task['accuracy'] = em_correct / em_scored
+
+        judge_task = {
+            'total': judge_total,
+            'scored_n': judge_scored,
+            'errored_n': judge_errored,
+        }
+        if judge_scored:
+            judge_task['avg_score'] = judge_avg
+            judge_task['success_rate'] = (
+                sum(1 for r in judge_scored_rows if r['success']) / judge_scored
+            )
+
+        # A task with no rows at all is not a task. Emitting both keys
+        # unconditionally meant every exact-match-only benchmark reported a
+        # judge task over zero rows, which the change above would otherwise
+        # have promoted from a misleading 0.000 to a misleading "not measured".
+        task_results = {}
+        if em_total:
+            task_results['exact_match'] = exact_match_task
+        if judge_total:
+            task_results['judge'] = judge_task
+
         return {
             'overall_score': overall_score,
             'num_samples': total,
-            'task_results': {
-                'exact_match': {
-                    'total': em_total,
-                    'correct': em_correct,
-                    'accuracy': em_correct / em_scored if em_scored else 0.0,
-                    'scored_n': em_scored,
-                    'errored_n': em_errored,
-                },
-                'judge': {
-                    'total': judge_total,
-                    'avg_score': judge_avg,
-                    'success_rate': (
-                        sum(1 for r in judge_scored_rows if r['success']) / judge_scored
-                    ) if judge_scored else 0.0,
-                    'scored_n': judge_scored,
-                    'errored_n': judge_errored,
-                },
-            },
+            'task_results': task_results,
             'detailed_results': all_results,
             'metadata': {
                 'backend': 'custom_eval',

@@ -276,8 +276,16 @@ def test_judge_errors_are_reported_in_the_summary_counts(monkeypatch, tmp_path):
 
     judge = result["task_results"]["judge"]
     assert (judge["scored_n"], judge["errored_n"]) == (0, 2)
-    assert judge["avg_score"] == 0.0
+    # No rate at all, rather than a rate of zero. `avg_score: 0.0` is
+    # indistinguishable from a judge that scored every answer badly, and the
+    # report's "not measured" branch keys on the metric being absent, so
+    # filling it in was what stopped that branch ever firing.
+    assert "avg_score" not in judge
+    assert "success_rate" not in judge
     assert result["overall_score"] == 0.0
+    # Only the task that had rows is reported: this benchmark has no
+    # exact-match rows, so there is no exact-match task to speak of.
+    assert set(result["task_results"]) == {"judge"}
 
 
 def test_judge_healthy_target_still_scores(fake_geval):

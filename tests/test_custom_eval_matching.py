@@ -386,3 +386,70 @@ def test_the_ignorecase_flag_still_works():
 
     success, extracted = matcher.compare("ANSWER: B", "B")
     assert success is True and extracted == "B"
+
+
+# --- trailing punctuation ----------------------------------------------
+
+
+@pytest.mark.parametrize(
+    "output",
+    ["D", "D.", "D!", "D,", "D;", "D:", "**D**.", "d.", "  D.  "],
+)
+def test_exact_ignores_trailing_sentence_punctuation(output):
+    """A model answering ``D.`` has answered D. Scoring it wrong measures
+    formatting compliance rather than knowledge, and `exact` reporting 0.0
+    across a whole benchmark is as uninformative as reporting 1.0."""
+    success, _cleaned = build_matcher({"mode": "exact"}).compare(output, "D")
+
+    assert success is True
+
+
+def test_regex_extraction_ignores_trailing_punctuation_too():
+    """`regex` compares its extracted value by the same rule `exact` uses, so
+    the two must not disagree about a trailing period."""
+    matcher = build_matcher({"mode": "regex", "pattern": r"(\w+\.?)"})
+
+    assert matcher.compare("Paris.", "Paris")[0] is True
+
+
+@pytest.mark.parametrize(
+    "output, expected, note",
+    [
+        ("f(x", "f(x)", "a truncated bracket expression is not the answer"),
+        ("sin(x", "sin(x)", "same, with a function name"),
+        ("A", "D", "a plain wrong answer"),
+        ("The answer is D.", "D", "prose is not a bare letter"),
+        ("D. Pacific", "D", "letter plus label is not a bare letter"),
+        ("D)", "D", "brackets are excluded from the strip on purpose"),
+    ],
+)
+def test_the_punctuation_tolerance_opens_no_false_positives(output, expected, note):
+    """Brackets are deliberately not stripped. `)` can be part of an answer,
+    so stripping it would score a truncated generation as correct - a silent
+    false positive, which is the failure this module exists to prevent."""
+    success, _cleaned = build_matcher({"mode": "exact"}).compare(output, expected)
+
+    assert success is False, note
+
+
+@pytest.mark.parametrize("key", ["D", "D.", "Yes.", "f(x)", "3.14", "no.", "etc."])
+def test_a_key_still_matches_itself_whatever_its_punctuation(key):
+    """Stripping only one side would mean a key legitimately ending in
+    punctuation could never be matched. Both sides, or neither."""
+    assert build_matcher({"mode": "exact"}).compare(key, key)[0] is True
+
+
+def test_a_punctuation_only_expected_is_unscorable():
+    """`'.'` survives the blank check but weighs nothing once stripped, so it
+    would match any punctuation-only output. Same fail-open shape as blank."""
+    with pytest.raises(UnscorableRow):
+        build_matcher({"mode": "exact"}).compare("!", ".")
+
+
+def test_contains_is_not_changed_by_any_of_this():
+    """The default's one promise is that it reproduces the historical
+    behaviour, so the tolerance deliberately stops at the equality modes."""
+    contains = build_matcher(None)
+
+    assert contains.compare("The answer is C.", "A")[0] is True
+    assert contains.compare("Nobody knows.", "no")[0] is True

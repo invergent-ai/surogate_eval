@@ -82,7 +82,23 @@ the same false positive the direct path already had. That is the cost of having 
 two, and it is bounded: the platform sets no tokenizer on eval targets, so only a runner-direct
 config with a local model reaches that path, and setting `mode: exact` removes it.
 
-**`exact`** — formatting cleanup, then case-insensitive equality.
+**`exact`** — formatting cleanup, then case-insensitive equality, ignoring a trailing run of sentence
+punctuation (`. ! , ; :`) on both sides.
+
+That last part is not pedantry avoidance, it is the difference between measuring knowledge and
+measuring formatting compliance. A model answering `D.` to an answer key of `D` has answered D, and
+an `exact` benchmark reporting 0.0 across every row is as uninformative as one reporting 1.0.
+Stripping on both sides rather than one keeps a key that legitimately ends in punctuation (`etc.`,
+`Yes.`) able to match itself.
+
+Brackets are deliberately excluded, so `D)` still fails. `)` can be part of an answer (`f(x)`,
+`sin(x)`), and stripping it would score a truncated generation of `f(x` as correct: a silent false
+positive, which is the failure this whole design exists to prevent. A model that writes `D)` is
+better served by `regex`, which handles it along with every other shape.
+
+The tolerance stops at the equality modes. `contains` is untouched, because the one promise the
+default makes is that it reproduces the historical behaviour, and substring already tolerates
+trailing punctuation anyway.
 
 **`regex`** — apply the user's pattern to the cleaned output, take the capture group (`group`,
 default 1, or 0 when the pattern has no groups), then compare that to `expected` by the same rule
@@ -143,6 +159,7 @@ rather than a regex's guess at it, but it is a real change and not a no-op.
 | `matcher.mode` is unrecognised | benchmark fails before scoring | it currently falls into the containment bucket silently (`custom_eval_backend.py:250-262`) |
 | `matcher` is present but not a mapping | benchmark fails before scoring | including the falsy ones (`matcher: []`), which a `cfg or {}` would quietly read as "no matcher" |
 | `expected` is blank for a row | that row is errored | nothing to score against; see above |
+| `expected` is punctuation only (`.`) | that row is errored | survives the blank check but weighs nothing once the trailing run is stripped, so it would match any punctuation-only output |
 
 The matcher is built once per benchmark, before the direct/lm-eval path choice. Building it inside
 the lm-eval path put it under that call's blanket `except Exception`, so a matcher typo was reported
@@ -229,6 +246,11 @@ No network; all cases are plain strings through the real comparison.
 - `flags: m` and `flags: s` are rejected; `flags: i` still works.
 - A reordered lm-eval result set errors both rows instead of scoring them against each other's keys.
 - A bad matcher never enters the lm-eval path, so it is not reported as an lm-eval failure.
+- Under `exact`, `D.` `D!` `D,` and `**D**.` all match a key of `D`, while `D)` does not, and a
+  truncated `f(x` does not match a key of `f(x)`.
+- Every key matches itself whatever its punctuation, including `etc.` and `f(x)`.
+- A punctuation-only key raises rather than matching a punctuation-only output.
+- `contains` is unchanged by the tolerance.
 
 ## Out of scope
 

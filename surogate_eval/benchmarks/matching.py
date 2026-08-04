@@ -31,6 +31,19 @@ VALID_MODES = ('contains', 'exact', 'regex')
 #: attack - but it must still cost a row instead of the run.
 DEFAULT_TIMEOUT_SECONDS = 2.0
 
+#: Trailing punctuation an equality comparison ignores, so a model answering
+#: `D.` is not marked wrong against an answer key of `D`. Sentence enders
+#: only. Brackets are deliberately absent: `)` can be part of the answer
+#: (`f(x)`, `sin(x)`), and stripping it would score a truncated `f(x` as
+#: correct - a silent false positive, which is the failure this module exists
+#: to prevent. A model that writes `D)` is better served by `regex` mode.
+_TRAILING_PUNCT = '.!,;:'
+
+
+def _core(text: str) -> str:
+    """The part of a value that an equality comparison actually weighs."""
+    return text.rstrip(_TRAILING_PUNCT).strip()
+
 _FLAG_CHARS = {
     'i': regex.IGNORECASE,
 }
@@ -101,10 +114,12 @@ class Matcher:
         # benchmark that should score 0% into one reporting 100%.
         wanted = ('' if expected is None else str(expected)).strip().lower()
 
-        if not wanted:
+        if not _core(wanted):
             # Every output contains the empty string, so `contains` would
             # score the whole benchmark 1.0 off one blank answer column.
             # A blank key is a dataset defect, and neither verdict is honest.
+            # `_core` rather than `wanted` so a punctuation-only key ('.') is
+            # caught too: it survives the blank check but weighs nothing.
             raise UnscorableRow('row has no expected answer to compare against')
 
         if self.mode == 'regex':
@@ -119,11 +134,14 @@ class Matcher:
                 # producing nothing that matches it is a wrong answer.
                 return False, ''
             extracted = (found.group(self._group) or '').strip()
-            return extracted.lower() == wanted, extracted
+            return _core(extracted.lower()) == _core(wanted), extracted
 
         got = cleaned.strip().lower()
         if self.mode == 'exact':
-            return got == wanted, cleaned
+            return _core(got) == _core(wanted), cleaned
+        # `contains` is left alone on purpose: it is the default, and the one
+        # promise the default makes is that it reproduces the historical
+        # behaviour. Substring already tolerates trailing punctuation anyway.
         return wanted in got, cleaned
 
 

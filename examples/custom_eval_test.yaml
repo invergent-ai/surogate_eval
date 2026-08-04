@@ -48,7 +48,9 @@ targets:
             # contained in "The answer is C."), so set a mode explicitly.
             #
             #   contains  expected appears anywhere in the output (default)
-            #   exact     output equals expected, case-insensitively
+            #   exact     output equals expected, case-insensitively, ignoring
+            #             trailing . ! , ; : so "D." matches a key of "D".
+            #             Brackets are NOT ignored, so "D)" does not match.
             #   regex     pull the answer out of the output with `pattern`,
             #             then compare that to expected like `exact` does
             #

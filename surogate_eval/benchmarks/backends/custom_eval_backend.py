@@ -27,6 +27,56 @@ except ImportError:
     DEEPEVAL_AVAILABLE = False
 
 
+#: Files a dataset repo carries alongside its data. Every one of these has a
+#: data-ish extension, so a "first file with a known suffix" rule picks the
+#: wrong one -- `dataset_dict.json` sorts before `train/dataset.parquet` and
+#: holds `{"splits": ["train"]}`, which loads as a dataset with no columns and
+#: reports the mapped column missing.
+_METADATA_FILENAMES = frozenset({
+    'dataset_dict.json',
+    'dataset_info.json',
+    'state.json',
+})
+
+#: Best first: parquet is the canonical form a Hub dataset is published in,
+#: and the others are what an unconverted upload might still be sitting as.
+_DATA_EXTENSIONS = ('.parquet', '.jsonl', '.json', '.csv')
+
+
+def _pick_dataset_file(paths: List[str], split: str = '') -> Optional[str]:
+    """Choose the data file to download from a repo listing.
+
+    Three rules, in order:
+
+    1. Metadata files are never data, whatever they are called.
+    2. A file under ``{split}/`` wins, because a repo holding several splits
+       otherwise loads whichever sorts first and scores the wrong rows
+       silently.
+    3. Failing that, prefer by extension rather than by listing order.
+
+    Returns ``None`` when nothing qualifies, so the caller can name what it
+    did find.
+    """
+    candidates = [
+        p for p in paths
+        if p and Path(p).name not in _METADATA_FILENAMES
+        and Path(p).suffix.lower() in _DATA_EXTENSIONS
+    ]
+    if not candidates:
+        return None
+
+    def rank(path: str) -> tuple:
+        in_split = bool(split) and Path(path).parent.name == split
+        try:
+            ext_rank = _DATA_EXTENSIONS.index(Path(path).suffix.lower())
+        except ValueError:  # pragma: no cover - filtered above
+            ext_rank = len(_DATA_EXTENSIONS)
+        # Sorted ascending, so negate the flag we want to win.
+        return (not in_split, ext_rank, path)
+
+    return sorted(candidates, key=rank)[0]
+
+
 class CustomEvalBackend:
     """
     Backend for custom evaluation with mixed eval types.
@@ -55,7 +105,7 @@ class CustomEvalBackend:
         # Handle Hub URLs — hub://{user}/{repo}/{ref}
         # Downloads all dataset files from the Hub REST API.
         if source.startswith('hub://'):
-            local_path = self._download_from_hub(source)
+            local_path = self._download_from_hub(source, split)
             logger.info(f"Downloaded Hub dataset to: {local_path}")
             source = local_path
 
@@ -94,7 +144,7 @@ class CustomEvalBackend:
 
         return dataset
 
-    def _download_from_hub(self, hub_uri: str) -> str:
+    def _download_from_hub(self, hub_uri: str, split: str = '') -> str:
         """Download a dataset from the surogate-hub REST API.
 
         URI format: hub://{user}/{repo}/{ref}
@@ -134,15 +184,9 @@ class CustomEvalBackend:
         resp.raise_for_status()
         objects = resp.json().get('results', [])
 
-        # Find the first dataset file (.jsonl, .json, .csv, .parquet)
-        dataset_extensions = {'.jsonl', '.json', '.csv', '.parquet'}
-        dataset_file = None
-        for obj in objects:
-            obj_path = obj.get('path', '')
-            if Path(obj_path).suffix.lower() in dataset_extensions:
-                dataset_file = obj_path
-                break
-
+        dataset_file = _pick_dataset_file(
+            [o.get('path', '') for o in objects], split,
+        )
         if not dataset_file:
             raise FileNotFoundError(
                 f"No dataset file found in hub://{user}/{repo}/{ref}. "

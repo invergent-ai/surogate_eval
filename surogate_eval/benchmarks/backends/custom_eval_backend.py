@@ -589,9 +589,20 @@ class CustomEvalBackend:
             judge_model = DeepEvalTargetWrapper(target)
             logger.info(f"No judge configured, using target as judge: {target.name}")
 
-        default_criteria = config.get(
-            'judge_criteria',
-            'Evaluate if the response correctly answers the question based on the expected answer.'
+        # ``or``, not ``get``'s default: ``GenericBenchmark.evaluate`` builds
+        # this config with every key present, so ``judge_criteria`` is there
+        # as ``None`` whenever the YAML omits it and a two-argument ``get``
+        # returns that ``None`` instead of the fallback. GEval then raises
+        # "Either 'criteria' or 'evaluation_steps' must be provided" on every
+        # row, so a judge benchmark that named no criteria errored 100% of
+        # its rows and failed the run on the error-rate rule -- the fallback
+        # below was unreachable code.
+        #
+        # This also covers a criteria explicitly set to "", which a form
+        # posting an empty field produces and which is equally unusable.
+        default_criteria = config.get('judge_criteria') or (
+            'Evaluate if the response correctly answers the question '
+            'based on the expected answer.'
         )
 
         prompt_template = config.get('prompt_template')

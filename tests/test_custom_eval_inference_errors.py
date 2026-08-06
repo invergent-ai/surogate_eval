@@ -344,3 +344,62 @@ def test_mixed_evaluate_reports_errors_in_scored_n_errored_n(monkeypatch, tmp_pa
     # None of the errored rows contributed a fake zero to the rates.
     assert em["accuracy"] >= 0.0  # would ZeroDivisionError/skew if miscounted
     assert judge["avg_score"] == 1.0  # the one scored judge row, not diluted by the errored one
+
+
+# --- judge criteria default --------------------------------------------
+
+
+def _criteria_seen():
+    """The ``criteria`` GEval was constructed with, one per row."""
+    return [getattr(g, "criteria", None) for g in FakeGEval.instances]
+
+
+class RecordingGEval(FakeGEval):
+    """FakeGEval that keeps the kwargs it was built with.
+
+    ``FakeGEval.__init__`` swallows **kwargs, so the existing harness cannot
+    see what ``criteria`` was passed -- which is the whole subject here.
+    """
+
+    def __init__(self, score=0.9, raises=None, **kwargs):
+        super().__init__(score=score, raises=raises, **kwargs)
+        self.criteria = kwargs.get("criteria")
+
+
+@pytest.mark.parametrize("config", [
+    # What GenericBenchmark.evaluate actually builds: every key present, and
+    # `judge_criteria` is None whenever the YAML omits it. The other judge
+    # tests here pass `{}`, a shape production never produces, which is why
+    # this went unnoticed until a live run failed 6 of 6 rows.
+    {"judge_criteria": None},
+    # A form that posts an empty field.
+    {"judge_criteria": ""},
+    # The shape the fallback was written for.
+    {},
+])
+def test_a_benchmark_that_names_no_criteria_still_judges(monkeypatch, config):
+    """`config.get(key, default)` returns the default only when the key is
+    ABSENT. `generic.py` always inserts `judge_criteria`, so a two-argument
+    `get` handed `None` straight to `GEval`, which refuses to build without
+    criteria and errored every row -- failing the run on the error rate."""
+    FakeGEval.instances.clear()
+    monkeypatch.setattr(ceb, "GEval", lambda **kw: RecordingGEval(**kw))
+
+    results = CustomEvalBackend()._evaluate_judge_rows(
+        ROWS, FakeTarget(), config, {}, None,
+    )
+
+    assert [r["status"] for r in results] == ["scored", "scored"]
+    assert all(c for c in _criteria_seen()), _criteria_seen()
+
+
+def test_a_named_criteria_is_not_overridden_by_the_default(monkeypatch):
+    """The allow direction: the fallback must not shadow a real criteria."""
+    FakeGEval.instances.clear()
+    monkeypatch.setattr(ceb, "GEval", lambda **kw: RecordingGEval(**kw))
+
+    CustomEvalBackend()._evaluate_judge_rows(
+        ROWS, FakeTarget(), {"judge_criteria": "Reward a professional tone."}, {}, None,
+    )
+
+    assert _criteria_seen() == ["Reward a professional tone."] * len(ROWS)

@@ -1,7 +1,7 @@
 import pytest
 
 from surogate_eval.config.eval_config import EvalConfig
-from surogate_eval.config.loader import load_config
+from surogate_eval.config.loader import _expand_env_vars, load_config
 from surogate_eval.errors import ConfigError
 
 CONFIG = """\
@@ -54,3 +54,139 @@ def test_config_without_vars_is_unaffected(tmp_path):
     )
     config = load_config(EvalConfig, write(tmp_path, text))
     assert config.targets[0].api_key == "sk-literal"
+
+
+# --- user prose is not an environment variable -------------------------
+
+PROSE_CONFIG = """\
+project:
+  name: test
+targets:
+  - name: t1
+    type: llm
+    provider: openai
+    model: gpt-4
+    api_key: sk-literal
+    evaluations:
+      - name: run
+        benchmarks:
+          - name: custom-support-qa
+            backend: custom_eval
+            source: hub://p/ds/main
+            eval_type: judge
+            judge_criteria: "Score 1 if the reply greets the user by ${name}."
+            system_prompt: "Answer as ${persona} would."
+"""
+
+
+def test_a_placeholder_in_judge_criteria_is_left_alone(tmp_path, monkeypatch):
+    """`${...}` is ordinary template syntax in a prompt. Expanding the whole
+    document treated a sentence the user typed in the Studio as a reference
+    to a pod environment variable, and failed the entire run at config load
+    with a message naming a variable they never mentioned."""
+    monkeypatch.delenv("name", raising=False)
+    monkeypatch.delenv("persona", raising=False)
+
+    config = load_config(EvalConfig, write(tmp_path, PROSE_CONFIG))
+
+    benchmark = config.targets[0].evaluations[0].benchmarks[0]
+    assert benchmark.judge_criteria == (
+        "Score 1 if the reply greets the user by ${name}."
+    )
+    assert benchmark.system_prompt == "Answer as ${persona} would."
+
+
+def test_prose_is_not_expanded_even_when_the_variable_exists(tmp_path, monkeypatch):
+    """Silently rewriting a prompt because the pod happens to export a
+    matching name is worse than failing: the benchmark would score against
+    text the user never wrote."""
+    monkeypatch.setenv("name", "SHOULD-NOT-APPEAR")
+
+    config = load_config(EvalConfig, write(tmp_path, PROSE_CONFIG))
+
+    criteria = config.targets[0].evaluations[0].benchmarks[0].judge_criteria
+    assert "SHOULD-NOT-APPEAR" not in criteria
+    assert "${name}" in criteria
+
+
+def test_free_text_fields_beyond_the_benchmark_are_prose_too(tmp_path, monkeypatch):
+    """`comment` is documented as "additional comments about this target" and
+    is never read by anything, and `purpose` is the red-team persona fed
+    straight to the attack simulator. Both are prose by every argument that
+    put `system_prompt` on the list, and both were missing from it: `comment`
+    failed the run at load, and `purpose` was silently rewritten whenever the
+    pod happened to export a matching name."""
+    monkeypatch.setenv("persona", "SHOULD-NOT-APPEAR")
+    monkeypatch.delenv("PRIMARY_REGION", raising=False)
+    text = """\
+project:
+  name: test
+targets:
+  - name: t1
+    type: llm
+    provider: openai
+    model: gpt-4
+    api_key: sk-literal
+    comment: "Mirrors the ${PRIMARY_REGION} deployment."
+    red_teaming:
+      enabled: true
+      vulnerabilities: [bias]
+      purpose: "Support bot for ${persona}."
+"""
+    config = load_config(EvalConfig, write(tmp_path, text))
+
+    target = config.targets[0]
+    assert target.comment == "Mirrors the ${PRIMARY_REGION} deployment."
+    assert target.red_teaming["purpose"] == "Support bot for ${persona}."
+
+
+def test_a_credential_in_headers_still_expands(tmp_path, monkeypatch):
+    """`headers` is merged verbatim into every request, so it is a natural
+    place to pass a credential a provider does not take as `api_key`. An
+    allowlist keyed on `_key`/`_url` suffixes missed it and would have
+    shipped the literal `${...}` to the server -- a 401 a minute into the
+    run rather than an error at load."""
+    monkeypatch.setenv("SPIKE_HEADER_TOKEN", "tok-real")
+    text = """\
+project:
+  name: test
+targets:
+  - name: t1
+    type: llm
+    provider: openai
+    model: gpt-4
+    api_key: sk-literal
+    headers:
+      Authorization: "Bearer ${SPIKE_HEADER_TOKEN}"
+"""
+    config = load_config(EvalConfig, write(tmp_path, text))
+
+    assert config.targets[0].headers["Authorization"] == "Bearer tok-real"
+
+
+def test_prose_stays_prose_all_the_way_down(monkeypatch):
+    """A prose verdict has to carry into a nested block, not be recomputed
+    away at the next level.
+
+    Tested against `_expand_env_vars` directly because nothing in the schema
+    puts a dict under a prose key today, so no YAML can reach it. That is the
+    reason to pin it rather than to skip it: the docstring promises prose is
+    "passed through untouched", and the moment one of these fields grows
+    structure the promise quietly stops holding.
+    """
+    monkeypatch.setenv("SPIKE_NESTED", "SHOULD-NOT-APPEAR")
+    missing = set()
+
+    out = _expand_env_vars(
+        {
+            "description": {"note": "${SPIKE_NESTED}", "tags": ["${SPIKE_NESTED}"]},
+            "headers": {"Authorization": "Bearer ${SPIKE_NESTED}"},
+        },
+        missing,
+    )
+
+    assert out["description"]["note"] == "${SPIKE_NESTED}"
+    assert out["description"]["tags"] == ["${SPIKE_NESTED}"]
+    # The credential direction is unaffected: only a prose ancestor suppresses.
+    assert out["headers"]["Authorization"] == "Bearer SHOULD-NOT-APPEAR"
+    assert missing == set()

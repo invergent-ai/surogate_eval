@@ -1,7 +1,11 @@
+import time
 from types import SimpleNamespace
 
 import pytest
 
+import httpx
+
+from surogate_eval.targets import model
 from surogate_eval.targets.model import APIModelTarget as ModelTarget
 
 
@@ -104,3 +108,147 @@ def test_remote_target_stops_at_a_401():
     target.base_url = "https://api.example.com"
     assert target.health_check() is False
     assert client.calls == ["/v1/models"]
+
+
+
+# --- cold serverless targets -------------------------------------------
+
+
+class TimeoutRecordingClient(FakeClient):
+    """FakeClient that also records the timeout each probe was given."""
+
+    def __init__(self, status_code=None, raises=False):
+        super().__init__(status_code=status_code, raises=raises)
+        self.timeouts = []
+
+    def get(self, path, timeout=None):
+        self.timeouts.append(timeout)
+        return super().get(path, timeout=timeout)
+
+
+def test_a_remote_probe_waits_long_enough_for_a_cold_start():
+    """A serverless target scaled to zero is slow to ANSWER, not slow to
+    connect: the platform's front door completes the handshake at once and
+    holds the request while the container boots. Measured on Modal at 65s
+    cold, so a 10s read budget could never catch one and a run whose model
+    was merely idle was skipped entirely."""
+    client = TimeoutRecordingClient(status_code=200)
+    make_target("sk-real", client).health_check()
+
+    assert client.timeouts[0].read == model.COLD_START_READ_TIMEOUT
+    assert model.COLD_START_READ_TIMEOUT >= 60
+
+
+def test_a_remote_probe_gives_up_on_connecting_much_sooner():
+    """The other half of the same asymmetry, and what keeps the long read
+    budget affordable: an unroutable or refusing host never gets past
+    connect, so it costs the connect budget rather than the whole wait."""
+    client = TimeoutRecordingClient(status_code=200)
+    make_target("sk-real", client).health_check()
+
+    timeout = client.timeouts[0]
+    assert timeout.connect == model.CONNECT_TIMEOUT
+    assert timeout.connect < timeout.read
+
+
+def test_a_listening_but_silent_server_is_bounded_by_the_read_budget(monkeypatch):
+    """Behavioural, against a real socket rather than a fake.
+
+    A server that accepts the connection and never replies is exactly the
+    shape of a cold start, so it must be bounded by the read budget and not
+    hang the run. Constants are shrunk so the suite does not wait 90s."""
+    import socket
+    import threading
+
+    # Deliberately unequal. Shrinking both to the same number made the
+    # assertion below undecidable: `>= COLD_START_READ_TIMEOUT` and
+    # `>= CONNECT_TIMEOUT` were the same claim, so a probe that spent the
+    # wrong budget still passed.
+    monkeypatch.setattr(model, "COLD_START_READ_TIMEOUT", 2)
+    monkeypatch.setattr(model, "CONNECT_TIMEOUT", 1)
+
+    # 127.0.0.2, not 127.0.0.1: health_check dispatches to its LOCAL branch
+    # (a different timeout entirely) for any base_url containing "localhost",
+    # "127.0.0.1" or "0.0.0.0". Addressing loopback by another octet keeps
+    # this on the remote path, which is the one under test. Caught by timing
+    # the test -- it passed against the local branch and proved nothing.
+    listener = socket.socket()
+    listener.bind(("127.0.0.2", 0))
+    listener.listen(2)
+    port = listener.getsockname()[1]
+
+    # Accept every connection and say nothing, HOLDING each one open. The
+    # holding is the whole point: an earlier version let the accepted socket
+    # fall out of scope, which closed it, and the first probe then died of
+    # "connection reset by peer" in 0.00s instead of timing out. Only the
+    # second path exercised the read budget, and the test still passed.
+    accepted = []
+
+    def accept_and_hold():
+        while True:
+            try:
+                conn, _ = listener.accept()
+            except OSError:  # listener closed in the cleanup below
+                return
+            accepted.append(conn)
+
+    threading.Thread(target=accept_and_hold, daemon=True).start()
+
+    target = ModelTarget.__new__(ModelTarget)
+    target.name = "silent"
+    target.base_url = f"http://127.0.0.2:{port}/v1"
+    target.api_key = "sk-real"
+    target.provider = None
+    target.client = httpx.Client(base_url=target.base_url)
+
+    started = time.monotonic()
+    try:
+        assert target.health_check() is False
+    finally:
+        target.client.close()
+        listener.close()
+        for conn in accepted:
+            conn.close()
+    elapsed = time.monotonic() - started
+
+    # Expected shape is COLD_START_READ_TIMEOUT on the first path and
+    # CONNECT_TIMEOUT on the second, so ~3s here.
+    #
+    # Both bounds earn their place. The lower one says the READ budget is
+    # what ended the probe -- without it the test passes even when the
+    # connection dies instantly, which is how the reset-by-peer version
+    # above went unnoticed. The upper one says the budgets are the shrunk
+    # ones and not production values: 90 + 10 would be 100s.
+    assert elapsed >= model.COLD_START_READ_TIMEOUT, f"ended early at {elapsed:.2f}s"
+    assert elapsed < 8, f"probe took {elapsed:.1f}s"
+
+
+def test_only_the_first_path_pays_for_a_cold_start():
+    """The cold-start wait belongs once per TARGET, not once per path.
+
+    By the time the first path has spent the full read budget, the container
+    has either booted or is wedged, so giving the second path a fresh 90s
+    buys nothing and doubles what a hung endpoint costs. `eval.py` probes
+    targets in a plain serial loop with no deadline anywhere, so that cost
+    lands N times over before evaluation starts."""
+    client = TimeoutRecordingClient(status_code=404)  # nothing answers 200
+    make_target("sk-real", client).health_check()
+
+    assert len(client.timeouts) == 2, client.calls
+    assert client.timeouts[0].read == model.COLD_START_READ_TIMEOUT
+    assert client.timeouts[1].read == model.CONNECT_TIMEOUT
+    assert client.timeouts[1].connect == model.CONNECT_TIMEOUT
+
+
+def test_a_second_path_can_still_answer():
+    """The allow direction: shortening the later budget must not stop a
+    target whose first path simply 404s from being found on the second."""
+    class SecondPathAnswers(TimeoutRecordingClient):
+        def get(self, path, timeout=None):
+            self.timeouts.append(timeout)
+            self.calls.append(path)
+            return SimpleNamespace(status_code=200 if len(self.calls) > 1 else 404)
+
+    target = make_target("sk-real", SecondPathAnswers())
+    assert target.health_check() is True
+    assert len(target.client.calls) == 2

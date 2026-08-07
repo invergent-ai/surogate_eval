@@ -18,6 +18,7 @@ import regex
 
 from surogate_eval.errors import ConfigError, MatchTimeout, UnscorableRow
 from surogate_eval.utils.logger import get_logger
+from surogate_eval.utils.text import blank_as_none
 
 logger = get_logger()
 
@@ -174,7 +175,11 @@ def build_matcher(cfg: Optional[Dict[str, Any]]) -> Matcher:
     if not isinstance(cfg, dict):
         raise ConfigError(f"matcher must be a mapping, got {type(cfg).__name__}")
 
-    mode = cfg.get('mode', DEFAULT_MODE)
+    # Blank means unset, same rule as a judge's criteria. This one fails
+    # harder than that did: `build_matcher` runs once above the row loop,
+    # so a ConfigError here fails the WHOLE benchmark before a single row
+    # is scored -- zero results rather than N errored rows.
+    mode = blank_as_none(cfg.get('mode')) or DEFAULT_MODE
     if mode not in VALID_MODES:
         raise ConfigError(
             f"unknown matcher mode {mode!r}; expected one of {', '.join(VALID_MODES)}"

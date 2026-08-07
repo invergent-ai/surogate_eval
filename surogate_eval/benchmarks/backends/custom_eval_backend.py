@@ -10,6 +10,7 @@ from typing import Dict, Any, List, Optional
 from surogate_eval.benchmarks.matching import Matcher, build_matcher, clean_formatting
 from surogate_eval.targets import BaseTarget
 from surogate_eval.utils.logger import get_logger
+from surogate_eval.utils.text import blank_as_none
 
 logger = get_logger()
 
@@ -589,9 +590,14 @@ class CustomEvalBackend:
             judge_model = DeepEvalTargetWrapper(target)
             logger.info(f"No judge configured, using target as judge: {target.name}")
 
-        default_criteria = config.get(
-            'judge_criteria',
-            'Evaluate if the response correctly answers the question based on the expected answer.'
+        # ``blank_as_none`` and ``or``, not ``get``'s default: a criteria that
+        # is empty OR only whitespace is as fatal to GEval as an absent one,
+        # and a form posting a blank field produces all three. ``generic.py``
+        # drops the unset case for every key; blankness is per-site because
+        # only text fields have the notion.
+        default_criteria = blank_as_none(config.get('judge_criteria')) or (
+            'Evaluate if the response correctly answers the question '
+            'based on the expected answer.'
         )
 
         prompt_template = config.get('prompt_template')
@@ -602,7 +608,11 @@ class CustomEvalBackend:
             original_idx = row['_original_idx']
             instruction = self._get_column_value(row, columns, 'instruction', '')
             expected = self._get_column_value(row, columns, 'answer', '')
-            row_criteria = self._get_column_value(row, columns, 'judge_criteria') or default_criteria
+            # The more exposed of the two: this one comes from a dataset cell,
+            # where a lone space is easy to produce by accident.
+            row_criteria = blank_as_none(
+                self._get_column_value(row, columns, 'judge_criteria')
+            ) or default_criteria
 
             # Apply prompt template if provided (e.g. wrap raw text in a
             # classification prompt instead of sending it verbatim).

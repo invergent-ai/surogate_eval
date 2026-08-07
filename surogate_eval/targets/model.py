@@ -11,6 +11,18 @@ from ..utils.logger import get_logger
 
 logger = get_logger()
 
+#: Seconds a health-check probe may spend establishing a connection. A host
+#: that is unroutable, refusing, or gone fails here, so this bounds the cost
+#: of a dead endpoint.
+CONNECT_TIMEOUT = 10
+
+#: Seconds a health-check probe may then wait for the response. Sized for a
+#: serverless target booting from zero: the platform's front door completes
+#: the handshake at once and holds the request while the container starts, so
+#: a cold start is slow to *answer*, not slow to connect. Measured against a
+#: Modal endpoint at 65s cold and 1.07s warm.
+COLD_START_READ_TIMEOUT = 90
+
 
 class APIModelTarget(BaseTarget):
     """Target for API-based models (OpenAI-compatible)."""
@@ -195,7 +207,7 @@ class APIModelTarget(BaseTarget):
     def _probe_paths(
             self,
             paths,
-            timeout: float,
+            timeout: float | httpx.Timeout,
             rejected_credential_is_fatal: bool,
     ) -> Optional[bool]:
         """Try each path in turn.
@@ -231,10 +243,15 @@ class APIModelTarget(BaseTarget):
             # Check this FIRST before provider-specific logic
             if any(x in self.base_url for x in ['localhost', '127.0.0.1', '0.0.0.0']):
                 # A local server has no credential to reject, so a 4xx here
-                # is just the wrong path and the probe moves on. The 5s/10s
-                # split between this branch and the remote one is unexplained
-                # but kept: changing it changes how long a wedged endpoint
-                # blocks a run.
+                # is just the wrong path and the probe moves on.
+                #
+                # This branch keeps one flat 5s. The remote branch below no
+                # longer has a comparable single number -- it is
+                # CONNECT_TIMEOUT to connect and COLD_START_READ_TIMEOUT to
+                # answer -- so a wedged endpoint blocks this path for 5s and
+                # that one for up to COLD_START_READ_TIMEOUT. The asymmetry
+                # is deliberate: a local server does not scale to zero, so
+                # there is no cold start here to wait out.
                 if self._probe_paths(
                         self._model_list_paths() + ("/health",),
                         timeout=5,
@@ -255,17 +272,48 @@ class APIModelTarget(BaseTarget):
                 logger.error(f"No API key provided for {self.name}")
                 return False
 
-            probe = self._probe_paths(
-                self._model_list_paths(),
-                timeout=10,
-                rejected_credential_is_fatal=True,
-            )
-            if probe is not None:
-                return probe
+            # Split the budget rather than allowing one flat timeout. A
+            # serverless target that has scaled to zero is slow to *answer*
+            # and not slow to connect: the platform's front door completes
+            # the handshake immediately and holds the request while the
+            # container boots. A dead endpoint fails the other way round --
+            # refused, unroutable, or a blackholed SYN -- so it never gets
+            # past connect.
+            #
+            # That asymmetry is what tells the two apart, and it does the job
+            # a retry was reaching for while costing less: a cold target gets
+            # its full wait, an unreachable one is given up on in
+            # CONNECT_TIMEOUT rather than the whole budget. A flat 90s would
+            # have made every dead target cost 90s per path.
+            #
+            # And the wait is spent ONCE, on the first path only. A host that
+            # completes the handshake and never answers -- hung process,
+            # deadlocked container, wrong port onto an idle service -- is not
+            # "dead" in the refused sense above, so it is bounded by the read
+            # budget rather than the connect one. Letting every path spend
+            # that budget made such a target cost the whole thing twice, and
+            # `eval.py` probes targets serially with no deadline anywhere, so
+            # it lands once per target before evaluation starts. By the time
+            # the first path has waited out the budget the container has
+            # either booted or is wedged; a second full wait buys nothing.
+            paths = self._model_list_paths()
+            for probe_paths, read_timeout in (
+                (paths[:1], COLD_START_READ_TIMEOUT),
+                (paths[1:], CONNECT_TIMEOUT),
+            ):
+                probe = self._probe_paths(
+                    probe_paths,
+                    timeout=httpx.Timeout(read_timeout, connect=CONNECT_TIMEOUT),
+                    rejected_credential_is_fatal=True,
+                )
+                if probe is not None:
+                    return probe
 
             logger.error(
-                f"Could not verify {self.name} at {self.base_url}; "
-                "treating as unhealthy"
+                f"Could not verify {self.name} at {self.base_url}: nothing "
+                f"answered on {', '.join(paths)} "
+                f"({COLD_START_READ_TIMEOUT}s on {paths[0]}, then "
+                f"{CONNECT_TIMEOUT}s each); treating as unhealthy"
             )
             return False
 

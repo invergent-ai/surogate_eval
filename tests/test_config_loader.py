@@ -1,7 +1,7 @@
 import pytest
 
 from surogate_eval.config.eval_config import EvalConfig
-from surogate_eval.config.loader import load_config
+from surogate_eval.config.loader import _expand_env_vars, load_config
 from surogate_eval.errors import ConfigError
 
 CONFIG = """\
@@ -162,3 +162,31 @@ targets:
     config = load_config(EvalConfig, write(tmp_path, text))
 
     assert config.targets[0].headers["Authorization"] == "Bearer tok-real"
+
+
+def test_prose_stays_prose_all_the_way_down(monkeypatch):
+    """A prose verdict has to carry into a nested block, not be recomputed
+    away at the next level.
+
+    Tested against `_expand_env_vars` directly because nothing in the schema
+    puts a dict under a prose key today, so no YAML can reach it. That is the
+    reason to pin it rather than to skip it: the docstring promises prose is
+    "passed through untouched", and the moment one of these fields grows
+    structure the promise quietly stops holding.
+    """
+    monkeypatch.setenv("SPIKE_NESTED", "SHOULD-NOT-APPEAR")
+    missing = set()
+
+    out = _expand_env_vars(
+        {
+            "description": {"note": "${SPIKE_NESTED}", "tags": ["${SPIKE_NESTED}"]},
+            "headers": {"Authorization": "Bearer ${SPIKE_NESTED}"},
+        },
+        missing,
+    )
+
+    assert out["description"]["note"] == "${SPIKE_NESTED}"
+    assert out["description"]["tags"] == ["${SPIKE_NESTED}"]
+    # The credential direction is unaffected: only a prose ancestor suppresses.
+    assert out["headers"]["Authorization"] == "Bearer SHOULD-NOT-APPEAR"
+    assert missing == set()

@@ -160,8 +160,14 @@ def test_a_listening_but_silent_server_is_bounded_by_the_read_budget(monkeypatch
     import socket
     import threading
 
+    # Deliberately unequal. Shrinking both to the same number made the
+    # assertion below undecidable: `>= COLD_START_READ_TIMEOUT` and
+    # `>= CONNECT_TIMEOUT` were the same claim, so a probe that spent the
+    # wrong budget still passed. Connect succeeds instantly against a real
+    # listener, so a roomy connect budget costs nothing here and a swap of
+    # the two shows up as 2x5s against the 6s ceiling.
     monkeypatch.setattr(model, "COLD_START_READ_TIMEOUT", 1)
-    monkeypatch.setattr(model, "CONNECT_TIMEOUT", 1)
+    monkeypatch.setattr(model, "CONNECT_TIMEOUT", 5)
 
     # 127.0.0.2, not 127.0.0.1: health_check dispatches to its LOCAL branch
     # (a different timeout entirely) for any base_url containing "localhost",

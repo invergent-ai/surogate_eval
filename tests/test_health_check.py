@@ -163,11 +163,9 @@ def test_a_listening_but_silent_server_is_bounded_by_the_read_budget(monkeypatch
     # Deliberately unequal. Shrinking both to the same number made the
     # assertion below undecidable: `>= COLD_START_READ_TIMEOUT` and
     # `>= CONNECT_TIMEOUT` were the same claim, so a probe that spent the
-    # wrong budget still passed. Connect succeeds instantly against a real
-    # listener, so a roomy connect budget costs nothing here and a swap of
-    # the two shows up as 2x5s against the 6s ceiling.
-    monkeypatch.setattr(model, "COLD_START_READ_TIMEOUT", 1)
-    monkeypatch.setattr(model, "CONNECT_TIMEOUT", 5)
+    # wrong budget still passed.
+    monkeypatch.setattr(model, "COLD_START_READ_TIMEOUT", 2)
+    monkeypatch.setattr(model, "CONNECT_TIMEOUT", 1)
 
     # 127.0.0.2, not 127.0.0.1: health_check dispatches to its LOCAL branch
     # (a different timeout entirely) for any base_url containing "localhost",
@@ -213,11 +211,44 @@ def test_a_listening_but_silent_server_is_bounded_by_the_read_budget(monkeypatch
             conn.close()
     elapsed = time.monotonic() - started
 
+    # Expected shape is COLD_START_READ_TIMEOUT on the first path and
+    # CONNECT_TIMEOUT on the second, so ~3s here.
+    #
     # Both bounds earn their place. The lower one says the READ budget is
     # what ended the probe -- without it the test passes even when the
     # connection dies instantly, which is how the reset-by-peer version
-    # above went unnoticed. The upper one says the budget is the shrunk
-    # one and not a flat production timeout: two paths at 1s is ~2s, while
-    # the 10s this replaced would be 20s.
+    # above went unnoticed. The upper one says the budgets are the shrunk
+    # ones and not production values: 90 + 10 would be 100s.
     assert elapsed >= model.COLD_START_READ_TIMEOUT, f"ended early at {elapsed:.2f}s"
-    assert elapsed < 6, f"probe took {elapsed:.1f}s"
+    assert elapsed < 8, f"probe took {elapsed:.1f}s"
+
+
+def test_only_the_first_path_pays_for_a_cold_start():
+    """The cold-start wait belongs once per TARGET, not once per path.
+
+    By the time the first path has spent the full read budget, the container
+    has either booted or is wedged, so giving the second path a fresh 90s
+    buys nothing and doubles what a hung endpoint costs. `eval.py` probes
+    targets in a plain serial loop with no deadline anywhere, so that cost
+    lands N times over before evaluation starts."""
+    client = TimeoutRecordingClient(status_code=404)  # nothing answers 200
+    make_target("sk-real", client).health_check()
+
+    assert len(client.timeouts) == 2, client.calls
+    assert client.timeouts[0].read == model.COLD_START_READ_TIMEOUT
+    assert client.timeouts[1].read == model.CONNECT_TIMEOUT
+    assert client.timeouts[1].connect == model.CONNECT_TIMEOUT
+
+
+def test_a_second_path_can_still_answer():
+    """The allow direction: shortening the later budget must not stop a
+    target whose first path simply 404s from being found on the second."""
+    class SecondPathAnswers(TimeoutRecordingClient):
+        def get(self, path, timeout=None):
+            self.timeouts.append(timeout)
+            self.calls.append(path)
+            return SimpleNamespace(status_code=200 if len(self.calls) > 1 else 404)
+
+    target = make_target("sk-real", SecondPathAnswers())
+    assert target.health_check() is True
+    assert len(target.client.calls) == 2

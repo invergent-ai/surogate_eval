@@ -285,21 +285,35 @@ class APIModelTarget(BaseTarget):
             # its full wait, an unreachable one is given up on in
             # CONNECT_TIMEOUT rather than the whole budget. A flat 90s would
             # have made every dead target cost 90s per path.
-            probe = self._probe_paths(
-                self._model_list_paths(),
-                timeout=httpx.Timeout(
-                    COLD_START_READ_TIMEOUT, connect=CONNECT_TIMEOUT
-                ),
-                rejected_credential_is_fatal=True,
-            )
-            if probe is not None:
-                return probe
+            #
+            # And the wait is spent ONCE, on the first path only. A host that
+            # completes the handshake and never answers -- hung process,
+            # deadlocked container, wrong port onto an idle service -- is not
+            # "dead" in the refused sense above, so it is bounded by the read
+            # budget rather than the connect one. Letting every path spend
+            # that budget made such a target cost the whole thing twice, and
+            # `eval.py` probes targets serially with no deadline anywhere, so
+            # it lands once per target before evaluation starts. By the time
+            # the first path has waited out the budget the container has
+            # either booted or is wedged; a second full wait buys nothing.
+            paths = self._model_list_paths()
+            for probe_paths, read_timeout in (
+                (paths[:1], COLD_START_READ_TIMEOUT),
+                (paths[1:], CONNECT_TIMEOUT),
+            ):
+                probe = self._probe_paths(
+                    probe_paths,
+                    timeout=httpx.Timeout(read_timeout, connect=CONNECT_TIMEOUT),
+                    rejected_credential_is_fatal=True,
+                )
+                if probe is not None:
+                    return probe
 
             logger.error(
                 f"Could not verify {self.name} at {self.base_url}: nothing "
-                f"answered on {', '.join(self._model_list_paths())} within "
-                f"{COLD_START_READ_TIMEOUT}s ({CONNECT_TIMEOUT}s to connect); "
-                "treating as unhealthy"
+                f"answered on {', '.join(paths)} "
+                f"({COLD_START_READ_TIMEOUT}s on {paths[0]}, then "
+                f"{CONNECT_TIMEOUT}s each); treating as unhealthy"
             )
             return False
 

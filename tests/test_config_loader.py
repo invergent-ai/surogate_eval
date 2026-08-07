@@ -109,11 +109,25 @@ def test_prose_is_not_expanded_even_when_the_variable_exists(tmp_path, monkeypat
     assert "${name}" in criteria
 
 
-def test_a_missing_credential_still_raises(tmp_path, monkeypatch):
-    """The allow direction: narrowing where expansion happens must not lose
-    the protection it was added for (E-RUN-2, an unresolved key counting as
-    a valid credential)."""
-    monkeypatch.delenv("SPIKE_MISSING_KEY", raising=False)
-    monkeypatch.delenv("SPIKE_OTHER_MISSING", raising=False)
-    with pytest.raises(ConfigError):
-        load_config(EvalConfig, write(tmp_path, CONFIG))
+def test_a_credential_in_headers_still_expands(tmp_path, monkeypatch):
+    """`headers` is merged verbatim into every request, so it is a natural
+    place to pass a credential a provider does not take as `api_key`. An
+    allowlist keyed on `_key`/`_url` suffixes missed it and would have
+    shipped the literal `${...}` to the server -- a 401 a minute into the
+    run rather than an error at load."""
+    monkeypatch.setenv("SPIKE_HEADER_TOKEN", "tok-real")
+    text = """\
+project:
+  name: test
+targets:
+  - name: t1
+    type: llm
+    provider: openai
+    model: gpt-4
+    api_key: sk-literal
+    headers:
+      Authorization: "Bearer ${SPIKE_HEADER_TOKEN}"
+"""
+    config = load_config(EvalConfig, write(tmp_path, text))
+
+    assert config.targets[0].headers["Authorization"] == "Bearer tok-real"

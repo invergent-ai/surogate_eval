@@ -3,6 +3,7 @@
 from typing import Dict, Any
 from .base import BaseBenchmark, BenchmarkResult, BenchmarkConfig
 from ..targets import BaseTarget
+from ..utils.dict import remove_none_values
 from ..utils.logger import get_logger
 
 logger = get_logger()
@@ -73,25 +74,25 @@ class GenericBenchmark(BaseBenchmark):
             'matcher': self.config.matcher,
         }
 
-        # Drop what the YAML never set. A backend reads its own defaults with
-        # ``config.get(key, default)``, and that returns the default only when
-        # the key is ABSENT -- so handing over every key, with ``None`` for the
-        # ones nobody configured, made every such default unreachable code.
+        # Drop what the YAML never set. A backend reads its own defaults
+        # with ``config.get(key, default)``, and that returns the default
+        # only when the key is ABSENT -- so handing over every key, with
+        # ``None`` for the ones nobody configured, made every such default
+        # unreachable code. That is what left a judge benchmark naming no
+        # criteria erroring all its rows: GEval refuses to build without
+        # criteria, and the fallback beside it could never fire.
         #
-        # That is what left a judge benchmark naming no criteria erroring all
-        # its rows: ``config.get('judge_criteria', <text>)`` returned ``None``
-        # and GEval refuses to build without criteria. ``max_tokens`` (256) and
-        # ``eval_type`` ('exact_match') are the same shape.
+        # ``remove_none_values`` rather than a comprehension here because it
+        # recurses, so a nested block gets the same treatment -- notably the
+        # matcher, whose ``cfg.get('mode', DEFAULT_MODE)`` is the same trap
+        # one level down.
         #
         # Only ``None`` is dropped, so a deliberately falsy setting survives
-        # (``max_tokens: 0``, ``num_fewshot: 0``). Every reader of this dict is
-        # safe with a missing key: the two membership checks in the evalscope
-        # backend guard on the value as well, and every direct index is behind
-        # an ``is not None`` or a truthiness check.
-        backend_config = {
-            key: value for key, value in backend_config.items()
-            if value is not None
-        }
+        # (``max_tokens: 0``, ``num_fewshot: 0``). Every reader is safe with
+        # a missing key: the two membership checks in the evalscope backend
+        # guard on the value as well, and every direct index is behind an
+        # ``is not None`` or a truthiness check.
+        backend_config = remove_none_values(backend_config)
 
         backend_results = self.backend.evaluate(
             target=target,

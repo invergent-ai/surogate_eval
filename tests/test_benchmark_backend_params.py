@@ -114,10 +114,12 @@ def test_judge_scored_benchmark_reaches_evalscope_with_its_turn_limit():
 # --- keys the YAML never set ------------------------------------------
 
 
-def _run_minimal() -> dict:
+def _run_minimal(**config_kwargs) -> dict:
     """Drive the real ``evaluate`` for a benchmark that sets almost nothing."""
     benchmark = GenericBenchmark(
-        BenchmarkConfig(name="custom-support-qa", backend="custom_eval")
+        BenchmarkConfig(
+            name="custom-support-qa", backend="custom_eval", **config_kwargs
+        )
     )
     capturing = CapturingBackend()
     benchmark.backend = capturing
@@ -133,8 +135,12 @@ def test_an_unset_key_is_absent_rather_than_present_as_none():
 
     That is what made a judge benchmark with no criteria error all its rows:
     `config.get('judge_criteria', <text>)` returned `None`, and GEval
-    refuses to build without criteria. `max_tokens` and `eval_type` are the
-    same shape."""
+    refuses to build without criteria. `max_tokens` is the same shape.
+
+    (`eval_type` is not: `BenchmarkConfig.eval_type` is a plain `str` with a
+    default, so it is never None and never dropped. Its backend-side
+    `.get('eval_type', 'exact_match')` still cannot fire -- harmless, since
+    the two defaults agree.)"""
     passed = _run_minimal()
 
     nones = sorted(k for k, v in passed.items() if v is None)
@@ -153,19 +159,8 @@ def test_a_backend_default_can_actually_fire():
 def test_a_key_the_yaml_did_set_still_arrives():
     """The allow direction: dropping unset keys must not drop set ones,
     including falsy values a benchmark deliberately chose."""
-    benchmark = GenericBenchmark(
-        BenchmarkConfig(
-            name="custom-support-qa",
-            backend="custom_eval",
-            eval_type="judge",
-            max_tokens=0,
-            num_fewshot=0,
-        )
-    )
-    capturing = CapturingBackend()
-    benchmark.backend = capturing
-    benchmark.evaluate(FakeTarget())
+    passed = _run_minimal(eval_type="judge", max_tokens=0, num_fewshot=0)
 
-    assert capturing.config["eval_type"] == "judge"
-    assert capturing.config["max_tokens"] == 0
-    assert capturing.config["num_fewshot"] == 0
+    assert passed["eval_type"] == "judge"
+    assert passed["max_tokens"] == 0
+    assert passed["num_fewshot"] == 0

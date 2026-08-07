@@ -46,43 +46,50 @@ def load_config(config_cls: SurogateConfig, path: str) -> SurogateConfig:
 
     return config
 
-#: Field-name suffixes whose value may reference an environment variable.
-#: Expansion is deliberately scoped to these rather than applied to the whole
-#: document: a config carries credentials and endpoints, which are the reason
-#: `${VAR}` support exists, and it also carries prose the user wrote --
-#: `judge_criteria`, `system_prompt`, a matcher `pattern`. `${...}` is
-#: ordinary template syntax in a prompt, so expanding everywhere read a
-#: sentence typed in the Studio as a reference to a pod environment variable
-#: and failed the whole run at config load, naming a variable the user never
-#: mentioned.
+#: Fields holding text the user wrote, where `${...}` is ordinary template
+#: syntax rather than a reference to the environment. Expansion skips these;
+#: everywhere else it applies as before.
 #:
-#: Suffixes rather than an explicit list because that is what the real
-#: configs use: of 58 `${...}` references across examples and docs, 56 are
-#: `api_key`, one is `base_url`, one is `judge_key`. All three end in `_key`
-#: or `_url`, and no free-text field does.
-_EXPANDABLE_FIELD_SUFFIXES = ('_key', '_url')
+#: A denylist rather than an allowlist of credential fields, and the
+#: direction matters more than the contents. Both lists will be incomplete
+#: eventually, so the question is how each one fails. Miss a prose field here
+#: and the run stops at config load naming the variable, which is loud and
+#: obvious. Miss a credential field in an allowlist and the literal `${VAR}`
+#: ships to the provider and 401s a minute into the run -- silent, and
+#: exactly the E-RUN-2 failure this check exists to prevent.
+#:
+#: An allowlist was tried first, keyed on `_key`/`_url` suffixes because
+#: every reference in the repo's configs happens to use one. The schema
+#: already disagreed: `endpoint`, `health_endpoint` and `headers` hold
+#: credentials and URLs and match no suffix, and `headers` is merged
+#: verbatim into every request, so `Authorization: Bearer ${TOKEN}` would
+#: have silently shipped the literal.
+_PROSE_FIELDS = frozenset({
+    'judge_criteria',
+    'system_prompt',
+    'prompt_template',
+    'pattern',        # a matcher's regex
+    'description',
+})
 
 
-def _expands_here(key: str) -> bool:
-    """Whether a value under *key* may reference an environment variable."""
-    return key.endswith(_EXPANDABLE_FIELD_SUFFIXES)
-
-
-def _expand_env_vars(obj: Any, missing: set[str], expand: bool = False) -> Any:
+def _expand_env_vars(obj: Any, missing: set[str], expand: bool = True) -> Any:
     """
     Recursively expand environment variables in config.
     Supports ${VAR_NAME} syntax.
 
-    Only under a credential or endpoint field -- see
-    ``_EXPANDABLE_FIELD_SUFFIXES``. Anywhere else a `${...}` is content and is
-    passed through untouched, neither expanded nor reported missing.
+    Everywhere except the free-text fields in ``_PROSE_FIELDS``, where a
+    `${...}` is content: passed through untouched, neither expanded nor
+    reported missing. Untouched matters as much as unreported -- rewriting a
+    prompt because the pod happens to export a matching name would score the
+    benchmark against text the user never wrote.
 
     Names that cannot be resolved are collected into *missing* and left
     untouched; the caller raises once it has the full set.
     """
     if isinstance(obj, dict):
         return {
-            k: _expand_env_vars(v, missing, _expands_here(k))
+            k: _expand_env_vars(v, missing, k not in _PROSE_FIELDS)
             for k, v in obj.items()
         }
     elif isinstance(obj, list):

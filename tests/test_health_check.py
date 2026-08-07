@@ -1,7 +1,11 @@
+import time
 from types import SimpleNamespace
 
 import pytest
 
+import httpx
+
+from surogate_eval.targets import model
 from surogate_eval.targets.model import APIModelTarget as ModelTarget
 
 
@@ -106,50 +110,87 @@ def test_remote_target_stops_at_a_401():
     assert client.calls == ["/v1/models"]
 
 
-class SlowStartClient:
-    """Times out on the first *n* probes, then answers.
 
-    A serverless target that has scaled to zero behaves exactly like this:
-    the probe times out while the container boots, and a later one succeeds.
-    Measured against a Modal endpoint: 65s cold, 1.07s warm.
-    """
+# --- cold serverless targets -------------------------------------------
 
-    def __init__(self, timeouts):
-        self.timeouts = timeouts
-        self.calls = []
+
+class TimeoutRecordingClient(FakeClient):
+    """FakeClient that also records the timeout each probe was given."""
+
+    def __init__(self, status_code=None, raises=False):
+        super().__init__(status_code=status_code, raises=raises)
+        self.timeouts = []
 
     def get(self, path, timeout=None):
-        self.calls.append((path, timeout))
-        if len(self.calls) <= self.timeouts:
-            raise ConnectionError("timed out")
-        return SimpleNamespace(status_code=200)
-
-    def close(self):
-        pass
+        self.timeouts.append(timeout)
+        return super().get(path, timeout=timeout)
 
 
-def test_a_target_that_wakes_up_late_is_healthy():
-    """The first pass cannot outlast a cold start, so failing there must not
-    be the final word. Both first-pass paths time out here; the target
-    answers after that."""
-    target = make_target("sk-real", SlowStartClient(timeouts=2))
-    assert target.health_check() is True
+def test_a_remote_probe_waits_long_enough_for_a_cold_start():
+    """A serverless target scaled to zero is slow to ANSWER, not slow to
+    connect: the platform's front door completes the handshake at once and
+    holds the request while the container boots. Measured on Modal at 65s
+    cold, so a 10s read budget could never catch one and a run whose model
+    was merely idle was skipped entirely."""
+    client = TimeoutRecordingClient(status_code=200)
+    make_target("sk-real", client).health_check()
+
+    assert client.timeouts[0].read == model.COLD_START_READ_TIMEOUT
+    assert model.COLD_START_READ_TIMEOUT >= 60
 
 
-def test_the_retry_waits_longer_than_the_first_pass():
-    """A retry on the same budget would time out identically and only cost
-    another 10s. It has to allow enough time for the target to boot."""
-    client = SlowStartClient(timeouts=2)
-    target = make_target("sk-real", client)
-    target.health_check()
+def test_a_remote_probe_gives_up_on_connecting_much_sooner():
+    """The other half of the same asymmetry, and what keeps the long read
+    budget affordable: an unroutable or refusing host never gets past
+    connect, so it costs the connect budget rather than the whole wait."""
+    client = TimeoutRecordingClient(status_code=200)
+    make_target("sk-real", client).health_check()
 
-    first_pass = [t for _, t in client.calls[:2]]
-    retry = [t for _, t in client.calls[2:]]
-    assert retry, "no retry was attempted"
-    assert min(retry) > max(first_pass)
+    timeout = client.timeouts[0]
+    assert timeout.connect == model.CONNECT_TIMEOUT
+    assert timeout.connect < timeout.read
 
 
-def test_an_endpoint_that_never_answers_is_still_unhealthy():
-    """The allow direction: patience must not make a dead endpoint healthy."""
-    target = make_target("sk-real", SlowStartClient(timeouts=99))
-    assert target.health_check() is False
+def test_a_listening_but_silent_server_is_bounded_by_the_read_budget(monkeypatch):
+    """Behavioural, against a real socket rather than a fake.
+
+    A server that accepts the connection and never replies is exactly the
+    shape of a cold start, so it must be bounded by the read budget and not
+    hang the run. Constants are shrunk so the suite does not wait 90s."""
+    import socket
+    import threading
+
+    monkeypatch.setattr(model, "COLD_START_READ_TIMEOUT", 1)
+    monkeypatch.setattr(model, "CONNECT_TIMEOUT", 1)
+
+    # 127.0.0.2, not 127.0.0.1: health_check dispatches to its LOCAL branch
+    # (a different timeout entirely) for any base_url containing "localhost",
+    # "127.0.0.1" or "0.0.0.0". Addressing loopback by another octet keeps
+    # this on the remote path, which is the one under test. Caught by timing
+    # the test -- it passed against the local branch and proved nothing.
+    listener = socket.socket()
+    listener.bind(("127.0.0.2", 0))
+    listener.listen(1)
+    port = listener.getsockname()[1]
+    # Accept and then say nothing, holding the request open.
+    threading.Thread(target=lambda: listener.accept(), daemon=True).start()
+
+    target = ModelTarget.__new__(ModelTarget)
+    target.name = "silent"
+    target.base_url = f"http://127.0.0.2:{port}/v1"
+    target.api_key = "sk-real"
+    target.provider = None
+    target.client = httpx.Client(base_url=target.base_url)
+
+    started = time.monotonic()
+    try:
+        assert target.health_check() is False
+    finally:
+        target.client.close()
+        listener.close()
+    elapsed = time.monotonic() - started
+
+    # Two paths at a 1s read budget each. Generous upper bound so a loaded
+    # CI box does not make this flaky; the point is that it returns at all
+    # rather than waiting the production 90s.
+    assert elapsed < 15, f"probe took {elapsed:.1f}s"

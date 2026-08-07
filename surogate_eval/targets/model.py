@@ -11,13 +11,17 @@ from ..utils.logger import get_logger
 
 logger = get_logger()
 
-#: Seconds one health-check probe may take against a remote API.
-REMOTE_PROBE_TIMEOUT = 10
+#: Seconds a health-check probe may spend establishing a connection. A host
+#: that is unroutable, refusing, or gone fails here, so this bounds the cost
+#: of a dead endpoint.
+CONNECT_TIMEOUT = 10
 
-#: Seconds the retry may take when the first pass got no answer at all.
-#: Sized for a serverless target booting from zero rather than for a healthy
-#: one, which answers in the first pass and never reaches this.
-COLD_START_PROBE_TIMEOUT = 90
+#: Seconds a health-check probe may then wait for the response. Sized for a
+#: serverless target booting from zero: the platform's front door completes
+#: the handshake at once and holds the request while the container starts, so
+#: a cold start is slow to *answer*, not slow to connect. Measured against a
+#: Modal endpoint at 65s cold and 1.07s warm.
+COLD_START_READ_TIMEOUT = 90
 
 
 class APIModelTarget(BaseTarget):
@@ -263,41 +267,34 @@ class APIModelTarget(BaseTarget):
                 logger.error(f"No API key provided for {self.name}")
                 return False
 
-            probe = self._probe_paths(
-                self._model_list_paths(),
-                timeout=REMOTE_PROBE_TIMEOUT,
-                rejected_credential_is_fatal=True,
-            )
-            if probe is not None:
-                return probe
-
-            # Nothing answered either way. That is a dead endpoint or one
-            # still waking up, and the first budget cannot tell them apart:
-            # a serverless target scaled to zero has to boot before it can
-            # reply. Measured against a Modal endpoint, 65s cold and 1.07s
-            # warm, so 10s never catches one and a run whose model was
-            # merely idle was skipped entirely.
+            # Split the budget rather than allowing one flat timeout. A
+            # serverless target that has scaled to zero is slow to *answer*
+            # and not slow to connect: the platform's front door completes
+            # the handshake immediately and holds the request while the
+            # container boots. A dead endpoint fails the other way round --
+            # refused, unroutable, or a blackholed SYN -- so it never gets
+            # past connect.
             #
-            # A second pass with room for that boot is only ever paid when
-            # the first found nothing, so a healthy target still answers in
-            # one round and a genuinely dead one costs one extra wait
-            # rather than blocking every run for the longer budget.
-            logger.info(
-                f"{self.name}: nothing answered within {REMOTE_PROBE_TIMEOUT}s, "
-                f"retrying with {COLD_START_PROBE_TIMEOUT}s in case it is cold"
-            )
+            # That asymmetry is what tells the two apart, and it does the job
+            # a retry was reaching for while costing less: a cold target gets
+            # its full wait, an unreachable one is given up on in
+            # CONNECT_TIMEOUT rather than the whole budget. A flat 90s would
+            # have made every dead target cost 90s per path.
             probe = self._probe_paths(
                 self._model_list_paths(),
-                timeout=COLD_START_PROBE_TIMEOUT,
+                timeout=httpx.Timeout(
+                    COLD_START_READ_TIMEOUT, connect=CONNECT_TIMEOUT
+                ),
                 rejected_credential_is_fatal=True,
             )
             if probe is not None:
                 return probe
 
             logger.error(
-                f"Could not verify {self.name} at {self.base_url}: no response "
-                f"within {COLD_START_PROBE_TIMEOUT}s on any of "
-                f"{', '.join(self._model_list_paths())}; treating as unhealthy"
+                f"Could not verify {self.name} at {self.base_url}: nothing "
+                f"answered on {', '.join(self._model_list_paths())} within "
+                f"{COLD_START_READ_TIMEOUT}s ({CONNECT_TIMEOUT}s to connect); "
+                "treating as unhealthy"
             )
             return False
 

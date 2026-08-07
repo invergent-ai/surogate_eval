@@ -190,6 +190,9 @@ class FakeGEval:
         self.score = None
         self._score = score
         self._raises = raises
+        # Kept so a test can assert what GEval was actually built with, not
+        # only what it returned.
+        self.criteria = kwargs.get("criteria")
         FakeGEval.instances.append(self)
 
     def measure(self, test_case, _show_indicator=False):
@@ -209,10 +212,12 @@ def fake_geval(monkeypatch):
     return install
 
 
-def run_judge_rows(fake_geval, target=None, **kwargs):
+def run_judge_rows(fake_geval, target=None, config=None, **kwargs):
     fake_geval(**kwargs)
     backend = CustomEvalBackend()
-    return backend._evaluate_judge_rows(ROWS, target or FakeTarget(), {}, {}, None)
+    return backend._evaluate_judge_rows(
+        ROWS, target or FakeTarget(), config or {}, {}, None,
+    )
 
 
 @pytest.mark.parametrize("target", [UnreachableTarget(), RaisingTarget()])
@@ -351,55 +356,30 @@ def test_mixed_evaluate_reports_errors_in_scored_n_errored_n(monkeypatch, tmp_pa
 
 def _criteria_seen():
     """The ``criteria`` GEval was constructed with, one per row."""
-    return [getattr(g, "criteria", None) for g in FakeGEval.instances]
-
-
-class RecordingGEval(FakeGEval):
-    """FakeGEval that keeps the kwargs it was built with.
-
-    ``FakeGEval.__init__`` swallows **kwargs, so the existing harness cannot
-    see what ``criteria`` was passed -- which is the whole subject here.
-    """
-
-    def __init__(self, score=0.9, raises=None, **kwargs):
-        super().__init__(score=score, raises=raises, **kwargs)
-        self.criteria = kwargs.get("criteria")
+    return [g.criteria for g in FakeGEval.instances]
 
 
 @pytest.mark.parametrize("config", [
-    # What GenericBenchmark.evaluate actually builds: every key present, and
-    # `judge_criteria` is None whenever the YAML omits it. The other judge
-    # tests here pass `{}`, a shape production never produces, which is why
-    # this went unnoticed until a live run failed 6 of 6 rows.
+    # What GenericBenchmark.evaluate used to build: every key present, and
+    # `judge_criteria` None whenever the YAML omitted it. It now drops unset
+    # keys, but the guard here still earns its place for the empty-string
+    # case below, and this pins the shape that broke.
     {"judge_criteria": None},
     # A form that posts an empty field.
     {"judge_criteria": ""},
-    # The shape the fallback was written for.
     {},
 ])
-def test_a_benchmark_that_names_no_criteria_still_judges(monkeypatch, config):
-    """`config.get(key, default)` returns the default only when the key is
-    ABSENT. `generic.py` always inserts `judge_criteria`, so a two-argument
-    `get` handed `None` straight to `GEval`, which refuses to build without
-    criteria and errored every row -- failing the run on the error rate."""
-    FakeGEval.instances.clear()
-    monkeypatch.setattr(ceb, "GEval", lambda **kw: RecordingGEval(**kw))
-
-    results = CustomEvalBackend()._evaluate_judge_rows(
-        ROWS, FakeTarget(), config, {}, None,
-    )
+def test_a_benchmark_that_names_no_criteria_still_judges(fake_geval, config):
+    """GEval refuses to build without criteria, so a judge benchmark naming
+    none errored every row and failed the run on the error rate."""
+    results = run_judge_rows(fake_geval, config=config)
 
     assert [r["status"] for r in results] == ["scored", "scored"]
     assert all(c for c in _criteria_seen()), _criteria_seen()
 
 
-def test_a_named_criteria_is_not_overridden_by_the_default(monkeypatch):
+def test_a_named_criteria_is_not_overridden_by_the_default(fake_geval):
     """The allow direction: the fallback must not shadow a real criteria."""
-    FakeGEval.instances.clear()
-    monkeypatch.setattr(ceb, "GEval", lambda **kw: RecordingGEval(**kw))
-
-    CustomEvalBackend()._evaluate_judge_rows(
-        ROWS, FakeTarget(), {"judge_criteria": "Reward a professional tone."}, {}, None,
-    )
+    run_judge_rows(fake_geval, config={"judge_criteria": "Reward a professional tone."})
 
     assert _criteria_seen() == ["Reward a professional tone."] * len(ROWS)

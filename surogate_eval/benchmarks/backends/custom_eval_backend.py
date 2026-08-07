@@ -589,17 +589,12 @@ class CustomEvalBackend:
             judge_model = DeepEvalTargetWrapper(target)
             logger.info(f"No judge configured, using target as judge: {target.name}")
 
-        # ``or``, not ``get``'s default. ``GenericBenchmark.evaluate`` now
-        # drops keys the YAML never set, so a two-argument ``get`` would
-        # reach this fallback -- but only for an absent key. ``or`` also
-        # covers a criteria explicitly set to "", which a form posting an
-        # empty field produces and which GEval rejects just as hard.
-        #
-        # Both guards earn their place: the one here because empty is not
-        # absent, and the one in ``generic.py`` because it fixes the same
-        # trap for every other key at once. Before either, this fallback was
-        # unreachable code and a judge benchmark naming no criteria errored
-        # 100% of its rows, failing the run on the error-rate rule.
+        # ``or``, not ``get``'s default: an empty criteria is as fatal to
+        # GEval as an absent one, and a form posting a blank field produces
+        # exactly that. ``generic.py`` drops the unset case for every key;
+        # this is handled per-site because ``judge_criteria`` is the only key
+        # where empty was actually observed. If a second one turns up, drop
+        # "" there too rather than growing a third guard here.
         default_criteria = config.get('judge_criteria') or (
             'Evaluate if the response correctly answers the question '
             'based on the expected answer.'

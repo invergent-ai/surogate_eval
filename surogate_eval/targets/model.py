@@ -207,7 +207,7 @@ class APIModelTarget(BaseTarget):
     def _probe_paths(
             self,
             paths,
-            timeout: float,
+            timeout: float | httpx.Timeout,
             rejected_credential_is_fatal: bool,
     ) -> Optional[bool]:
         """Try each path in turn.
@@ -243,10 +243,15 @@ class APIModelTarget(BaseTarget):
             # Check this FIRST before provider-specific logic
             if any(x in self.base_url for x in ['localhost', '127.0.0.1', '0.0.0.0']):
                 # A local server has no credential to reject, so a 4xx here
-                # is just the wrong path and the probe moves on. The 5s/10s
-                # split between this branch and the remote one is unexplained
-                # but kept: changing it changes how long a wedged endpoint
-                # blocks a run.
+                # is just the wrong path and the probe moves on.
+                #
+                # This branch keeps one flat 5s. The remote branch below no
+                # longer has a comparable single number -- it is
+                # CONNECT_TIMEOUT to connect and COLD_START_READ_TIMEOUT to
+                # answer -- so a wedged endpoint blocks this path for 5s and
+                # that one for up to COLD_START_READ_TIMEOUT. The asymmetry
+                # is deliberate: a local server does not scale to zero, so
+                # there is no cold start here to wait out.
                 if self._probe_paths(
                         self._model_list_paths() + ("/health",),
                         timeout=5,

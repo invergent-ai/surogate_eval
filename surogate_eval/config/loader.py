@@ -93,8 +93,14 @@ def _expand_env_vars(obj: Any, missing: set[str], expand: bool = True) -> Any:
             for k, v in obj.items()
         }
     elif isinstance(obj, list):
-        # A list inherits its key's verdict: `stop_sequences` is prose, an
-        # api_key list would be credentials.
+        # A list has no key of its own, so it inherits the verdict of the
+        # key it hangs off rather than defaulting back to "expand".
+        #
+        # Nothing in `_PROSE_FIELDS` is a list today -- all five are `str` in
+        # the schema -- so this only matters if one is added. `stop_sequences`
+        # is the list a reader will think of, and it is deliberately NOT
+        # prose: leaving it out means a `${...}` there fails loudly at load,
+        # which is the direction this whole check errs in.
         return [_expand_env_vars(item, missing, expand) for item in obj]
     elif isinstance(obj, str) and expand:
         # Match ${VAR_NAME} pattern

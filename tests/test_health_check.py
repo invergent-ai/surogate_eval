@@ -104,3 +104,52 @@ def test_remote_target_stops_at_a_401():
     target.base_url = "https://api.example.com"
     assert target.health_check() is False
     assert client.calls == ["/v1/models"]
+
+
+class SlowStartClient:
+    """Times out on the first *n* probes, then answers.
+
+    A serverless target that has scaled to zero behaves exactly like this:
+    the probe times out while the container boots, and a later one succeeds.
+    Measured against a Modal endpoint: 65s cold, 1.07s warm.
+    """
+
+    def __init__(self, timeouts):
+        self.timeouts = timeouts
+        self.calls = []
+
+    def get(self, path, timeout=None):
+        self.calls.append((path, timeout))
+        if len(self.calls) <= self.timeouts:
+            raise ConnectionError("timed out")
+        return SimpleNamespace(status_code=200)
+
+    def close(self):
+        pass
+
+
+def test_a_target_that_wakes_up_late_is_healthy():
+    """The first pass cannot outlast a cold start, so failing there must not
+    be the final word. Both first-pass paths time out here; the target
+    answers after that."""
+    target = make_target("sk-real", SlowStartClient(timeouts=2))
+    assert target.health_check() is True
+
+
+def test_the_retry_waits_longer_than_the_first_pass():
+    """A retry on the same budget would time out identically and only cost
+    another 10s. It has to allow enough time for the target to boot."""
+    client = SlowStartClient(timeouts=2)
+    target = make_target("sk-real", client)
+    target.health_check()
+
+    first_pass = [t for _, t in client.calls[:2]]
+    retry = [t for _, t in client.calls[2:]]
+    assert retry, "no retry was attempted"
+    assert min(retry) > max(first_pass)
+
+
+def test_an_endpoint_that_never_answers_is_still_unhealthy():
+    """The allow direction: patience must not make a dead endpoint healthy."""
+    target = make_target("sk-real", SlowStartClient(timeouts=99))
+    assert target.health_check() is False

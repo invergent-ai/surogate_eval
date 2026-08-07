@@ -11,6 +11,14 @@ from ..utils.logger import get_logger
 
 logger = get_logger()
 
+#: Seconds one health-check probe may take against a remote API.
+REMOTE_PROBE_TIMEOUT = 10
+
+#: Seconds the retry may take when the first pass got no answer at all.
+#: Sized for a serverless target booting from zero rather than for a healthy
+#: one, which answers in the first pass and never reaches this.
+COLD_START_PROBE_TIMEOUT = 90
+
 
 class APIModelTarget(BaseTarget):
     """Target for API-based models (OpenAI-compatible)."""
@@ -257,15 +265,39 @@ class APIModelTarget(BaseTarget):
 
             probe = self._probe_paths(
                 self._model_list_paths(),
-                timeout=10,
+                timeout=REMOTE_PROBE_TIMEOUT,
+                rejected_credential_is_fatal=True,
+            )
+            if probe is not None:
+                return probe
+
+            # Nothing answered either way. That is a dead endpoint or one
+            # still waking up, and the first budget cannot tell them apart:
+            # a serverless target scaled to zero has to boot before it can
+            # reply. Measured against a Modal endpoint, 65s cold and 1.07s
+            # warm, so 10s never catches one and a run whose model was
+            # merely idle was skipped entirely.
+            #
+            # A second pass with room for that boot is only ever paid when
+            # the first found nothing, so a healthy target still answers in
+            # one round and a genuinely dead one costs one extra wait
+            # rather than blocking every run for the longer budget.
+            logger.info(
+                f"{self.name}: nothing answered within {REMOTE_PROBE_TIMEOUT}s, "
+                f"retrying with {COLD_START_PROBE_TIMEOUT}s in case it is cold"
+            )
+            probe = self._probe_paths(
+                self._model_list_paths(),
+                timeout=COLD_START_PROBE_TIMEOUT,
                 rejected_credential_is_fatal=True,
             )
             if probe is not None:
                 return probe
 
             logger.error(
-                f"Could not verify {self.name} at {self.base_url}; "
-                "treating as unhealthy"
+                f"Could not verify {self.name} at {self.base_url}: no response "
+                f"within {COLD_START_PROBE_TIMEOUT}s on any of "
+                f"{', '.join(self._model_list_paths())}; treating as unhealthy"
             )
             return False
 

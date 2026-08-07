@@ -103,9 +103,8 @@ def _expand_env_vars(obj: Any, missing: set[str], expand: bool = True) -> Any:
         # key it hangs off rather than defaulting back to "expand".
         #
         # `stop_sequences` is the list a reader will think of, and it is
-        # deliberately NOT
-        # prose: leaving it out means a `${...}` there fails loudly at load,
-        # which is the direction this whole check errs in.
+        # deliberately NOT prose: leaving it out means a `${...}` there fails
+        # loudly at load, which is the direction this whole check errs in.
         return [_expand_env_vars(item, missing, expand) for item in obj]
     elif isinstance(obj, str) and expand:
         # Match ${VAR_NAME} pattern

@@ -170,10 +170,25 @@ def test_a_listening_but_silent_server_is_bounded_by_the_read_budget(monkeypatch
     # the test -- it passed against the local branch and proved nothing.
     listener = socket.socket()
     listener.bind(("127.0.0.2", 0))
-    listener.listen(1)
+    listener.listen(2)
     port = listener.getsockname()[1]
-    # Accept and then say nothing, holding the request open.
-    threading.Thread(target=lambda: listener.accept(), daemon=True).start()
+
+    # Accept every connection and say nothing, HOLDING each one open. The
+    # holding is the whole point: an earlier version let the accepted socket
+    # fall out of scope, which closed it, and the first probe then died of
+    # "connection reset by peer" in 0.00s instead of timing out. Only the
+    # second path exercised the read budget, and the test still passed.
+    accepted = []
+
+    def accept_and_hold():
+        while True:
+            try:
+                conn, _ = listener.accept()
+            except OSError:  # listener closed in the cleanup below
+                return
+            accepted.append(conn)
+
+    threading.Thread(target=accept_and_hold, daemon=True).start()
 
     target = ModelTarget.__new__(ModelTarget)
     target.name = "silent"
@@ -188,9 +203,15 @@ def test_a_listening_but_silent_server_is_bounded_by_the_read_budget(monkeypatch
     finally:
         target.client.close()
         listener.close()
+        for conn in accepted:
+            conn.close()
     elapsed = time.monotonic() - started
 
-    # Two paths at a 1s read budget each. Generous upper bound so a loaded
-    # CI box does not make this flaky; the point is that it returns at all
-    # rather than waiting the production 90s.
-    assert elapsed < 15, f"probe took {elapsed:.1f}s"
+    # Both bounds earn their place. The lower one says the READ budget is
+    # what ended the probe -- without it the test passes even when the
+    # connection dies instantly, which is how the reset-by-peer version
+    # above went unnoticed. The upper one says the budget is the shrunk
+    # one and not a flat production timeout: two paths at 1s is ~2s, while
+    # the 10s this replaced would be 20s.
+    assert elapsed >= model.COLD_START_READ_TIMEOUT, f"ended early at {elapsed:.2f}s"
+    assert elapsed < 6, f"probe took {elapsed:.1f}s"

@@ -109,6 +109,37 @@ def test_prose_is_not_expanded_even_when_the_variable_exists(tmp_path, monkeypat
     assert "${name}" in criteria
 
 
+def test_free_text_fields_beyond_the_benchmark_are_prose_too(tmp_path, monkeypatch):
+    """`comment` is documented as "additional comments about this target" and
+    is never read by anything, and `purpose` is the red-team persona fed
+    straight to the attack simulator. Both are prose by every argument that
+    put `system_prompt` on the list, and both were missing from it: `comment`
+    failed the run at load, and `purpose` was silently rewritten whenever the
+    pod happened to export a matching name."""
+    monkeypatch.setenv("persona", "SHOULD-NOT-APPEAR")
+    monkeypatch.delenv("PRIMARY_REGION", raising=False)
+    text = """\
+project:
+  name: test
+targets:
+  - name: t1
+    type: llm
+    provider: openai
+    model: gpt-4
+    api_key: sk-literal
+    comment: "Mirrors the ${PRIMARY_REGION} deployment."
+    red_teaming:
+      enabled: true
+      vulnerabilities: [bias]
+      purpose: "Support bot for ${persona}."
+"""
+    config = load_config(EvalConfig, write(tmp_path, text))
+
+    target = config.targets[0]
+    assert target.comment == "Mirrors the ${PRIMARY_REGION} deployment."
+    assert target.red_teaming["purpose"] == "Support bot for ${persona}."
+
+
 def test_a_credential_in_headers_still_expands(tmp_path, monkeypatch):
     """`headers` is merged verbatim into every request, so it is a natural
     place to pass a credential a provider does not take as `api_key`. An

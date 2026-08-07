@@ -576,3 +576,25 @@ def test_the_documented_scores_match_the_shipped_corpus():
         got = sum(1 for output, key in full if matcher.compare(output, key)[0])
 
         assert got == score, f"{pattern!r} flags={flags!r}: {got}/16, doc says {score}/16"
+
+
+# --- a blank setting means unset ---------------------------------------
+
+
+@pytest.mark.parametrize("blank", ["", "   ", None])
+def test_a_blank_mode_runs_the_default_rather_than_failing_the_benchmark(blank):
+    """Same class as the judge-criteria default, one level down and with a
+    worse blast radius. `build_matcher` runs once above the row loop, so a
+    `ConfigError` here fails the WHOLE benchmark before a single row is
+    scored: not "N rows errored" but zero results.
+
+    A form that posts an empty field produces exactly this."""
+    assert build_matcher({"mode": blank}).mode == DEFAULT_MODE
+
+
+def test_a_named_mode_is_still_honoured():
+    """The allow direction: treating blank as unset must not swallow a real
+    choice, nor stop a genuine typo from being reported."""
+    assert build_matcher({"mode": "exact"}).mode == "exact"
+    with pytest.raises(ConfigError, match="unknown matcher mode"):
+        build_matcher({"mode": "exakt"})

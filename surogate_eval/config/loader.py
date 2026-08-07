@@ -68,8 +68,10 @@ _PROSE_FIELDS = frozenset({
     'judge_criteria',
     'system_prompt',
     'prompt_template',
-    'pattern',        # a matcher's regex
+    'pattern',        # a matcher's regex, inside the `matcher` block
     'description',
+    'comment',        # "additional comments about this target"; read by nothing
+    'purpose',        # the red-team persona, fed to the attack simulator
 })
 
 
@@ -88,17 +90,20 @@ def _expand_env_vars(obj: Any, missing: set[str], expand: bool = True) -> Any:
     untouched; the caller raises once it has the full set.
     """
     if isinstance(obj, dict):
+        # `expand and ...`, so a prose verdict carries down into a nested
+        # block instead of being recomputed away at the next level. Without
+        # the conjunction `{"description": {"note": "${X}"}}` expands, which
+        # contradicts what this function promises about prose.
         return {
-            k: _expand_env_vars(v, missing, k not in _PROSE_FIELDS)
+            k: _expand_env_vars(v, missing, expand and k not in _PROSE_FIELDS)
             for k, v in obj.items()
         }
     elif isinstance(obj, list):
         # A list has no key of its own, so it inherits the verdict of the
         # key it hangs off rather than defaulting back to "expand".
         #
-        # Nothing in `_PROSE_FIELDS` is a list today -- all five are `str` in
-        # the schema -- so this only matters if one is added. `stop_sequences`
-        # is the list a reader will think of, and it is deliberately NOT
+        # `stop_sequences` is the list a reader will think of, and it is
+        # deliberately NOT
         # prose: leaving it out means a `${...}` there fails loudly at load,
         # which is the direction this whole check errs in.
         return [_expand_env_vars(item, missing, expand) for item in obj]

@@ -186,13 +186,23 @@ class FakeGEval:
     instances = []
 
     def __init__(self, score=0.9, raises=None, **kwargs):
+        # Reject blank criteria the way the real one does. deepeval's own
+        # validator is `criteria is not None and not criteria.strip()`, so
+        # "   " is as fatal as "" and as None. A fake that accepted anything
+        # truthy is why the whitespace case looked covered: the tests below
+        # passed against a stand-in more permissive than the library, which
+        # is the same way the original bug hid.
+        criteria = kwargs.get("criteria")
+        if criteria is None or not criteria.strip():
+            raise ValueError("Criteria provided cannot be an empty string.")
+
         self.reason = "because"
         self.score = None
         self._score = score
         self._raises = raises
         # Kept so a test can assert what GEval was actually built with, not
         # only what it returned.
-        self.criteria = kwargs.get("criteria")
+        self.criteria = criteria
         FakeGEval.instances.append(self)
 
     def measure(self, test_case, _show_indicator=False):
@@ -367,6 +377,12 @@ def _criteria_seen():
     {"judge_criteria": None},
     # A form that posts an empty field.
     {"judge_criteria": ""},
+    # And the same form with a space in it. deepeval rejects whitespace
+    # exactly as it rejects empty (`not criteria.strip()` in its own
+    # validator), but a whitespace string is truthy, so a plain `or` sails
+    # past it into the identical every-row failure.
+    {"judge_criteria": "   "},
+    {"judge_criteria": "\n\t "},
     {},
 ])
 def test_a_benchmark_that_names_no_criteria_still_judges(fake_geval, config):
@@ -383,3 +399,19 @@ def test_a_named_criteria_is_not_overridden_by_the_default(fake_geval):
     run_judge_rows(fake_geval, config={"judge_criteria": "Reward a professional tone."})
 
     assert _criteria_seen() == ["Reward a professional tone."] * len(ROWS)
+
+
+def test_a_blank_criteria_cell_falls_back_to_the_benchmark_default(fake_geval):
+    """The per-row path, which is the more exposed of the two: this criteria
+    comes from a dataset cell, and a spreadsheet cell holding one space is
+    far easier to produce by accident than a hand-typed empty string. It
+    fails that row rather than falling back."""
+    fake_geval()
+    rows = [dict(ROWS[0], judge_criteria="  "), dict(ROWS[1], judge_criteria="")]
+
+    results = CustomEvalBackend()._evaluate_judge_rows(
+        rows, FakeTarget(), {"judge_criteria": "Reward a professional tone."}, {}, None,
+    )
+
+    assert [r["status"] for r in results] == ["scored", "scored"]
+    assert _criteria_seen() == ["Reward a professional tone."] * len(rows)

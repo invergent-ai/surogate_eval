@@ -7,6 +7,7 @@ from .adapters.deepeval_adapter import DeepEvalAdapter
 from ..datasets import MultiTurnTestCase, TestCase
 from ..targets import TargetResponse
 from ..utils.logger import get_logger
+from ..utils.text import blank_as_none
 
 logger = get_logger()
 
@@ -50,14 +51,14 @@ class GEvalMetric(DeepEvalAdapter):
 
                 config['parameters'] = {
                     'name': config.get('name', 'G-Eval'),
-                    'criteria': config.get('criteria', 'Correctness'),
+                    'criteria': blank_as_none(config.get('criteria')) or 'Correctness',
                     'evaluation_params': enum_params,
                 }
             except ImportError:
                 logger.warning("Could not import LLMTestCaseParams from deepeval")
                 config['parameters'] = {
                     'name': config.get('name', 'G-Eval'),
-                    'criteria': config.get('criteria', 'Correctness'),
+                    'criteria': blank_as_none(config.get('criteria')) or 'Correctness',
                     'evaluation_params': evaluation_params,
                 }
 
@@ -76,7 +77,7 @@ class ConversationalGEvalMetric(DeepEvalAdapter):
         if 'parameters' not in config:
             config['parameters'] = {
                 'name': config.get('name', 'Conversational G-Eval'),
-                'criteria': config.get('criteria', 'Coherence'),
+                'criteria': blank_as_none(config.get('criteria')) or 'Coherence',
             }
 
         super().__init__(config)
@@ -146,7 +147,7 @@ class MultimodalGEvalMetric(DeepEvalAdapter):
 
                 config['parameters'] = {
                     'name': config.get('name', f'Multimodal G-Eval ({multimodal_type})'),
-                    'criteria': config.get('criteria', 'Image-Text Alignment'),
+                    'criteria': blank_as_none(config.get('criteria')) or 'Image-Text Alignment',
                     'evaluation_params': enum_params,
                 }
 
@@ -157,7 +158,7 @@ class MultimodalGEvalMetric(DeepEvalAdapter):
                 logger.warning("Could not import MLLMTestCaseParams from deepeval")
                 config['parameters'] = {
                     'name': config.get('name', f'Multimodal G-Eval ({multimodal_type})'),
-                    'criteria': config.get('criteria', 'Image-Text Alignment'),
+                    'criteria': blank_as_none(config.get('criteria')) or 'Image-Text Alignment',
                     'evaluation_params': evaluation_params,
                 }
 

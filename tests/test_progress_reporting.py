@@ -106,3 +106,15 @@ def test_a_write_failure_never_raises(monkeypatch):
     runners.report_rows(
         rows_done=1, rows_total=2, scored=1, errored=0, passed=1, score_sum=1.0,
     )
+
+
+def test_the_file_is_readable_by_another_account():
+    """`mkstemp` defaults to 0600. Ops reads this file from outside the
+    process that writes it, and the whole path is best-effort, so a
+    permission regression would fail silently rather than loudly."""
+    import stat
+
+    runners._write_progress("gsm8k", 0, 1)
+
+    mode = Path("eval_results/progress.json").stat().st_mode
+    assert mode & stat.S_IROTH, oct(mode)

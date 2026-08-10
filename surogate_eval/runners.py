@@ -349,6 +349,10 @@ def _flush_progress() -> None:
         try:
             with os.fdopen(fd, "w") as f:
                 json.dump(payload, f)
+            # mkstemp defaults to 0600; the previous writer used open(mode='w')
+            # which produced a umask-derived mode. A reader in another account
+            # must still be able to read this file.
+            os.chmod(tmp, 0o644)
             os.replace(tmp, str(_progress_path()))
         except Exception:
             try:

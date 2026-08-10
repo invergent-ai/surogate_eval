@@ -5,17 +5,26 @@ Evalscope appends one JSON line per sample to
 ``reviews/{model_id}/{benchmark}_{subset}.jsonl`` as each completes -- its
 evaluator persists results through a per-item `on_result` callback that
 appends with ``DumpMode.APPEND``. Counting those lines is therefore a real
-row count.
+row count, and ``count_reviews`` still uses it -- but only for scores now.
+
+For rows_done/rows_total, ``read_evalscope_tracker`` instead reads
+evalscope's *own* progress file, written by its ``ProgressTracker`` at
+``<work_dir>/progress.json`` when ``TaskConfig.enable_progress_tracker`` is
+on (see ``_prepare_task_config``). Do not confuse the two: that is a
+different file from *our* ``eval_results/progress.json``
+(``runners._flush_progress``) -- same filename, unrelated file, unrelated
+directory.
 
 That layout is a library detail rather than a documented contract, so every
-read here is defensive: a missing directory is "no progress yet", and a
-malformed line costs itself and nothing else.
+read here is defensive: a missing directory or file is "no progress yet",
+and a malformed line or a malformed tracker file costs itself and nothing
+else.
 """
 
 import json
 import threading
 from pathlib import Path
-from typing import Callable, List, Tuple
+from typing import Callable, List, Optional, Tuple
 
 from surogate_eval import runners
 from surogate_eval.utils.logger import get_logger
@@ -119,6 +128,33 @@ def count_reviews(reviews_dir: Path, dataset: str) -> Tuple[int, int, int, float
     return (rows_done, scored, passed, score_sum)
 
 
+def read_evalscope_tracker(reviews_dir: Path) -> Optional[Tuple[int, int]]:
+    """(rows_done, rows_total) from evalscope's own progress tracker, or
+    ``None`` when it is not there to read.
+
+    ``TaskConfig.enable_progress_tracker=True`` (set in
+    ``_prepare_task_config``) makes evalscope write its *own*
+    ``<work_dir>/progress.json`` -- not our ``eval_results/progress.json``
+    -- with a real ``processed_count``/``total_count`` computed from the
+    dataset and any configured limit. ``reviews_dir`` is
+    ``<work_dir>/reviews/<model_id>``, so that file sits two levels up from
+    it -- the same ``work_dir`` the reviews directory is already resolved
+    from each tick, not a second independently-tracked path.
+
+    Best-effort like ``count_reviews``: the tracker may not have written
+    yet, a reader can catch its temp-then-``os.replace`` mid-flight, or a
+    future evalscope release may drop the flag entirely -- any of that
+    reads as "not available yet", not an error.
+    """
+    try:
+        tracker_path = reviews_dir.parent.parent / "progress.json"
+        data = json.loads(tracker_path.read_text())
+        return (int(data["processed_count"]), int(data["total_count"]))
+    except Exception:
+        logger.debug("evalscope progress-tracker read failed", exc_info=True)
+        return None
+
+
 class ReviewWatcher:
     """Publish row progress for a running evalscope benchmark.
 
@@ -132,27 +168,37 @@ class ReviewWatcher:
         reviews_dir: Callable[[], Path],
         dataset: str,
         benchmark_name: str,
-        rows_total: int,
         interval: float = 2.0,
     ) -> None:
         # A callable, not a path: evalscope's TaskConfig.work_dir gets a
         # timestamp appended *in place* by setup_work_directory once
         # run_task starts, after the caller builds this watcher. Resolving
         # once at construction would capture the pre-timestamp directory
-        # forever, so every tick calls this again for the live value.
+        # forever, so every tick calls this again for the live value --
+        # read_evalscope_tracker rides along on that same resolved Path.
         self._reviews_dir = reviews_dir
         self._dataset = dataset
         self._benchmark_name = benchmark_name
-        self._rows_total = rows_total
         self._interval = interval
         self._stop = threading.Event()
         self._thread = threading.Thread(target=self._loop, daemon=True)
 
     def _loop(self) -> None:
         while not self._stop.wait(self._interval):
+            reviews_dir = self._reviews_dir()
             rows_done, scored, passed, score_sum = count_reviews(
-                self._reviews_dir(), self._dataset,
+                reviews_dir, self._dataset,
             )
+            # The reviews file still supplies scores -- evalscope's tracker
+            # carries no per-sample outcome, only counts -- but once it has
+            # written, its processed_count/total_count are a real fact and
+            # replace the reviews line count (a proxy for rows_done) and the
+            # old config['limit'] guess (gone; see _prepare_task_config).
+            tracker = read_evalscope_tracker(reviews_dir)
+            if tracker is not None:
+                rows_done, rows_total = tracker
+            else:
+                rows_total = 0  # unknown: no fact available yet, no guess left to fall back to
             if rows_done:
                 # for_benchmark: stop()'s join(timeout=5) can return while
                 # this tick is still running. Tagging the write means a tick
@@ -160,7 +206,7 @@ class ReviewWatcher:
                 # already started gets silently dropped by report_rows
                 # instead of stamping this benchmark's counts over it.
                 runners.report_rows(
-                    rows_done, self._rows_total, scored,
+                    rows_done, rows_total, scored,
                     rows_done - scored, passed, score_sum,
                     for_benchmark=self._benchmark_name,
                 )

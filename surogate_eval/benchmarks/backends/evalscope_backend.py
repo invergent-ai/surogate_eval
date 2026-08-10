@@ -513,11 +513,6 @@ class EvalScopeBackend:
                         # as this benchmark's counts once the context has
                         # moved on.
                         benchmark_name=benchmark_name,
-                        # 0 when no limit is configured: the dataset size is
-                        # not knowable from the reviews file, and the
-                        # frontend treats a non-positive total as "unknown"
-                        # rather than as zero work.
-                        rows_total=int(config.get('limit') or 0),
                     )
                     watcher.start()
                 except Exception:
@@ -1070,6 +1065,15 @@ class EvalScopeBackend:
         task_cfg_dict = {
             'datasets': [dataset_name],
             'work_dir': tempfile.gettempdir(),
+            # Makes evalscope run its own ProgressTracker, which writes a
+            # real processed_count/total_count to <work_dir>/progress.json
+            # (a different file from our eval_results/progress.json) as the
+            # run proceeds. ReviewWatcher (_evalscope_progress.py) reads it
+            # for row counts instead of guessing the total from
+            # config['limit'], which was 0 -- "unknown" -- for every
+            # benchmark run without an explicit limit. Off by default in
+            # evalscope.
+            'enable_progress_tracker': True,
         }
 
         # Enable sandbox for code benchmarks (unless explicitly disabled

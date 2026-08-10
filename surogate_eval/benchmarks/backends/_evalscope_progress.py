@@ -59,9 +59,9 @@ def _sibling_dataset_prefixes(dataset: str) -> frozenset:
 def drop_sibling_matches(paths: List[Path], dataset: str) -> List[Path]:
     """Remove glob matches that actually belong to a longer sibling dataset.
 
-    Shared by ``count_reviews`` here and ``EvalScopeBackend._load_predictions``,
-    which globs the same directory the same way and is exposed to the same
-    trap.
+    Shared by ``resolve_review_paths`` here and
+    ``EvalScopeBackend._load_predictions``, which globs the same directory
+    the same way and is exposed to the same trap.
     """
     siblings = _sibling_dataset_prefixes(dataset)
     if not siblings:
@@ -70,6 +70,29 @@ def drop_sibling_matches(paths: List[Path], dataset: str) -> List[Path]:
         p for p in paths
         if not any(p.name == f"{sib}.jsonl" or p.name.startswith(f"{sib}_") for sib in siblings)
     ]
+
+
+def resolve_review_paths(reviews_dir: Path, dataset: str) -> List[Path]:
+    """The review file(s) for one dataset in ``reviews_dir``.
+
+    Underscore-glob first (``{dataset}_*.jsonl``, siblings dropped), and the
+    bare ``{dataset}.jsonl`` only as a fallback when that glob matched
+    nothing. Shared by ``count_reviews`` here and
+    ``EvalScopeBackend._load_predictions`` so the two cannot again resolve a
+    dataset's reviews to different files -- they used to apply different
+    merge rules (this one always unioned the bare file in;
+    ``_load_predictions`` used it only as a fallback) and so could disagree
+    on which rows count. ``_load_predictions``'s rule wins here because the
+    final report is the authority.
+    """
+    matches = drop_sibling_matches(
+        list(reviews_dir.glob(f"{dataset}_*.jsonl")), dataset,
+    )
+    if not matches:
+        exact = reviews_dir / f"{dataset}.jsonl"
+        if exact.exists():
+            matches = [exact]
+    return matches
 
 
 def count_reviews(reviews_dir: Path, dataset: str) -> Tuple[int, int, int, float]:
@@ -92,16 +115,7 @@ def count_reviews(reviews_dir: Path, dataset: str) -> Tuple[int, int, int, float
     try:
         if not reviews_dir.is_dir():
             return (0, 0, 0, 0.0)
-        # Underscore glob so `mmmu` does not swallow `mmmu_pro`, matching
-        # `_load_predictions` -- then drop any match the glob still let
-        # through because it belongs to a longer sibling dataset.
-        matches = drop_sibling_matches(
-            list(reviews_dir.glob(f"{dataset}_*.jsonl")), dataset,
-        )
-        exact = reviews_dir / f"{dataset}.jsonl"
-        if exact.exists():
-            matches.append(exact)
-        for path in matches:
+        for path in resolve_review_paths(reviews_dir, dataset):
             with open(path, "r") as f:
                 for line in f:
                     if not line.strip():

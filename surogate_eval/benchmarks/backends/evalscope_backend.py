@@ -603,19 +603,14 @@ class EvalScopeBackend:
 
         # Underscore glob first, but that alone still matches a longer
         # sibling dataset (e.g. mmmu_pro_val.jsonl when dataset_name is
-        # 'mmmu': fnmatch's `*` does not stop at the next underscore) --
-        # drop_sibling_matches cross-checks against evalscope's own
-        # benchmark registry to tell a subset name from a sibling dataset.
-        from ._evalscope_progress import drop_sibling_matches
+        # 'mmmu': fnmatch's `*` does not stop at the next underscore).
+        # resolve_review_paths cross-checks against the sibling-dataset list
+        # to tell a subset name from a sibling dataset, and is shared with
+        # count_reviews so the two cannot resolve a dataset's reviews to
+        # different files.
+        from ._evalscope_progress import resolve_review_paths
 
-        matches = drop_sibling_matches(
-            list(reviews_dir.glob(f'{dataset_name}_*.jsonl')), dataset_name,
-        )
-        if not matches:
-            # Fallback: exact match without subset suffix
-            exact = reviews_dir / f'{dataset_name}.jsonl'
-            if exact.exists():
-                matches = [exact]
+        matches = resolve_review_paths(reviews_dir, dataset_name)
         for review_file in matches:
             logger.debug(f"Loading reviews from: {review_file}")
             # Two nested handlers, doing different jobs. The inner one keeps a

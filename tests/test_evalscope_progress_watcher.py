@@ -532,6 +532,49 @@ def test_stop_overwrites_the_last_mid_run_tick_with_the_final_state(tmp_path, re
     )
 
 
+def test_watcher_counts_incrementally_rather_than_re_parsing_the_whole_file(tmp_path, report_rows_calls):
+    """Behavioural pin for the watcher actually using `ReviewCounter`
+    (Finding 2), not just `ReviewCounter` existing and being correct in
+    isolation: reverting the watcher's tick to call `count_reviews` instead
+    would leave every other test in this file green, since both give the
+    same final totals for an ordinarily-growing file.
+
+    The fingerprint that only the incremental counter has: a trailing line
+    with no newline yet is held back and not counted at all, whereas a full
+    re-parse (`count_reviews`) counts that same unterminated line
+    immediately, as an unreadable-but-present row (see
+    `test_a_malformed_line_does_not_stop_the_count`). So with a partial line
+    on disk when the watcher starts, the incremental counter reports
+    nothing; a full re-parse would report on the very first tick.
+    """
+    reviews_dir = tmp_path / "reviews" / "m"
+    f = reviews_dir / "gsm8k_main.jsonl"
+    f.parent.mkdir(parents=True, exist_ok=True)
+    full_line = json.dumps(_review(1.0))
+    # No trailing newline: exactly what a concurrent writer leaves mid-append.
+    f.write_text(full_line[: len(full_line) // 2])
+
+    # A long interval: the only ticks that can fire are the prompt first
+    # tick and stop()'s own final tick, so there is no race with a periodic
+    # tick to blur the result.
+    watcher = ReviewWatcher(lambda: reviews_dir, "gsm8k", benchmark_name="gsm8k", interval=10.0)
+    watcher.start()
+    time.sleep(0.05)  # let the prompt first tick run against the partial line
+    assert not report_rows_calls, (
+        "a trailing line with no newline yet must not be counted -- a report "
+        "here means the watcher re-parsed the whole file instead of counting "
+        "incrementally"
+    )
+
+    with open(f, "a") as fh:
+        fh.write(full_line[len(full_line) // 2:] + "\n")
+    watcher.stop()
+
+    assert report_rows_calls, "the now-completed line must be reported by stop()'s final count"
+    args, _ = report_rows_calls[-1]
+    assert args[0] == 1, "the completed line, counted exactly once"
+
+
 def test_watcher_publishes_coherent_progress_when_the_tracker_lags_the_reviews_file(tmp_path, monkeypatch):
     """End-to-end regression for Finding 1, through the real (unmocked)
     ``report_rows``: evalscope's tracker file flushes at most once a second

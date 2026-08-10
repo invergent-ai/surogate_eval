@@ -176,7 +176,7 @@ def test_report_rows_is_a_no_op_once_the_context_has_moved_past_it(tmp_path, mon
     )
     assert _read_progress()["rows_done"] == 5, "must write while for_benchmark matches the current context"
 
-    runners._write_progress("mmlu", 1, 2)  # the next benchmark starts, and clears the row block
+    runners._write_progress("mmlu", 1, 2)  # the next benchmark starts, and zeroes the row block
     runners.report_rows(
         rows_done=99, rows_total=10, scored=99, errored=0, passed=99, score_sum=99.0,
         for_benchmark="gsm8k",  # stale tag: the context has already moved on
@@ -184,7 +184,7 @@ def test_report_rows_is_a_no_op_once_the_context_has_moved_past_it(tmp_path, mon
 
     after = _read_progress()
     assert after["current_benchmark"] == "mmlu"
-    assert "rows_done" not in after, "a stale for_benchmark write must be a no-op, not resurrect the row block"
+    assert after["rows_done"] == 0, "a stale for_benchmark write must be a no-op, not resurrect the row block"
 
 
 def test_a_stale_watcher_cannot_overwrite_the_next_benchmarks_row_block(tmp_path, monkeypatch):
@@ -225,7 +225,7 @@ def test_a_stale_watcher_cannot_overwrite_the_next_benchmarks_row_block(tmp_path
 
     after = _read_progress()
     assert after["current_benchmark"] == "mmlu"
-    assert "rows_done" not in after, "a stale watcher must not resurrect the old benchmark's row block"
+    assert after["rows_done"] == 0, "a stale watcher must not resurrect the old benchmark's row block"
 
 
 class _FakeTarget:

@@ -53,9 +53,17 @@ def test_row_progress_keeps_the_benchmark_context():
     assert data["score_sum"] == 4.0
 
 
-def test_a_new_benchmark_clears_the_previous_rows():
+def test_a_new_benchmark_zeroes_the_previous_rows():
     """Otherwise benchmark 2 inherits benchmark 1's row counts and the UI
-    shows 30/30 the moment the next benchmark starts."""
+    shows 30/30 the moment the next benchmark starts.
+
+    Zeroed, not omitted: ops treats an absent key as "this runner does not
+    report rows" and leaves the database's previous rows_done/rows_total
+    alone, so dropping the keys here left benchmark 2 showing benchmark 1's
+    finished bar until its own first report. Explicit zeros are a real
+    value ops ingests (`0 is not None`), and `rows_total: 0` already means
+    "unknown" on both sides.
+    """
     runners._write_progress("gsm8k", 0, 2)
     runners.report_rows(
         rows_done=30, rows_total=30, scored=30, errored=0, passed=20, score_sum=20.0,
@@ -65,8 +73,12 @@ def test_a_new_benchmark_clears_the_previous_rows():
 
     data = _read()
     assert data["current_benchmark"] == "mmlu"
-    assert "rows_done" not in data
-    assert "scored" not in data
+    assert data["rows_done"] == 0
+    assert data["rows_total"] == 0
+    assert data["scored"] == 0
+    assert data["errored"] == 0
+    assert data["passed"] == 0
+    assert data["score_sum"] == 0.0
 
 
 def test_the_file_is_never_observed_half_written(monkeypatch):

@@ -365,10 +365,16 @@ def _flush_progress() -> None:
 
 
 def _write_progress(current_benchmark: str, completed: int, total: int) -> None:
-    """Record which benchmark is running, and clear any previous row counts.
+    """Record which benchmark is running, and zero out any previous row counts.
 
-    Clearing matters: without it the next benchmark inherits the last one's
-    row totals and the UI jumps to a finished bar the moment it starts.
+    Zeroed, not cleared to ``{}``: ops treats an absent row key as "this
+    runner does not report rows" and leaves whatever rows_done/rows_total it
+    already has in the database, so omitting the keys here left benchmark 2
+    displaying benchmark 1's finished bar until its own first report -- and
+    then dropping backwards onto that report's real, much smaller count.
+    Zeros are a real value ops ingests (``0 is not None``), and
+    ``rows_total: 0`` already means "unknown" on both sides, so this is a
+    genuine reset rather than a second flavour of "no data".
     """
     global _PROGRESS_ROWS
     _PROGRESS_CONTEXT.update({
@@ -376,7 +382,14 @@ def _write_progress(current_benchmark: str, completed: int, total: int) -> None:
         "completed": completed,
         "total": total,
     })
-    _PROGRESS_ROWS = {}
+    _PROGRESS_ROWS = {
+        "rows_done": 0,
+        "rows_total": 0,
+        "scored": 0,
+        "errored": 0,
+        "passed": 0,
+        "score_sum": 0.0,
+    }
     _flush_progress()
 
 

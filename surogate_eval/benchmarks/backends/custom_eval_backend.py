@@ -282,12 +282,18 @@ class CustomEvalBackend:
             rows: List[Dict[str, Any]],
             target: BaseTarget,
             config: Dict[str, Any],
-            columns: Dict[str, str]
+            columns: Dict[str, str],
+            rows_total: int | None = None,
+            rows_done_offset: int = 0
     ) -> List[Dict[str, Any]]:
         """Evaluate exact_match rows.
 
         Uses lm-eval when a tokenizer is available (local models), otherwise
         falls back to direct inference + string comparison (API-only models).
+
+        Args:
+            rows_total: Total number of rows in the benchmark. If None, defaults to len(rows).
+            rows_done_offset: Number of rows already processed in previous loops.
         """
         if not rows:
             return []
@@ -308,12 +314,16 @@ class CustomEvalBackend:
         if tokenizer:
             try:
                 return self._evaluate_exact_match_lm_eval(
-                    rows, target, config, columns, tokenizer, matcher
+                    rows, target, config, columns, tokenizer, matcher,
+                    rows_total, rows_done_offset
                 )
             except Exception as e:
                 logger.warning(f"lm-eval exact_match failed, falling back to direct inference: {e}")
 
-        return self._evaluate_exact_match_direct(rows, target, config, columns, matcher)
+        return self._evaluate_exact_match_direct(
+            rows, target, config, columns, matcher,
+            rows_total, rows_done_offset
+        )
 
     def _evaluate_exact_match_lm_eval(
             self,
@@ -323,6 +333,8 @@ class CustomEvalBackend:
             columns: Dict[str, str],
             tokenizer: str,
             matcher: Matcher,
+            rows_total: int | None = None,
+            rows_done_offset: int = 0
     ) -> List[Dict[str, Any]]:
         """Evaluate exact_match rows using LM-Eval backend."""
         logger.info(f"Evaluating {len(rows)} exact_match rows with lm-eval")
@@ -481,6 +493,8 @@ class CustomEvalBackend:
             config: Dict[str, Any],
             columns: Dict[str, str],
             matcher: Matcher,
+            rows_total: int | None = None,
+            rows_done_offset: int = 0
     ) -> List[Dict[str, Any]]:
         """Evaluate exact_match rows via direct inference + string comparison."""
         logger.info(f"Evaluating {len(rows)} exact_match rows (direct inference)")
@@ -490,6 +504,8 @@ class CustomEvalBackend:
         system_prompt = config.get('system_prompt')
         results = []
         last_report = 0.0
+        # Use provided total or default to len(rows)
+        total = rows_total if rows_total is not None else len(rows)
 
         for row in rows:
             original_idx = row['_original_idx']
@@ -584,10 +600,10 @@ class CustomEvalBackend:
             if now - last_report >= _PROGRESS_INTERVAL_SECONDS:
                 last_report = now
                 runners.report_rows(
-                    len(results), len(rows), *_row_counts(results),
+                    rows_done_offset + len(results), total, *_row_counts(results),
                 )
 
-        runners.report_rows(len(results), len(rows), *_row_counts(results))
+        runners.report_rows(rows_done_offset + len(results), total, *_row_counts(results))
 
         errored_n = sum(1 for r in results if r['status'] == 'errored')
         scored_n = len(results) - errored_n
@@ -603,9 +619,16 @@ class CustomEvalBackend:
             target: BaseTarget,
             config: Dict[str, Any],
             columns: Dict[str, str],
-            judge_target: Optional[BaseTarget] = None
+            judge_target: Optional[BaseTarget] = None,
+            rows_total: int | None = None,
+            rows_done_offset: int = 0
     ) -> List[Dict[str, Any]]:
-        """Evaluate judge rows using G-Eval."""
+        """Evaluate judge rows using G-Eval.
+
+        Args:
+            rows_total: Total number of rows in the benchmark. If None, defaults to len(rows).
+            rows_done_offset: Number of rows already processed in previous loops.
+        """
         if not rows:
             return []
 
@@ -637,6 +660,8 @@ class CustomEvalBackend:
 
         results = []
         last_report = 0.0
+        # Use provided total or default to len(rows)
+        total = rows_total if rows_total is not None else len(rows)
 
         for row in rows:
             original_idx = row['_original_idx']
@@ -775,10 +800,10 @@ class CustomEvalBackend:
             if now - last_report >= _PROGRESS_INTERVAL_SECONDS:
                 last_report = now
                 runners.report_rows(
-                    len(results), len(rows), *_row_counts(results),
+                    rows_done_offset + len(results), total, *_row_counts(results),
                 )
 
-        runners.report_rows(len(results), len(rows), *_row_counts(results))
+        runners.report_rows(rows_done_offset + len(results), total, *_row_counts(results))
 
         errored_n = sum(1 for r in results if r['status'] == 'errored')
         scored_n = len(results) - errored_n
@@ -996,13 +1021,18 @@ class CustomEvalBackend:
         # Get judge target if configured
         judge_target = config.get('backend_params', {}).get('judge_target')
 
+        # Calculate total rows for progress reporting across both loops
+        total_rows = len(exact_match_rows) + len(judge_rows)
+
         # Evaluate each type
         exact_match_results = self._evaluate_exact_match_rows(
-            exact_match_rows, target, config, columns
+            exact_match_rows, target, config, columns,
+            rows_total=total_rows, rows_done_offset=0
         )
 
         judge_results = self._evaluate_judge_rows(
-            judge_rows, target, config, columns, judge_target
+            judge_rows, target, config, columns, judge_target,
+            rows_total=total_rows, rows_done_offset=len(exact_match_results)
         )
 
         # Merge results

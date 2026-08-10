@@ -1,4 +1,5 @@
 import pytest
+from datasets import Dataset
 
 from surogate_eval.benchmarks.backends.custom_eval_backend import (
     _row_counts,
@@ -126,23 +127,31 @@ class FakeGEvalForProgress:
 
 
 def test_mixed_benchmark_progress_is_cumulative(monkeypatch):
-    """Mixed benchmarks with both exact_match and judge rows must report cumulative
-    progress. This test catches:
+    """Mixed benchmarks with both exact_match and judge rows must report
+    cumulative progress -- not just rows_done, but every counter, since ops
+    divides score_sum/scored into a running average. This test catches:
     - rows_total changing between loops (bar would reset/jump backward)
     - rows_done decreasing between consecutive reports (bar would go backward)
+    - scored/passed/score_sum resetting to only what the second loop has
+      measured so far, dragging the running average backward the instant
+      the judge loop starts (Finding 4)
 
-    The sequence must be: exact_match processes 2 rows, then judge processes 2 more,
-    so rows_done goes 1, 2, 3, 4 with rows_total=4 throughout.
+    Driven through `evaluate()` itself, with 3 exact_match rows and 2 judge
+    rows, rather than the two loops called directly with hand-passed
+    offsets: `evaluate()` is what actually computes each loop's offsets in
+    production, and a test that bypasses it cannot catch a bug in that
+    wiring (Finding 6). The uneven row counts matter too: with an equal
+    split, scored/passed could tie across the reset by coincidence and the
+    assertion would pass either way.
     """
-    exact_match_rows = [
-        {"instruction": "em0", "answer": "expected", "_original_idx": 0, "eval_type": "exact_match"},
-        {"instruction": "em1", "answer": "expected", "_original_idx": 1, "eval_type": "exact_match"},
+    rows = [
+        {"instruction": "em0", "answer": "expected", "eval_type": "exact_match"},
+        {"instruction": "em1", "answer": "expected", "eval_type": "exact_match"},
+        {"instruction": "em2", "answer": "expected", "eval_type": "exact_match"},
+        {"instruction": "j0", "answer": "expected", "eval_type": "judge"},
+        {"instruction": "j1", "answer": "expected", "eval_type": "judge"},
     ]
-
-    judge_rows = [
-        {"instruction": "j0", "answer": "expected", "_original_idx": 2, "eval_type": "judge"},
-        {"instruction": "j1", "answer": "expected", "_original_idx": 3, "eval_type": "judge"},
-    ]
+    dataset = Dataset.from_list(rows)
 
     # Record all calls to report_rows
     report_calls = []
@@ -166,18 +175,11 @@ def test_mixed_benchmark_progress_is_cumulative(monkeypatch):
     )
 
     backend = CustomEvalBackend()
-    total_rows = len(exact_match_rows) + len(judge_rows)
+    monkeypatch.setattr(backend, "_load_dataset", lambda *a, **kw: dataset)
 
-    # Run exact_match loop
-    exact_match_results = backend._evaluate_exact_match_rows(
-        exact_match_rows, FakeTargetForProgress(), {}, {},
-        rows_total=total_rows, rows_done_offset=0
-    )
-
-    # Run judge loop with offset
-    judge_results = backend._evaluate_judge_rows(
-        judge_rows, FakeTargetForProgress(), {}, {},
-        rows_total=total_rows, rows_done_offset=len(exact_match_results)
+    backend.evaluate(
+        FakeTargetForProgress(), "mixed_bench",
+        {"source": "unused", "eval_type": "hybrid"},
     )
 
     # Verify we have at least one report per loop (from unconditional writes)
@@ -185,17 +187,22 @@ def test_mixed_benchmark_progress_is_cumulative(monkeypatch):
 
     # Verify rows_total is constant throughout
     rows_totals = [call["rows_total"] for call in report_calls]
-    assert all(t == total_rows for t in rows_totals), f"rows_total should always be {total_rows}, got {rows_totals}"
-    assert all(t == 4 for t in rows_totals), "Mixed benchmark should report total of 4 rows"
+    assert all(t == 5 for t in rows_totals), f"rows_total should always be 5, got {rows_totals}"
 
-    # Verify rows_done never decreases (catches backward progress bar)
-    rows_done_values = [call["rows_done"] for call in report_calls]
-    for i in range(1, len(rows_done_values)):
-        assert rows_done_values[i] >= rows_done_values[i-1], (
-            f"rows_done must not decrease: {rows_done_values[i]} < {rows_done_values[i-1]} "
-            f"at call {i} (this would cause progress bar to jump backward)"
-        )
+    # Verify rows_done, and every score counter, never decreases (catches
+    # a progress bar, or a running average, jumping backward)
+    for key in ("rows_done", "scored", "passed", "score_sum"):
+        values = [call[key] for call in report_calls]
+        for i in range(1, len(values)):
+            assert values[i] >= values[i - 1], (
+                f"{key} must not decrease: {values} at call {i} "
+                f"(this would cause the progress bar or running average to go backward)"
+            )
 
-    # The final call should show all rows done
+    # The final call should show all rows done, measured across both loops
     final_call = report_calls[-1]
-    assert final_call["rows_done"] == 4, "Final report should show all 4 rows done"
+    assert final_call["rows_done"] == 5, "Final report should show all 5 rows done"
+    assert final_call["scored"] == 5, "scored must include both loops' rows, not just the judge loop's"
+    assert final_call["score_sum"] == pytest.approx(3.0 + 1.8), (
+        "score_sum must carry the exact_match loop's total forward into the judge loop's report"
+    )

@@ -62,7 +62,31 @@ class FakeTargetForProgress:
         return TargetResponse(content="expected", raw_response={}, error=None)
 
 
-def test_exact_match_loop_reports_progress(monkeypatch):
+@pytest.fixture
+def report_calls(monkeypatch):
+    """Captures every `report_rows` call `custom_eval_backend` makes, in
+    order, as dicts keyed by parameter name."""
+    calls = []
+
+    def fake_report_rows(rows_done, rows_total, scored, passed, score_sum):
+        calls.append(
+            {
+                "rows_done": rows_done,
+                "rows_total": rows_total,
+                "scored": scored,
+                "passed": passed,
+                "score_sum": score_sum,
+            }
+        )
+
+    monkeypatch.setattr(
+        "surogate_eval.benchmarks.backends.custom_eval_backend.runners.report_rows",
+        fake_report_rows,
+    )
+    return calls
+
+
+def test_exact_match_loop_reports_progress(report_calls):
     """The unconditional post-loop write ensures report_rows is called at least
     once, and the final call carries the row counts correctly. This test catches:
     - Missing or broken unconditional write after loop
@@ -75,22 +99,6 @@ def test_exact_match_loop_reports_progress(monkeypatch):
         {"instruction": "row1_instruction", "answer": "expected", "_original_idx": 1},
         {"instruction": "row2_instruction", "answer": "expected", "_original_idx": 2},
     ]
-
-    # Record all calls to report_rows
-    report_calls = []
-
-    def fake_report_rows(rows_done, rows_total, scored, passed, score_sum):
-        report_calls.append(
-            {
-                "rows_done": rows_done,
-                "rows_total": rows_total,
-                "scored": scored,
-                "passed": passed,
-                "score_sum": score_sum,
-            }
-        )
-
-    monkeypatch.setattr("surogate_eval.benchmarks.backends.custom_eval_backend.runners.report_rows", fake_report_rows)
 
     backend = CustomEvalBackend()
     results = backend._evaluate_exact_match_rows(rows, FakeTargetForProgress(), {}, {})
@@ -129,7 +137,7 @@ class FakeGEvalForProgress:
         pass
 
 
-def test_mixed_benchmark_progress_is_cumulative(monkeypatch):
+def test_mixed_benchmark_progress_is_cumulative(monkeypatch, report_calls):
     """Mixed benchmarks with both exact_match and judge rows must report
     cumulative progress -- not just rows_done, but every counter, since ops
     divides score_sum/scored into a running average. This test catches:
@@ -156,21 +164,6 @@ def test_mixed_benchmark_progress_is_cumulative(monkeypatch):
     ]
     dataset = Dataset.from_list(rows)
 
-    # Record all calls to report_rows
-    report_calls = []
-
-    def fake_report_rows(rows_done, rows_total, scored, passed, score_sum):
-        report_calls.append(
-            {
-                "rows_done": rows_done,
-                "rows_total": rows_total,
-                "scored": scored,
-                "passed": passed,
-                "score_sum": score_sum,
-            }
-        )
-
-    monkeypatch.setattr("surogate_eval.benchmarks.backends.custom_eval_backend.runners.report_rows", fake_report_rows)
     monkeypatch.setattr(
         "surogate_eval.benchmarks.backends.custom_eval_backend.GEval",
         lambda **kwargs: FakeGEvalForProgress(**kwargs)

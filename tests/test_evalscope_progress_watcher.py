@@ -48,6 +48,27 @@ def _multi_key_review(**value):
     return {"sample_score": {"score": {"value": value}}}
 
 
+def _wait_until(condition, attempts=100, interval=0.02):
+    """Poll ``condition`` up to ~2s (100 * 0.02s) of a 0.05s watcher cadence,
+    for a background watcher tick to land."""
+    for _ in range(attempts):
+        if condition():
+            return
+        time.sleep(interval)
+
+
+@pytest.fixture
+def report_rows_calls(monkeypatch):
+    """Captures every call ``_evalscope_progress`` makes to
+    ``runners.report_rows``, in order, as ``(args, kwargs)`` pairs."""
+    calls = []
+    monkeypatch.setattr(
+        "surogate_eval.benchmarks.backends._evalscope_progress.runners.report_rows",
+        lambda *args, **kwargs: calls.append((args, kwargs)),
+    )
+    return calls
+
+
 def test_counts_lines_as_they_are_appended(tmp_path):
     """Evalscope appends one line per sample as it completes, so a count taken
     mid-run is a real row count."""
@@ -118,7 +139,7 @@ def test_the_subset_suffix_does_not_match_a_prefix_sibling(tmp_path):
     assert count_reviews(base, "mmmu")[0] == 1
 
 
-def test_watcher_reports_on_a_tick_and_stop_joins_the_thread(tmp_path, monkeypatch):
+def test_watcher_reports_on_a_tick_and_stop_joins_the_thread(tmp_path, report_rows_calls):
     """The threading glue itself, not just count_reviews.
 
     The tests above only call ``count_reviews`` directly; none of them starts
@@ -127,11 +148,6 @@ def test_watcher_reports_on_a_tick_and_stop_joins_the_thread(tmp_path, monkeypat
     ``stop()`` that fails to join cannot slip through unnoticed -- the exact
     "hangs or leaks a thread" failure mode the watcher exists to avoid.
     """
-    calls = []
-    monkeypatch.setattr(
-        "surogate_eval.benchmarks.backends._evalscope_progress.runners.report_rows",
-        lambda *args, **kwargs: calls.append((args, kwargs)),
-    )
     _write_lines(tmp_path / "reviews" / "m" / "gsm8k_main.jsonl", [_review(1.0)])
 
     watcher = ReviewWatcher(
@@ -139,14 +155,11 @@ def test_watcher_reports_on_a_tick_and_stop_joins_the_thread(tmp_path, monkeypat
         interval=0.05,
     )
     watcher.start()
-    for _ in range(100):  # up to ~2s of a 0.05s cadence
-        if calls:
-            break
-        time.sleep(0.02)
+    _wait_until(lambda: report_rows_calls)
     watcher.stop()
 
-    assert calls, "the watcher never reported a tick"
-    args, kwargs = calls[0]
+    assert report_rows_calls, "the watcher never reported a tick"
+    args, kwargs = report_rows_calls[0]
     # (rows_done, rows_total, scored, passed, score_sum). No evalscope
     # tracker file here, so rows_total falls back to 0 (unknown).
     assert args == (1, 0, 1, 1, 1.0)
@@ -154,7 +167,7 @@ def test_watcher_reports_on_a_tick_and_stop_joins_the_thread(tmp_path, monkeypat
     assert not watcher._thread.is_alive(), "stop() must join the watcher thread"
 
 
-def test_watcher_follows_a_work_dir_that_moves_after_construction(tmp_path, monkeypatch):
+def test_watcher_follows_a_work_dir_that_moves_after_construction(tmp_path, report_rows_calls):
     """`run_task` appends a timestamp to `task_config.work_dir` *in place*
     after the watcher's reviews directory is computed (`setup_work_directory`,
     evalscope/run.py:56-58). A `reviews_dir` resolved once at construction
@@ -164,12 +177,6 @@ def test_watcher_follows_a_work_dir_that_moves_after_construction(tmp_path, monk
     real bug: the reviews directory only exists at its final location once
     the caller's mutable config object has already moved on.
     """
-    calls = []
-    monkeypatch.setattr(
-        "surogate_eval.benchmarks.backends._evalscope_progress.runners.report_rows",
-        lambda *args, **kwargs: calls.append((args, kwargs)),
-    )
-
     class _MovingTaskConfig:
         """Stands in for evalscope's TaskConfig: work_dir mutates in place,
         exactly as setup_work_directory does when run_task starts."""
@@ -193,18 +200,15 @@ def test_watcher_follows_a_work_dir_that_moves_after_construction(tmp_path, monk
         Path(task_config.work_dir) / "reviews" / "m" / "gsm8k_main.jsonl", [_review(1.0)],
     )
 
-    for _ in range(100):  # up to ~2s of a 0.05s cadence
-        if calls:
-            break
-        time.sleep(0.02)
+    _wait_until(lambda: report_rows_calls)
     watcher.stop()
 
-    assert calls, "the watcher never picked up the directory once work_dir moved"
-    args, _ = calls[0]
+    assert report_rows_calls, "the watcher never picked up the directory once work_dir moved"
+    args, _ = report_rows_calls[0]
     assert args[0] == 1, "rows_done once the moved directory is followed"
 
 
-def test_tracker_file_supplies_rows_done_and_total_overriding_review_count(tmp_path, monkeypatch):
+def test_tracker_file_supplies_rows_done_and_total_overriding_review_count(tmp_path, report_rows_calls):
     """`enable_progress_tracker` (set in `_prepare_task_config`) makes evalscope
     write its own `<work_dir>/progress.json` with a real processed_count/
     total_count. Once it is there, it replaces the reviews line count for
@@ -212,11 +216,6 @@ def test_tracker_file_supplies_rows_done_and_total_overriding_review_count(tmp_p
     passed/score_sum still come from the reviews file, since the tracker
     carries no per-sample outcome at all.
     """
-    calls = []
-    monkeypatch.setattr(
-        "surogate_eval.benchmarks.backends._evalscope_progress.runners.report_rows",
-        lambda *args, **kwargs: calls.append((args, kwargs)),
-    )
     reviews_dir = tmp_path / "reviews" / "m"
     # Two review lines: if rows_done still came from this count, it would
     # report 2. The tracker instead says 7 processed of 20 total.
@@ -227,29 +226,21 @@ def test_tracker_file_supplies_rows_done_and_total_overriding_review_count(tmp_p
         lambda: reviews_dir, "gsm8k", benchmark_name="gsm8k", interval=0.05,
     )
     watcher.start()
-    for _ in range(100):  # up to ~2s of a 0.05s cadence
-        if calls:
-            break
-        time.sleep(0.02)
+    _wait_until(lambda: report_rows_calls)
     watcher.stop()
 
-    assert calls, "the watcher never reported a tick"
-    args, _ = calls[0]
+    assert report_rows_calls, "the watcher never reported a tick"
+    args, _ = report_rows_calls[0]
     # (rows_done, rows_total, scored, passed, score_sum)
     assert args == (7, 20, 2, 1, 1.0), "rows_done/rows_total from the tracker; scores still from the reviews file"
 
 
-def test_tracker_file_absent_falls_back_to_review_count_with_total_zero(tmp_path, monkeypatch):
+def test_tracker_file_absent_falls_back_to_review_count_with_total_zero(tmp_path, report_rows_calls):
     """No evalscope tracker file at all -- an older evalscope, or a future
     release that drops the flag. rows_done falls back to the reviews line
     count, same as before this change; rows_total falls back to 0 (unknown),
     since the old `config['limit']` guess it used to carry is gone for good.
     """
-    calls = []
-    monkeypatch.setattr(
-        "surogate_eval.benchmarks.backends._evalscope_progress.runners.report_rows",
-        lambda *args, **kwargs: calls.append((args, kwargs)),
-    )
     reviews_dir = tmp_path / "reviews" / "m"
     _write_lines(reviews_dir / "gsm8k_main.jsonl", [_review(1.0)])
     # No progress.json anywhere under tmp_path.
@@ -258,29 +249,21 @@ def test_tracker_file_absent_falls_back_to_review_count_with_total_zero(tmp_path
         lambda: reviews_dir, "gsm8k", benchmark_name="gsm8k", interval=0.05,
     )
     watcher.start()
-    for _ in range(100):  # up to ~2s of a 0.05s cadence
-        if calls:
-            break
-        time.sleep(0.02)
+    _wait_until(lambda: report_rows_calls)
     watcher.stop()
 
-    assert calls, "the watcher never reported a tick"
-    args, _ = calls[0]
+    assert report_rows_calls, "the watcher never reported a tick"
+    args, _ = report_rows_calls[0]
     assert args == (1, 0, 1, 1, 1.0)
 
 
-def test_malformed_tracker_file_falls_back_without_raising(tmp_path, monkeypatch):
+def test_malformed_tracker_file_falls_back_without_raising(tmp_path, report_rows_calls):
     """A tracker file caught mid-write must fall back exactly like an absent
     one -- never raise, never stall the watcher. Evalscope writes it via
     temp-file-then-``os.replace``, but a reader is not guaranteed to never
     see a half-written file (e.g. non-atomic renames on some filesystems),
     so this reader must survive one anyway.
     """
-    calls = []
-    monkeypatch.setattr(
-        "surogate_eval.benchmarks.backends._evalscope_progress.runners.report_rows",
-        lambda *args, **kwargs: calls.append((args, kwargs)),
-    )
     reviews_dir = tmp_path / "reviews" / "m"
     _write_lines(reviews_dir / "gsm8k_main.jsonl", [_review(1.0)])
     tracker_path = reviews_dir.parent.parent / "progress.json"
@@ -291,29 +274,20 @@ def test_malformed_tracker_file_falls_back_without_raising(tmp_path, monkeypatch
         lambda: reviews_dir, "gsm8k", benchmark_name="gsm8k", interval=0.05,
     )
     watcher.start()
-    for _ in range(100):  # up to ~2s of a 0.05s cadence
-        if calls:
-            break
-        time.sleep(0.02)
+    _wait_until(lambda: report_rows_calls)
     watcher.stop()
 
-    assert calls, "a malformed tracker file must not stop the watcher from reporting"
-    args, _ = calls[0]
+    assert report_rows_calls, "a malformed tracker file must not stop the watcher from reporting"
+    args, _ = report_rows_calls[0]
     assert args == (1, 0, 1, 1, 1.0), "same fallback as an absent tracker file"
 
 
-def test_tracker_file_is_read_from_the_post_mutation_work_dir(tmp_path, monkeypatch):
+def test_tracker_file_is_read_from_the_post_mutation_work_dir(tmp_path, report_rows_calls):
     """Same relocation as `test_watcher_follows_a_work_dir_that_moves_after_
     construction`, but for evalscope's tracker file: it must be resolved
     from the same live `reviews_dir` the watcher already re-reads every
     tick, not a path fixed at construction time.
     """
-    calls = []
-    monkeypatch.setattr(
-        "surogate_eval.benchmarks.backends._evalscope_progress.runners.report_rows",
-        lambda *args, **kwargs: calls.append((args, kwargs)),
-    )
-
     class _MovingTaskConfig:
         """Stands in for evalscope's TaskConfig: work_dir mutates in place,
         exactly as setup_work_directory does when run_task starts."""
@@ -337,14 +311,11 @@ def test_tracker_file_is_read_from_the_post_mutation_work_dir(tmp_path, monkeypa
     _write_lines(moved_reviews_dir / "gsm8k_main.jsonl", [_review(1.0)])
     _write_evalscope_tracker(moved_reviews_dir, processed_count=9, total_count=42)
 
-    for _ in range(100):  # up to ~2s of a 0.05s cadence
-        if calls:
-            break
-        time.sleep(0.02)
+    _wait_until(lambda: report_rows_calls)
     watcher.stop()
 
-    assert calls, "the watcher never picked up the tracker file once work_dir moved"
-    args, _ = calls[0]
+    assert report_rows_calls, "the watcher never picked up the tracker file once work_dir moved"
+    args, _ = report_rows_calls[0]
     assert args == (9, 42, 1, 1, 1.0), "rows_done/rows_total from the tracker at the moved work_dir"
 
 
@@ -410,10 +381,7 @@ def test_a_stale_watcher_cannot_overwrite_the_next_benchmarks_row_block(tmp_path
         interval=0.05,
     )
     watcher.start()
-    for _ in range(100):  # wait for a real tick to land
-        if _read_progress().get("rows_done"):
-            break
-        time.sleep(0.02)
+    _wait_until(lambda: _read_progress().get("rows_done"))  # wait for a real tick to land
     assert _read_progress()["rows_done"] == 1
 
     # The next benchmark starts while this watcher is still alive -- the

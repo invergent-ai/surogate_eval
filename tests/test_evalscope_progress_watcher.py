@@ -84,7 +84,7 @@ def test_watcher_reports_on_a_tick_and_stop_joins_the_thread(tmp_path, monkeypat
     _write_lines(tmp_path / "reviews" / "m" / "gsm8k_main.jsonl", [_review(1.0)])
 
     watcher = ReviewWatcher(
-        tmp_path / "reviews" / "m", "gsm8k", benchmark_name="gsm8k",
+        lambda: tmp_path / "reviews" / "m", "gsm8k", benchmark_name="gsm8k",
         rows_total=10, interval=0.05,
     )
     watcher.start()
@@ -100,6 +100,56 @@ def test_watcher_reports_on_a_tick_and_stop_joins_the_thread(tmp_path, monkeypat
     assert args == (1, 10, 1, 0, 1, 1.0)
     assert kwargs == {"for_benchmark": "gsm8k"}, "every write must be tagged with its own benchmark"
     assert not watcher._thread.is_alive(), "stop() must join the watcher thread"
+
+
+def test_watcher_follows_a_work_dir_that_moves_after_construction(tmp_path, monkeypatch):
+    """`run_task` appends a timestamp to `task_config.work_dir` *in place*
+    after the watcher's reviews directory is computed (`setup_work_directory`,
+    evalscope/run.py:56-58). A `reviews_dir` resolved once at construction
+    time keeps pointing at the pre-timestamp directory forever, so the
+    watcher must re-resolve it on every tick against whatever the live
+    value is, not a snapshot taken up front. This is the exact shape of the
+    real bug: the reviews directory only exists at its final location once
+    the caller's mutable config object has already moved on.
+    """
+    calls = []
+    monkeypatch.setattr(
+        "surogate_eval.benchmarks.backends._evalscope_progress.runners.report_rows",
+        lambda *args, **kwargs: calls.append((args, kwargs)),
+    )
+
+    class _MovingTaskConfig:
+        """Stands in for evalscope's TaskConfig: work_dir mutates in place,
+        exactly as setup_work_directory does when run_task starts."""
+
+        def __init__(self, work_dir):
+            self.work_dir = work_dir
+            self.model_id = "m"
+
+    task_config = _MovingTaskConfig(str(tmp_path / "pre_timestamp"))
+
+    watcher = ReviewWatcher(
+        reviews_dir=lambda: Path(task_config.work_dir) / "reviews" / task_config.model_id,
+        dataset="gsm8k", benchmark_name="gsm8k", rows_total=10, interval=0.05,
+    )
+    watcher.start()
+    time.sleep(0.12)  # a couple of ticks against the pre-timestamp (nonexistent) dir
+
+    # The equivalent of setup_work_directory renaming work_dir in place.
+    task_config.work_dir = str(tmp_path / "20260810_132912")
+    _write_lines(
+        Path(task_config.work_dir) / "reviews" / "m" / "gsm8k_main.jsonl", [_review(1.0)],
+    )
+
+    for _ in range(100):  # up to ~2s of a 0.05s cadence
+        if calls:
+            break
+        time.sleep(0.02)
+    watcher.stop()
+
+    assert calls, "the watcher never picked up the directory once work_dir moved"
+    args, _ = calls[0]
+    assert args[0] == 1, "rows_done once the moved directory is followed"
 
 
 def test_report_rows_is_a_no_op_once_the_context_has_moved_past_it(tmp_path, monkeypatch):
@@ -154,7 +204,7 @@ def test_a_stale_watcher_cannot_overwrite_the_next_benchmarks_row_block(tmp_path
     _write_lines(tmp_path / "reviews" / "m" / "gsm8k_main.jsonl", [_review(1.0)])
 
     watcher = ReviewWatcher(
-        tmp_path / "reviews" / "m", "gsm8k", benchmark_name="gsm8k",
+        lambda: tmp_path / "reviews" / "m", "gsm8k", benchmark_name="gsm8k",
         rows_total=10, interval=0.05,
     )
     watcher.start()

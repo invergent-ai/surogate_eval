@@ -15,7 +15,7 @@ malformed line costs itself and nothing else.
 import json
 import threading
 from pathlib import Path
-from typing import List, Tuple
+from typing import Callable, List, Tuple
 
 from surogate_eval import runners
 from surogate_eval.utils.logger import get_logger
@@ -129,12 +129,17 @@ class ReviewWatcher:
 
     def __init__(
         self,
-        reviews_dir: Path,
+        reviews_dir: Callable[[], Path],
         dataset: str,
         benchmark_name: str,
         rows_total: int,
         interval: float = 2.0,
     ) -> None:
+        # A callable, not a path: evalscope's TaskConfig.work_dir gets a
+        # timestamp appended *in place* by setup_work_directory once
+        # run_task starts, after the caller builds this watcher. Resolving
+        # once at construction would capture the pre-timestamp directory
+        # forever, so every tick calls this again for the live value.
         self._reviews_dir = reviews_dir
         self._dataset = dataset
         self._benchmark_name = benchmark_name
@@ -146,7 +151,7 @@ class ReviewWatcher:
     def _loop(self) -> None:
         while not self._stop.wait(self._interval):
             rows_done, scored, passed, score_sum = count_reviews(
-                self._reviews_dir, self._dataset,
+                self._reviews_dir(), self._dataset,
             )
             if rows_done:
                 # for_benchmark: stop()'s join(timeout=5) can return while

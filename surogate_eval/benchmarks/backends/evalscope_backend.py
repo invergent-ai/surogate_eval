@@ -490,7 +490,12 @@ class EvalScopeBackend:
                 from ._evalscope_progress import ReviewWatcher
 
                 watcher = ReviewWatcher(
-                    reviews_dir=Path(task_config.work_dir) / 'reviews' / task_config.model_id,
+                    # A closure, not a value computed here: run_task mutates
+                    # task_config.work_dir in place (setup_work_directory
+                    # appends a timestamp) after this call, so the watcher
+                    # must read work_dir fresh on every tick or it watches a
+                    # directory that never receives anything.
+                    reviews_dir=lambda: Path(task_config.work_dir) / 'reviews' / task_config.model_id,
                     dataset=evalscope_dataset,
                     # The name eval.py's progress context tracks (`name` in
                     # _run_single_benchmark), not evalscope_dataset -- they

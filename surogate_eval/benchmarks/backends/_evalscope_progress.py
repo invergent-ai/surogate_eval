@@ -131,11 +131,13 @@ class ReviewWatcher:
         self,
         reviews_dir: Path,
         dataset: str,
+        benchmark_name: str,
         rows_total: int,
         interval: float = 2.0,
     ) -> None:
         self._reviews_dir = reviews_dir
         self._dataset = dataset
+        self._benchmark_name = benchmark_name
         self._rows_total = rows_total
         self._interval = interval
         self._stop = threading.Event()
@@ -147,9 +149,15 @@ class ReviewWatcher:
                 self._reviews_dir, self._dataset,
             )
             if rows_done:
+                # for_benchmark: stop()'s join(timeout=5) can return while
+                # this tick is still running. Tagging the write means a tick
+                # that only finishes after the next benchmark's watcher has
+                # already started gets silently dropped by report_rows
+                # instead of stamping this benchmark's counts over it.
                 runners.report_rows(
                     rows_done, self._rows_total, scored,
                     rows_done - scored, passed, score_sum,
+                    for_benchmark=self._benchmark_name,
                 )
 
     def start(self) -> None:

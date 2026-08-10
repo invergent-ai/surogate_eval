@@ -387,12 +387,28 @@ def report_rows(
     errored: int,
     passed: int,
     score_sum: float,
+    *,
+    for_benchmark: str | None = None,
 ) -> None:
     """Publish row-level progress for the benchmark currently running.
 
     ``score_sum`` rather than an average so ops does the division: a partial
     file then cannot be internally inconsistent.
+
+    ``for_benchmark``, when given, must match ``_PROGRESS_CONTEXT``'s current
+    benchmark or the write is dropped. A background watcher's ``stop()`` can
+    time out while a tick is still in flight (``_evalscope_progress.
+    ReviewWatcher``): the thread stays alive, ticks again, and that write
+    would otherwise land after the *next* benchmark's watcher has already
+    started -- stamping the old benchmark's counts over the new one's row
+    block and sending ``rows_done`` backwards, exactly what Task 2 ruled
+    out. Tagging each write with the benchmark it was measured for turns
+    that stale write into a silent no-op instead. Default ``None`` preserves
+    today's behaviour for ``custom_eval``, which reports from the same
+    thread as its scoring loop and so can never go stale.
     """
+    if for_benchmark is not None and for_benchmark != _PROGRESS_CONTEXT["current_benchmark"]:
+        return
     global _PROGRESS_ROWS
     _PROGRESS_ROWS = {
         "rows_done": rows_done,

@@ -492,6 +492,13 @@ class EvalScopeBackend:
                 watcher = ReviewWatcher(
                     reviews_dir=Path(task_config.work_dir) / 'reviews' / task_config.model_id,
                     dataset=evalscope_dataset,
+                    # The name eval.py's progress context tracks (`name` in
+                    # _run_single_benchmark), not evalscope_dataset -- they
+                    # differ for benchmarks like 'aime' -> 'aime24'. Every
+                    # write is tagged with this so a stale tick from a
+                    # watcher whose stop() timed out cannot land as this
+                    # benchmark's counts once the context has moved on.
+                    benchmark_name=benchmark_name,
                     # 0 when no limit is configured: the dataset size is not
                     # knowable from the reviews file, and the frontend treats a
                     # non-positive total as "unknown" rather than as zero work.

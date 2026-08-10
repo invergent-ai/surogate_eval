@@ -3,6 +3,7 @@
 
 import os
 import json
+import time
 import tempfile
 from pathlib import Path
 from typing import Dict, Any, List, Optional
@@ -11,8 +12,30 @@ from surogate_eval.benchmarks.matching import Matcher, build_matcher, clean_form
 from surogate_eval.targets import BaseTarget
 from surogate_eval.utils.logger import get_logger
 from surogate_eval.utils.text import blank_as_none
+from surogate_eval import runners
 
 logger = get_logger()
+
+#: Seconds between row-level progress writes. Ops polls at 5s, so a tighter
+#: cadence buys nothing and a per-row write costs one file write per sample on
+#: a 1319-row benchmark.
+_PROGRESS_INTERVAL_SECONDS = 2.0
+
+
+def _row_counts(results: list) -> tuple:
+    """(scored, errored, passed, score_sum) over the rows measured so far.
+
+    Derived from the results list both loops already build, rather than
+    counters threaded through every append site: there are four of those
+    between the two loops and each one is a place to forget.
+    """
+    scored = sum(1 for r in results if r.get("status") == "scored")
+    errored = sum(1 for r in results if r.get("status") == "errored")
+    passed = sum(1 for r in results if r.get("success"))
+    score_sum = sum(
+        r["score"] for r in results if r.get("score") is not None
+    )
+    return scored, errored, passed, float(score_sum)
 
 try:
     from datasets import load_dataset, Dataset
@@ -466,6 +489,7 @@ class CustomEvalBackend:
 
         system_prompt = config.get('system_prompt')
         results = []
+        last_report = 0.0
 
         for row in rows:
             original_idx = row['_original_idx']
@@ -556,6 +580,15 @@ class CustomEvalBackend:
                 'reason': f'{matcher.mode} match' if success else 'No match',
             })
 
+            now = time.monotonic()
+            if now - last_report >= _PROGRESS_INTERVAL_SECONDS:
+                last_report = now
+                runners.report_rows(
+                    len(results), len(rows), *_row_counts(results),
+                )
+
+        runners.report_rows(len(results), len(rows), *_row_counts(results))
+
         errored_n = sum(1 for r in results if r['status'] == 'errored')
         scored_n = len(results) - errored_n
         logger.info(
@@ -603,6 +636,7 @@ class CustomEvalBackend:
         prompt_template = config.get('prompt_template')
 
         results = []
+        last_report = 0.0
 
         for row in rows:
             original_idx = row['_original_idx']
@@ -736,6 +770,15 @@ class CustomEvalBackend:
                     'reason': f'Judge error: {str(e)}',
                     'criteria': row_criteria,
                 })
+
+            now = time.monotonic()
+            if now - last_report >= _PROGRESS_INTERVAL_SECONDS:
+                last_report = now
+                runners.report_rows(
+                    len(results), len(rows), *_row_counts(results),
+                )
+
+        runners.report_rows(len(results), len(rows), *_row_counts(results))
 
         errored_n = sum(1 for r in results if r['status'] == 'errored')
         scored_n = len(results) - errored_n

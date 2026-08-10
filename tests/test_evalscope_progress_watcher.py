@@ -357,10 +357,13 @@ def test_report_rows_is_a_no_op_once_the_context_has_moved_past_it(tmp_path, mon
     """
     monkeypatch.chdir(tmp_path)
     monkeypatch.setattr(
-        runners, "_PROGRESS_CONTEXT",
-        {"current_benchmark": "", "completed": 0, "total": 1},
+        runners, "_PROGRESS",
+        {
+            "current_benchmark": "", "completed": 0, "total": 1,
+            "rows_done": 0, "rows_total": 0, "scored": 0, "errored": 0,
+            "passed": 0, "score_sum": 0.0,
+        },
     )
-    monkeypatch.setattr(runners, "_PROGRESS_ROWS", {})
 
     runners._write_progress("gsm8k", 0, 2)
     runners.report_rows(
@@ -391,10 +394,13 @@ def test_a_stale_watcher_cannot_overwrite_the_next_benchmarks_row_block(tmp_path
     """
     monkeypatch.chdir(tmp_path)
     monkeypatch.setattr(
-        runners, "_PROGRESS_CONTEXT",
-        {"current_benchmark": "", "completed": 0, "total": 1},
+        runners, "_PROGRESS",
+        {
+            "current_benchmark": "", "completed": 0, "total": 1,
+            "rows_done": 0, "rows_total": 0, "scored": 0, "errored": 0,
+            "passed": 0, "score_sum": 0.0,
+        },
     )
-    monkeypatch.setattr(runners, "_PROGRESS_ROWS", {})
 
     runners._write_progress("gsm8k", 0, 2)
     _write_lines(tmp_path / "reviews" / "m" / "gsm8k_main.jsonl", [_review(1.0)])

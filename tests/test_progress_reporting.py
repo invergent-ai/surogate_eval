@@ -13,10 +13,13 @@ def in_tmp_cwd(tmp_path, monkeypatch):
     """Every writer call resolves `eval_results/` relative to cwd."""
     monkeypatch.chdir(tmp_path)
     monkeypatch.setattr(
-        runners, "_PROGRESS_CONTEXT",
-        {"current_benchmark": "", "completed": 0, "total": 1},
+        runners, "_PROGRESS",
+        {
+            "current_benchmark": "", "completed": 0, "total": 1,
+            "rows_done": 0, "rows_total": 0, "scored": 0, "errored": 0,
+            "passed": 0, "score_sum": 0.0,
+        },
     )
-    monkeypatch.setattr(runners, "_PROGRESS_ROWS", {})
     yield
 
 
@@ -144,9 +147,9 @@ def test_report_rows_cannot_interleave_with_a_benchmark_switch(monkeypatch):
     benchmark's stale counts -- landing on the new benchmark's name.
     """
     class _PausingContext(dict):
-        """Stands in for `_PROGRESS_CONTEXT`: the first read of
-        `current_benchmark` blocks until released, simulating a benchmark
-        switch that lands in the middle of `report_rows`'s check-then-write.
+        """Stands in for `_PROGRESS`: the first read of `current_benchmark`
+        blocks until released, simulating a benchmark switch that lands in
+        the middle of `report_rows`'s check-then-write.
         """
 
         def __init__(self, *a, **kw):
@@ -163,9 +166,12 @@ def test_report_rows_cannot_interleave_with_a_benchmark_switch(monkeypatch):
                 assert self.release.wait(timeout=5), "test setup never released the pause"
             return value
 
-    ctx = _PausingContext({"current_benchmark": "gsm8k", "completed": 0, "total": 2})
-    monkeypatch.setattr(runners, "_PROGRESS_CONTEXT", ctx)
-    monkeypatch.setattr(runners, "_PROGRESS_ROWS", {})
+    ctx = _PausingContext({
+        "current_benchmark": "gsm8k", "completed": 0, "total": 2,
+        "rows_done": 0, "rows_total": 0, "scored": 0, "errored": 0,
+        "passed": 0, "score_sum": 0.0,
+    })
+    monkeypatch.setattr(runners, "_PROGRESS", ctx)
 
     reporter = threading.Thread(
         target=runners.report_rows,

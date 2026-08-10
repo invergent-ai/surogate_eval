@@ -13,28 +13,37 @@ from surogate_eval.utils.logger import get_logger
 
 logger = get_logger()
 
-#: Benchmark-level context for `progress.json`, set by `eval.py` before each
-#: benchmark and re-used by row-level updates.
+#: Combined benchmark-level and row-level state for `progress.json`, set by
+#: `eval.py` before each benchmark (the benchmark-level keys) and re-used by
+#: row-level updates (the rest). One dict, not two: `_write_progress` and
+#: `report_rows` always read and write across both halves together --
+#: `_flush_progress` used to merge two separate dicts on every write, which
+#: bought nothing but an extra step, since nothing ever needed one half
+#: without the other. Seeded with every key up front so `_flush_progress`
+#: can serialize it directly.
 #:
 #: Module state rather than a parameter because the backends that report rows
 #: (`custom_eval`, the evalscope watcher) have no access to the task list and
 #: threading it through every backend signature would touch far more code than
 #: this feature is worth. One writer owns the whole document either way, so a
 #: partial file is never produced.
-_PROGRESS_CONTEXT: dict = {"current_benchmark": "", "completed": 0, "total": 1}
-_PROGRESS_ROWS: dict = {}
+_PROGRESS: dict = {
+    "current_benchmark": "", "completed": 0, "total": 1,
+    "rows_done": 0, "rows_total": 0, "scored": 0, "errored": 0,
+    "passed": 0, "score_sum": 0.0,
+}
 
-#: Guards every read-check-write of the two dicts above. `report_rows` reads
-#: `_PROGRESS_CONTEXT` (the `for_benchmark` check) and then writes
-#: `_PROGRESS_ROWS`, as two separate statements; without a lock,
-#: `_write_progress` can run a full benchmark switch in between, and
-#: `report_rows` then resumes and stamps the old benchmark's row counts onto
-#: the new benchmark's context. `eval.py` calls `_write_progress` from the
-#: main thread while a background watcher (or `custom_eval`'s own scoring
-#: loop) calls `report_rows`, so this is a real cross-thread window, not a
-#: hypothetical one. ``ponytail: one coarse lock, not per-field -- these
-#: writes are a few dict operations every couple of seconds, so contention
-#: is not a real cost.``
+#: Guards every read-check-write of `_PROGRESS`. `report_rows` reads
+#: `current_benchmark` (the `for_benchmark` check) and then writes the row
+#: keys, as two separate statements; without a lock, `_write_progress` can
+#: run a full benchmark switch in between, and `report_rows` then resumes
+#: and stamps the old benchmark's row counts onto the new benchmark's
+#: context. `eval.py` calls `_write_progress` from the main thread while a
+#: background watcher (or `custom_eval`'s own scoring loop) calls
+#: `report_rows`, so this is a real cross-thread window, not a hypothetical
+#: one. ``ponytail: one coarse lock, not per-field -- these writes are a few
+#: dict operations every couple of seconds, so contention is not a real
+#: cost.``
 _PROGRESS_LOCK = threading.Lock()
 
 
@@ -358,11 +367,10 @@ def _flush_progress() -> None:
     try:
         out = Path("eval_results")
         out.mkdir(exist_ok=True)
-        payload = {**_PROGRESS_CONTEXT, **_PROGRESS_ROWS}
         fd, tmp = tempfile.mkstemp(dir=str(out), suffix=".tmp")
         try:
             with os.fdopen(fd, "w") as f:
-                json.dump(payload, f)
+                json.dump(_PROGRESS, f)
             # mkstemp defaults to 0600; the previous writer used open(mode='w')
             # which produced a umask-derived mode. A reader in another account
             # must still be able to read this file.
@@ -390,21 +398,18 @@ def _write_progress(current_benchmark: str, completed: int, total: int) -> None:
     ``rows_total: 0`` already means "unknown" on both sides, so this is a
     genuine reset rather than a second flavour of "no data".
     """
-    global _PROGRESS_ROWS
     with _PROGRESS_LOCK:
-        _PROGRESS_CONTEXT.update({
+        _PROGRESS.update({
             "current_benchmark": current_benchmark,
             "completed": completed,
             "total": total,
-        })
-        _PROGRESS_ROWS = {
             "rows_done": 0,
             "rows_total": 0,
             "scored": 0,
             "errored": 0,
             "passed": 0,
             "score_sum": 0.0,
-        }
+        })
         _flush_progress()
 
 
@@ -427,7 +432,7 @@ def report_rows(
     compute exactly that before calling in, so deriving it here leaves one
     place for that arithmetic instead of one per caller.
 
-    ``for_benchmark``, when given, must match ``_PROGRESS_CONTEXT``'s current
+    ``for_benchmark``, when given, must match ``_PROGRESS``'s current
     benchmark or the write is dropped. A background watcher's ``stop()`` can
     time out while a tick is still in flight (``_evalscope_progress.
     ReviewWatcher``): the thread stays alive, ticks again, and that write
@@ -445,18 +450,17 @@ def report_rows(
     same stale-write hazard as the leaked-watcher case above, just reached
     by a race instead of a slow ``stop()``.
     """
-    global _PROGRESS_ROWS
     with _PROGRESS_LOCK:
-        if for_benchmark is not None and for_benchmark != _PROGRESS_CONTEXT["current_benchmark"]:
+        if for_benchmark is not None and for_benchmark != _PROGRESS["current_benchmark"]:
             return
-        _PROGRESS_ROWS = {
+        _PROGRESS.update({
             "rows_done": rows_done,
             "rows_total": rows_total,
             "scored": scored,
             "errored": rows_done - scored,
             "passed": passed,
             "score_sum": score_sum,
-        }
+        })
         _flush_progress()
 
 

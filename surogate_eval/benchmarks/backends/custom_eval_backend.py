@@ -26,7 +26,7 @@ def _row_counts(results: list) -> tuple:
     """(scored, errored, passed, score_sum) over the rows measured so far.
 
     Derived from the results list both loops already build, rather than
-    counters threaded through every append site: there are four of those
+    counters threaded through every append site: there are five of those
     between the two loops and each one is a place to forget.
     """
     scored = sum(1 for r in results if r.get("status") == "scored")

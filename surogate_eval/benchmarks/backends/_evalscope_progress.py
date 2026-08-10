@@ -180,15 +180,22 @@ class ReviewCounter:
     scoped to one benchmark's watch (a fresh ``ReviewWatcher`` per
     benchmark constructs a fresh counter), so offsets never leak from one
     benchmark's files into the next.
+
+    Totals are kept per file, not as one running scalar, so a file that
+    shrinks (truncated, or replaced -- e.g. evalscope restarting a
+    benchmark into the same work_dir) can have its own stale offset and
+    stale contribution dropped and recounted from zero without touching any
+    other file's count. ``count_reviews`` never had this problem, since it
+    always reads every file from the start; tracking an offset is what
+    introduces it.
     """
 
     def __init__(self) -> None:
         self._offsets: Dict[Path, int] = {}
         self._partial: Dict[Path, bytes] = {}
-        self._rows_done = 0
-        self._scored = 0
-        self._passed = 0
-        self._score_sum = 0.0
+        #: path -> (rows_done, scored, passed, score_sum) for that file
+        #: alone. update() sums these to answer the combined total.
+        self._file_totals: Dict[Path, Tuple[int, int, int, float]] = {}
 
     def update(self, reviews_dir: Path, dataset: str) -> Tuple[int, int, int, float]:
         """Advance the running totals with whatever is newly available, and
@@ -202,10 +209,36 @@ class ReviewCounter:
                     self._consume(path)
         except Exception:
             logger.debug("incremental review count failed", exc_info=True)
-        return (self._rows_done, self._scored, self._passed, self._score_sum)
+        totals = self._file_totals.values()
+        return (
+            sum(t[0] for t in totals),
+            sum(t[1] for t in totals),
+            sum(t[2] for t in totals),
+            sum(t[3] for t in totals),
+        )
 
     def _consume(self, path: Path) -> None:
         offset = self._offsets.get(path, 0)
+        if offset:
+            try:
+                shrunk = path.stat().st_size < offset
+            except Exception:
+                shrunk = False
+            if shrunk:
+                # Truncated or replaced since the last tick. The stored
+                # offset now points past the new EOF: seek()+read() would
+                # return b"" forever (frozen), or -- once the file regrows
+                # past the stale offset -- resume reading from the middle of
+                # whatever line now happens to sit there. Drop this file's
+                # own offset, partial line, and counted-so-far contribution,
+                # and fall through to read it from the start like a file
+                # seen for the first time. A same-size-or-larger replacement
+                # is not detected this way (nothing to distinguish it from
+                # ordinary growth by size alone) -- not worth an inode/mtime
+                # check for a best-effort progress bar.
+                offset = 0
+                self._partial.pop(path, None)
+                self._file_totals.pop(path, None)
         try:
             with open(path, "rb") as f:
                 f.seek(offset)
@@ -225,25 +258,36 @@ class ReviewCounter:
         trailing = lines[-1]
         self._partial[path] = trailing
         self._offsets[path] = offset + len(chunk)
+        totals = self._file_totals.get(path, (0, 0, 0, 0.0))
         for raw_line in lines[:-1]:
-            self._count_line(raw_line)
+            totals = _count_line(raw_line, totals)
+        self._file_totals[path] = totals
 
-    def _count_line(self, raw_line: bytes) -> None:
-        stripped = raw_line.strip()
-        if not stripped:
-            return
-        self._rows_done += 1
-        try:
-            text = stripped.decode("utf-8")
-        except UnicodeDecodeError:
-            return
-        score = _read_line_score(text)
-        if score is None:
-            return
-        self._scored += 1
-        self._score_sum += score
-        if score > 0:
-            self._passed += 1
+
+def _count_line(
+    raw_line: bytes, totals: Tuple[int, int, int, float],
+) -> Tuple[int, int, int, float]:
+    """One line's contribution folded into ``totals`` (rows_done, scored,
+    passed, score_sum) and returned. A plain function, not a method: it
+    only touches the numbers passed in, so ``ReviewCounter`` can apply it to
+    any one file's running total without the two being confused.
+    """
+    rows_done, scored, passed, score_sum = totals
+    stripped = raw_line.strip()
+    if not stripped:
+        return totals
+    rows_done += 1
+    try:
+        score = _read_line_score(stripped.decode("utf-8"))
+    except UnicodeDecodeError:
+        score = None
+    if score is None:
+        return (rows_done, scored, passed, score_sum)
+    scored += 1
+    score_sum += score
+    if score > 0:
+        passed += 1
+    return (rows_done, scored, passed, score_sum)
 
 
 def read_evalscope_tracker(reviews_dir: Path) -> Optional[Tuple[int, int]]:

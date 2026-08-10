@@ -192,6 +192,35 @@ def test_incremental_counter_holds_a_trailing_partial_line_until_it_is_complete(
     assert score_sum == 2.0
 
 
+def test_incremental_counter_recovers_when_a_file_shrinks_between_ticks(tmp_path):
+    """A truncated or replaced reviews file (evalscope restarting a
+    benchmark into the same work_dir, say) must not freeze the counter at a
+    stale offset forever, nor -- once the file regrows past that stale
+    offset -- make it resume reading mid-line. `count_reviews` never had
+    this problem, since it always reads from zero; tracking an offset is
+    what introduces it, so recovery has to be handled explicitly."""
+    reviews_dir = tmp_path / "reviews" / "m"
+    f = reviews_dir / "gsm8k_main.jsonl"
+    _write_lines(f, [_review(1.0), _review(0.0), _review(1.0)])
+
+    counter = ReviewCounter()
+    assert counter.update(reviews_dir, "gsm8k") == (3, 3, 2, 2.0)
+
+    # Truncated and rewritten from scratch with fewer rows -- smaller than
+    # what has already been consumed.
+    f.write_text(json.dumps(_review(1.0)) + "\n")
+    rows_done, scored, passed, score_sum = counter.update(reviews_dir, "gsm8k")
+    assert (rows_done, scored, passed, score_sum) == (1, 1, 1, 1.0), (
+        "must recount from the start of the shrunk file, not freeze at the stale offset"
+    )
+
+    # And it must keep counting correctly as the new file grows again.
+    _write_lines(f, [_review(0.0)])
+    assert counter.update(reviews_dir, "gsm8k") == (2, 2, 1, 1.0), (
+        "must not resume reading mid-line once the file regrows past the old offset"
+    )
+
+
 def test_watcher_reports_on_a_tick_and_stop_joins_the_thread(tmp_path, report_rows_calls):
     """The threading glue itself, not just count_reviews.
 

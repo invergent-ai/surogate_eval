@@ -42,6 +42,12 @@ def _review(score):
     return {"sample_score": {"score": {"value": {"acc": score}}}}
 
 
+def _multi_key_review(**value):
+    """A row with several numeric score keys, e.g. DROP's `em` + `f1` -- the
+    shape `_review` cannot produce, since it only ever emits a single key."""
+    return {"sample_score": {"score": {"value": value}}}
+
+
 def test_counts_lines_as_they_are_appended(tmp_path):
     """Evalscope appends one line per sample as it completes, so a count taken
     mid-run is a real row count."""
@@ -53,6 +59,31 @@ def test_counts_lines_as_they_are_appended(tmp_path):
     _write_lines(f, [_review(1.0)])
 
     assert count_reviews(tmp_path / "reviews" / "m", "gsm8k") == (3, 3, 2, 2.0)
+
+
+def test_multi_key_score_picks_the_same_key_the_final_report_would(tmp_path):
+    """`count_reviews` must read a multi-key row (DROP: `em` + `f1`) the same
+    way `_extract_sample_score` does for the final report -- not just take
+    the first key in dict order, which used to disagree with the report
+    whenever the "first" key was not the one `main_score_name`/the fallback
+    order would have picked.
+
+    `f1` is inserted first here; the fallback order ranks `em` ahead of
+    `f1`, so the correct read is `em`'s 0.3, not `f1`'s 0.7. 0.3 must also
+    count as passed -- `score > 0`, the same rule `_review_row_to_record`
+    uses -- not the old `score >= 0.5`, which 0.3 would fail.
+    """
+    f = tmp_path / "reviews" / "m" / "drop_main.jsonl"
+    _write_lines(f, [_multi_key_review(f1=0.7, em=0.3)])
+
+    rows_done, scored, passed, score_sum = count_reviews(
+        tmp_path / "reviews" / "m", "drop",
+    )
+
+    assert rows_done == 1
+    assert scored == 1
+    assert score_sum == 0.3
+    assert passed == 1, "0.3 > 0 must pass, matching _review_row_to_record's rule"
 
 
 def test_a_malformed_line_does_not_stop_the_count(tmp_path):

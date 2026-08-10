@@ -28,23 +28,9 @@ from typing import Callable, List, Optional, Tuple
 
 from surogate_eval import runners
 from surogate_eval.utils.logger import get_logger
+from .evalscope_backend import _extract_sample_score
 
 logger = get_logger()
-
-
-def _score_of(row: dict):
-    """Pull the score out of evalscope's nesting, or None if unreadable."""
-    value = (
-        (row.get("sample_score") or {}).get("score") or {}
-    ).get("value")
-    if isinstance(value, dict):
-        for v in value.values():
-            if isinstance(v, (int, float)):
-                return float(v)
-        return None
-    if isinstance(value, (int, float)):
-        return float(value)
-    return None
 
 
 def _sibling_dataset_prefixes(dataset: str) -> frozenset:
@@ -92,6 +78,14 @@ def count_reviews(reviews_dir: Path, dataset: str) -> Tuple[int, int, int, float
     ``rows_done`` counts every line, including one we could not read a score
     from: the sample was processed either way, and a progress bar that stalls
     on an unreadable row is worse than one that advances.
+
+    The score itself is read with ``evalscope_backend._extract_sample_score``
+    -- the same picker the final report uses in ``_review_row_to_record`` --
+    and a row passes on ``score > 0``, the same rule ``_review_row_to_record``
+    applies. A row with several numeric score keys (DROP carries both ``em``
+    and ``f1``) used to be able to read a different score, and pass/fail
+    differently, live versus in the final report; picking the same key by
+    the same rule and passing by the same threshold makes that impossible.
     """
     rows_done = scored = passed = 0
     score_sum = 0.0
@@ -114,14 +108,18 @@ def count_reviews(reviews_dir: Path, dataset: str) -> Tuple[int, int, int, float
                         continue
                     rows_done += 1
                     try:
-                        score = _score_of(json.loads(line))
+                        row = json.loads(line)
+                        sample_score = row.get("sample_score")
+                        if not isinstance(sample_score, dict):
+                            sample_score = {}
+                        score, _, _ = _extract_sample_score(sample_score.get("score") or {})
                     except Exception:
                         continue
                     if score is None:
                         continue
                     scored += 1
                     score_sum += score
-                    if score >= 0.5:
+                    if score > 0:
                         passed += 1
     except Exception:
         logger.debug("review count failed", exc_info=True)

@@ -448,6 +448,61 @@ def test_a_stale_watcher_cannot_overwrite_the_next_benchmarks_row_block(tmp_path
     assert after["rows_done"] == 0, "a stale watcher must not resurrect the old benchmark's row block"
 
 
+def test_stop_publishes_a_final_count_even_when_the_run_finished_within_one_interval(
+    tmp_path, report_rows_calls,
+):
+    """stop() must take its own final count before joining, because a
+    periodic tick may never run again before the benchmark ends. A long
+    interval here stands in for a benchmark that finishes faster than one
+    tick period -- without stop()'s own count, nothing would ever be
+    published before eval.py's next _write_progress zeroes the row block
+    (Finding 4).
+    """
+    reviews_dir = tmp_path / "reviews" / "m"
+    watcher = ReviewWatcher(lambda: reviews_dir, "gsm8k", benchmark_name="gsm8k", interval=10.0)
+    watcher.start()
+    # Let the prompt first tick run and finish against the not-yet-existing
+    # directory, so it has nothing to report.
+    time.sleep(0.05)
+    assert not report_rows_calls, "nothing to report yet -- the reviews file does not exist"
+
+    _write_lines(reviews_dir / "gsm8k_main.jsonl", [_review(1.0)])
+    # No periodic tick will fire again for ~10s -- only stop()'s own final
+    # count can pick this up before the process moves on.
+    watcher.stop()
+
+    assert report_rows_calls, "stop() must publish a final count, not rely on the next periodic tick"
+    args, _ = report_rows_calls[-1]
+    assert args[0] == 1, "the row written just before stop() must be in the final count"
+
+
+def test_stop_overwrites_the_last_mid_run_tick_with_the_final_state(tmp_path, report_rows_calls):
+    """A periodic tick can publish a count that is already stale by the time
+    the run actually finishes -- more rows land after it. stop()'s own final
+    count must be the last word, not the earlier mid-run tick (Finding 4).
+    """
+    reviews_dir = tmp_path / "reviews" / "m"
+    _write_lines(reviews_dir / "gsm8k_main.jsonl", [_review(1.0)])
+
+    # A long interval so the only ticks that can possibly fire in this test
+    # are the prompt first tick (Finding 4's other half) and stop()'s own
+    # final tick -- no periodic tick can sneak in and make this pass by luck.
+    watcher = ReviewWatcher(lambda: reviews_dir, "gsm8k", benchmark_name="gsm8k", interval=10.0)
+    watcher.start()
+    _wait_until(lambda: report_rows_calls)
+    assert report_rows_calls[-1][0][0] == 1, "the prompt first tick publishes what exists at start-up"
+
+    # More rows land after that -- stop()'s own final count must catch them.
+    _write_lines(reviews_dir / "gsm8k_main.jsonl", [_review(1.0), _review(0.0)])
+    watcher.stop()
+
+    args, _ = report_rows_calls[-1]
+    assert args[0] == 3, (
+        "stop() must publish the fully caught-up count, not leave the earlier "
+        "mid-run tick as the last word"
+    )
+
+
 def test_watcher_publishes_coherent_progress_when_the_tracker_lags_the_reviews_file(tmp_path, monkeypatch):
     """End-to-end regression for Finding 1, through the real (unmocked)
     ``report_rows``: evalscope's tracker file flushes at most once a second

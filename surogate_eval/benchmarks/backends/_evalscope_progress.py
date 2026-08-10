@@ -304,39 +304,74 @@ class ReviewWatcher:
         # makes a tick outlive stop()'s join. One counter per watcher, so
         # its byte offsets are scoped to this benchmark's files only.
         self._counter = ReviewCounter()
+        # Guards a _tick() call: stop() runs one more tick itself (see
+        # below), on the caller's thread, which can otherwise overlap with
+        # the background thread's own in-flight tick -- both would read and
+        # mutate self._counter's offsets/totals at once. A tick is a couple
+        # of small file reads every few seconds, so serializing them costs
+        # nothing real.
+        self._tick_lock = threading.Lock()
         self._stop = threading.Event()
         self._thread = threading.Thread(target=self._loop, daemon=True)
 
-    def _loop(self) -> None:
-        while not self._stop.wait(self._interval):
-            reviews_dir = self._reviews_dir()
-            rows_done, scored, passed, score_sum = self._counter.update(
-                reviews_dir, self._dataset,
-            )
-            # The reviews file still supplies scores -- evalscope's tracker
-            # carries no per-sample outcome, only counts -- but once it has
-            # written, its processed_count/total_count are a real fact and
-            # replace the reviews line count (a proxy for rows_done) and the
-            # old config['limit'] guess (gone; see _prepare_task_config).
-            tracker = read_evalscope_tracker(reviews_dir)
-            if tracker is not None:
-                rows_done, rows_total = tracker
-            else:
-                rows_total = 0  # unknown: no fact available yet, no guess left to fall back to
-            if rows_done:
-                # for_benchmark: stop()'s join(timeout=5) can return while
-                # this tick is still running. Tagging the write means a tick
-                # that only finishes after the next benchmark's watcher has
-                # already started gets silently dropped by report_rows
-                # instead of stamping this benchmark's counts over it.
-                runners.report_rows(
-                    rows_done, rows_total, scored, passed, score_sum,
-                    for_benchmark=self._benchmark_name,
+    def _tick(self) -> None:
+        """One count-and-publish cycle: called on the background thread's
+        own cadence, and once more by stop() to grab the final state before
+        the thread is joined. Never raises -- stop() calls this directly, on
+        whatever thread stop() itself runs on, and progress reporting must
+        never be able to fail the run it is layered onto.
+        """
+        try:
+            with self._tick_lock:
+                reviews_dir = self._reviews_dir()
+                rows_done, scored, passed, score_sum = self._counter.update(
+                    reviews_dir, self._dataset,
                 )
+                # The reviews file still supplies scores -- evalscope's
+                # tracker carries no per-sample outcome, only counts -- but
+                # once it has written, its processed_count/total_count are a
+                # real fact and replace the reviews line count (a proxy for
+                # rows_done) and the old config['limit'] guess (gone; see
+                # _prepare_task_config).
+                tracker = read_evalscope_tracker(reviews_dir)
+                if tracker is not None:
+                    rows_done, rows_total = tracker
+                else:
+                    rows_total = 0  # unknown: no fact available yet, no guess left to fall back to
+                if rows_done:
+                    # for_benchmark: stop()'s join(timeout=5) can return
+                    # while this tick is still running. Tagging the write
+                    # means a tick that only finishes after the next
+                    # benchmark's watcher has already started gets silently
+                    # dropped by report_rows instead of stamping this
+                    # benchmark's counts over it.
+                    runners.report_rows(
+                        rows_done, rows_total, scored, passed, score_sum,
+                        for_benchmark=self._benchmark_name,
+                    )
+        except Exception:
+            logger.debug("progress tick failed", exc_info=True)
+
+    def _loop(self) -> None:
+        # Promptly, not after a full interval: a benchmark that finishes
+        # inside one interval would otherwise never get a single mid-run
+        # tick before stop() runs, and stop()'s own final tick (below) is
+        # what covers the rest of the gap.
+        self._tick()
+        while not self._stop.wait(self._interval):
+            self._tick()
 
     def start(self) -> None:
         self._thread.start()
 
     def stop(self) -> None:
         self._stop.set()
+        # A final count before joining: by the time evalscope_backend calls
+        # stop(), run_task has already returned and the reviews file is at
+        # its final state, so this is the truly last word -- not whatever
+        # the last periodic tick happened to see. Without it, the last
+        # published number is always a little short, and a benchmark that
+        # finishes inside one interval publishes nothing at all before the
+        # next benchmark's _write_progress zeroes the row block.
+        self._tick()
         self._thread.join(timeout=5)

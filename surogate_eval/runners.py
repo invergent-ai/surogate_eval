@@ -1,13 +1,27 @@
 """Evaluation runners for different test types."""
 
 import asyncio
+import json
 import os
+import tempfile
+from pathlib import Path
 from typing import Any, Callable, Dict, List, Optional
 
 from surogate_eval.targets import BaseTarget
 from surogate_eval.utils.logger import get_logger
 
 logger = get_logger()
+
+#: Benchmark-level context for `progress.json`, set by `eval.py` before each
+#: benchmark and re-used by row-level updates.
+#:
+#: Module state rather than a parameter because the backends that report rows
+#: (`custom_eval`, the evalscope watcher) have no access to the task list and
+#: threading it through every backend signature would touch far more code than
+#: this feature is worth. One writer owns the whole document either way, so a
+#: partial file is never produced.
+_PROGRESS_CONTEXT: dict = {"current_benchmark": "", "completed": 0, "total": 1}
+_PROGRESS_ROWS: dict = {}
 
 
 def run_evaluation(
@@ -316,23 +330,75 @@ def _write_bench_result(result: Dict[str, Any]) -> None:
         logger.warning(f"Failed to write benchmark result for {name}: {e}")
 
 
-def _write_progress(current_benchmark: str, completed: int, total: int) -> None:
-    """Write eval_results/progress.json so the monitor can show live status."""
-    import json as _json
-    from pathlib import Path as _Path
+def _progress_path() -> Path:
+    return Path("eval_results") / "progress.json"
 
+
+def _flush_progress() -> None:
+    """Write the whole document atomically.
+
+    Temp file plus rename, because ops polls this path every 5s and a
+    truncating in-place write can be read half-finished and parsed as invalid
+    JSON. Best-effort: a failure here must never fail the run.
+    """
     try:
-        out = _Path("eval_results")
+        out = Path("eval_results")
         out.mkdir(exist_ok=True)
-        path = out / "progress.json"
-        with open(path, "w") as f:
-            _json.dump({
-                "current_benchmark": current_benchmark,
-                "completed": completed,
-                "total": total,
-            }, f)
+        payload = {**_PROGRESS_CONTEXT, **_PROGRESS_ROWS}
+        fd, tmp = tempfile.mkstemp(dir=str(out), suffix=".tmp")
+        try:
+            with os.fdopen(fd, "w") as f:
+                json.dump(payload, f)
+            os.replace(tmp, str(_progress_path()))
+        except Exception:
+            try:
+                os.unlink(tmp)
+            except Exception:
+                pass
+            raise
     except Exception:
         pass  # Best-effort
+
+
+def _write_progress(current_benchmark: str, completed: int, total: int) -> None:
+    """Record which benchmark is running, and clear any previous row counts.
+
+    Clearing matters: without it the next benchmark inherits the last one's
+    row totals and the UI jumps to a finished bar the moment it starts.
+    """
+    global _PROGRESS_ROWS
+    _PROGRESS_CONTEXT.update({
+        "current_benchmark": current_benchmark,
+        "completed": completed,
+        "total": total,
+    })
+    _PROGRESS_ROWS = {}
+    _flush_progress()
+
+
+def report_rows(
+    rows_done: int,
+    rows_total: int,
+    scored: int,
+    errored: int,
+    passed: int,
+    score_sum: float,
+) -> None:
+    """Publish row-level progress for the benchmark currently running.
+
+    ``score_sum`` rather than an average so ops does the division: a partial
+    file then cannot be internally inconsistent.
+    """
+    global _PROGRESS_ROWS
+    _PROGRESS_ROWS = {
+        "rows_done": rows_done,
+        "rows_total": rows_total,
+        "scored": scored,
+        "errored": errored,
+        "passed": passed,
+        "score_sum": score_sum,
+    }
+    _flush_progress()
 
 
 def _run_single_benchmark(

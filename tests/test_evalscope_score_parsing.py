@@ -498,6 +498,37 @@ def test_an_unparseable_line_does_not_lose_the_rest_of_the_file(tmp_path):
     assert rows[2]["score"] == 1.0
 
 
+def test_a_prefix_sibling_does_not_leak_into_the_shorter_datasets_predictions(tmp_path):
+    """`mmmu_pro`'s reviews must not show up in `mmmu`'s detailed_results.
+
+    Both write into the same reviews directory -- evalscope's work_dir is
+    not scoped per dataset -- and `mmmu_*.jsonl` matches `mmmu_pro_val.jsonl`
+    just as well as it matches `mmmu_val.jsonl`: fnmatch's `*` does not stop
+    at the next underscore, so the underscore glob alone does not actually
+    guard the prefix collision its own comment used to claim.
+    """
+    reviews = tmp_path / "reviews" / _MODEL_ID
+    reviews.mkdir(parents=True, exist_ok=True)
+
+    def row(tag):
+        return {
+            "input": tag,
+            "target": "",
+            "sample_score": {"score": {"value": {"acc": 1.0}, "main_score_name": "acc"}},
+        }
+
+    (reviews / "mmmu_val.jsonl").write_text(json.dumps(row("own")) + "\n")
+    (reviews / "mmmu_pro_val.jsonl").write_text(
+        json.dumps(row("sibling")) + "\n" + json.dumps(row("sibling")) + "\n"
+    )
+
+    backend = EvalScopeBackend.__new__(EvalScopeBackend)
+    rows = backend._load_predictions(str(tmp_path), _MODEL_ID, "mmmu")
+
+    assert len(rows) == 1, "mmmu_pro's rows must not be counted as mmmu's"
+    assert rows[0]["input"] == "own"
+
+
 def test_an_unanticipated_field_failure_is_contained_to_its_row(tmp_path):
     """The class of hazard, not the three instances we happened to find.
 

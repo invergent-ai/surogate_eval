@@ -572,8 +572,16 @@ class EvalScopeBackend:
                 logger.debug(f"Predictions directory not found: {reviews_dir}")
                 return detailed_results
 
-        # Use underscore glob to avoid matching prefixes (e.g. mmmu vs mmmu_pro)
-        matches = list(reviews_dir.glob(f'{dataset_name}_*.jsonl'))
+        # Underscore glob first, but that alone still matches a longer
+        # sibling dataset (e.g. mmmu_pro_val.jsonl when dataset_name is
+        # 'mmmu': fnmatch's `*` does not stop at the next underscore) --
+        # drop_sibling_matches cross-checks against evalscope's own
+        # benchmark registry to tell a subset name from a sibling dataset.
+        from ._evalscope_progress import drop_sibling_matches
+
+        matches = drop_sibling_matches(
+            list(reviews_dir.glob(f'{dataset_name}_*.jsonl')), dataset_name,
+        )
         if not matches:
             # Fallback: exact match without subset suffix
             exact = reviews_dir / f'{dataset_name}.jsonl'

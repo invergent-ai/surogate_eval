@@ -28,13 +28,14 @@ from typing import Callable, List, Optional, Tuple
 
 from surogate_eval import runners
 from surogate_eval.utils.logger import get_logger
-from .evalscope_backend import _extract_sample_score
+from .evalscope_backend import EvalScopeBackend, _extract_sample_score
 
 logger = get_logger()
 
 
 def _sibling_dataset_prefixes(dataset: str) -> frozenset:
-    """Other registered evalscope dataset ids that start with ``dataset + '_'``.
+    """Other datasets this backend can run whose evalscope id starts with
+    ``dataset + '_'``.
 
     A plain ``{dataset}_*.jsonl`` glob is not enough to isolate one dataset's
     files: fnmatch's ``*`` does not stop at the next underscore, so it also
@@ -42,18 +43,22 @@ def _sibling_dataset_prefixes(dataset: str) -> frozenset:
     with the same prefix -- ``mmmu_*`` matches ``mmmu_pro_val.jsonl`` too,
     because "pro_val" satisfies ``*`` just as well as a real mmmu subset
     name would. Whether "pro" is a separate dataset or just an unusual
-    subset name cannot be told from string shape alone; evalscope's own
-    benchmark registry is the only place that distinction actually lives.
-    Best-effort: if the registry cannot be read, fail open to "no known
-    siblings" rather than raise.
-    """
-    try:
-        from evalscope.api.registry import BENCHMARK_REGISTRY
+    subset name cannot be told from string shape alone.
 
-        prefix = f"{dataset}_"
-        return frozenset(name for name in BENCHMARK_REGISTRY if name.startswith(prefix))
-    except Exception:
-        return frozenset()
+    Built from ``EvalScopeBackend.BENCHMARK_MAP``'s values -- this
+    codebase's own complete list of evalscope dataset ids it will ever run
+    -- rather than evalscope's own benchmark registry: a registry import
+    that failed used to fail open to "no known siblings", silently
+    reintroducing the prefix-collision bug this function exists to prevent.
+    ``BENCHMARK_MAP`` is a plain dict literal in this codebase, so reading
+    it cannot fail the way an optional import can, and it is strictly more
+    precise anyway -- it is exactly the set of datasets a match here could
+    ever actually collide with.
+    """
+    prefix = f"{dataset}_"
+    return frozenset(
+        name for name in EvalScopeBackend.BENCHMARK_MAP.values() if name.startswith(prefix)
+    )
 
 
 def drop_sibling_matches(paths: List[Path], dataset: str) -> List[Path]:

@@ -126,6 +126,61 @@ def test_exact_match_loop_reports_progress(report_calls):
     assert final_call["score_sum"] == sum(r["score"] for r in scored_results) == 2.0
 
 
+class UnreachableTarget:
+    """Every request comes back carrying an error -- the target-is-down
+    case a user is most likely watching when live progress is what tells
+    them anything is happening at all (Finding 3)."""
+
+    name = "unreachable"
+    config = {}
+
+    def send_request(self, request):
+        return TargetResponse(content=None, raw_response={}, error="connection reset")
+
+
+def test_exact_match_loop_with_every_row_erroring_still_reports_mid_loop(report_calls):
+    """The errored branch used to `continue` straight past the reporter, so
+    a target that fails every row reported nothing until the single
+    unconditional write after the loop ended. That is exactly the case a
+    user is most likely watching live -- the target is down -- and it used
+    to freeze the progress bar for the whole run (Finding 3)."""
+    rows = [
+        {"instruction": f"row{i}_instruction", "answer": "expected", "_original_idx": i}
+        for i in range(3)
+    ]
+
+    backend = CustomEvalBackend()
+    results = backend._evaluate_exact_match_rows(rows, UnreachableTarget(), {}, {})
+
+    assert [r["status"] for r in results] == ["errored"] * 3
+    assert len(report_calls) >= 2, "must report during the loop, not just once after it ends"
+    # `_last_report` starts at 0.0, so the very first `maybe_report` call
+    # (after row 0) always clears the throttle regardless of wall-clock
+    # timing -- which is what lets this assert on call count/content rather
+    # than on real elapsed time.
+    assert report_calls[0]["rows_done"] < len(rows), (
+        "the first report must land before every row is measured"
+    )
+
+
+def test_judge_loop_with_every_row_erroring_still_reports_mid_loop(report_calls):
+    """Same bug, judge path: the request-error branch `continue`d past the
+    reporter before ever reaching G-Eval (Finding 3)."""
+    rows = [
+        {"instruction": f"row{i}_instruction", "answer": "expected", "_original_idx": i}
+        for i in range(3)
+    ]
+
+    backend = CustomEvalBackend()
+    results = backend._evaluate_judge_rows(rows, UnreachableTarget(), {}, {})
+
+    assert [r["status"] for r in results] == ["errored"] * 3
+    assert len(report_calls) >= 2, "must report during the loop, not just once after it ends"
+    assert report_calls[0]["rows_done"] < len(rows), (
+        "the first report must land before every row is measured"
+    )
+
+
 class FakeGEvalForProgress:
     """A fake GEval for progress testing."""
 

@@ -628,6 +628,12 @@ class CustomEvalBackend:
                     'success': False,
                     'reason': row_error,
                 })
+                # Report here too, not just on the scored path below: a
+                # target that errors on every row (the target-is-down case a
+                # user is most likely watching) would otherwise never reach
+                # the scored branch's report call and progress would freeze
+                # until the single unconditional write after the loop ends.
+                reporter.maybe_report(results)
                 continue
 
             results.append({
@@ -784,6 +790,12 @@ class CustomEvalBackend:
                     'reason': f'Inference error: {request_error}',
                     'criteria': row_criteria,
                 })
+                # Report here too, not just after G-Eval runs below: a
+                # target that errors on every row (the target-is-down case a
+                # user is most likely watching) would otherwise never reach
+                # that report call and progress would freeze until the
+                # single unconditional write after the loop ends.
+                reporter.maybe_report(results)
                 continue
 
             # Run G-Eval with normalized output

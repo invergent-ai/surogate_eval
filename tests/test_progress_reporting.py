@@ -86,6 +86,37 @@ def test_a_new_benchmark_zeroes_the_previous_rows():
     assert data["score_sum"] == 0.0
 
 
+def test_the_final_done_write_keeps_the_last_benchmarks_real_rows():
+    """`eval.py` calls `_write_progress("done", total, total)` once after the
+    last benchmark, red-team, or guardrails task finishes. That is the run
+    ending, not a switch to a new benchmark -- unlike the zeroing case above,
+    there is no next benchmark to protect from inheriting a stale bar, and
+    the rows already on the row block are exactly the final counts ops needs
+    to settle the completed run to (Finding 1).
+
+    Drives the real sequence through the real functions -- report a
+    benchmark's rows, then make the real final `_write_progress("done", ...)`
+    call `eval.py` makes -- rather than asserting against a hand-built
+    stand-in, which is why this composition bug was invisible before.
+    """
+    runners._write_progress("gsm8k", 0, 1)
+    runners.report_rows(
+        rows_done=30, rows_total=30, scored=30, passed=20, score_sum=20.0,
+    )
+
+    # The exact call `eval.py` makes once the last task finishes.
+    runners._write_progress("done", 1, 1, clear_rows=False)
+
+    data = _read()
+    assert data["current_benchmark"] == "done"
+    assert data["rows_done"] == 30, "the run's real final row count must survive the done write"
+    assert data["rows_total"] == 30
+    assert data["scored"] == 30
+    assert data["errored"] == 0
+    assert data["passed"] == 20
+    assert data["score_sum"] == 20.0
+
+
 def test_the_file_is_never_observed_half_written(monkeypatch):
     """Ops reads this on a 5s poll. A truncating in-place write can be caught
     mid-flight and parsed as invalid JSON; a temp-file rename cannot."""

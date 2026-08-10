@@ -386,8 +386,11 @@ def _flush_progress() -> None:
         pass  # Best-effort
 
 
-def _write_progress(current_benchmark: str, completed: int, total: int) -> None:
-    """Record which benchmark is running, and zero out any previous row counts.
+def _write_progress(
+    current_benchmark: str, completed: int, total: int, *, clear_rows: bool = True,
+) -> None:
+    """Record which benchmark is running, and (usually) zero out any previous
+    row counts.
 
     Zeroed, not cleared to ``{}``: ops treats an absent row key as "this
     runner does not report rows" and leaves whatever rows_done/rows_total it
@@ -397,19 +400,33 @@ def _write_progress(current_benchmark: str, completed: int, total: int) -> None:
     Zeros are a real value ops ingests (``0 is not None``), and
     ``rows_total: 0`` already means "unknown" on both sides, so this is a
     genuine reset rather than a second flavour of "no data".
+
+    ``clear_rows=False`` for ``eval.py``'s final ``"done"`` call: that write
+    marks the run ending, not a switch to a new benchmark, and the row block
+    it would otherwise zero holds the run's real final counts -- exactly
+    what ops needs to settle a completed run to. Zeroing there was
+    indistinguishable, from ops' side, from a benchmark switch, which is why
+    a completed run's rows read back as 0/0 (Finding 1: `_ingest_incremental`
+    ingests that zeroed write in the same tick, immediately before finalize,
+    so `_settled_progress_updates` sees `rows_total = 0` and leaves the
+    settle a no-op).
     """
     with _PROGRESS_LOCK:
-        _PROGRESS.update({
+        updates = {
             "current_benchmark": current_benchmark,
             "completed": completed,
             "total": total,
-            "rows_done": 0,
-            "rows_total": 0,
-            "scored": 0,
-            "errored": 0,
-            "passed": 0,
-            "score_sum": 0.0,
-        })
+        }
+        if clear_rows:
+            updates.update({
+                "rows_done": 0,
+                "rows_total": 0,
+                "scored": 0,
+                "errored": 0,
+                "passed": 0,
+                "score_sum": 0.0,
+            })
+        _PROGRESS.update(updates)
         _flush_progress()
 
 

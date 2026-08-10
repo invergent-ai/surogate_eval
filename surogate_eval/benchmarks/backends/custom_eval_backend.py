@@ -327,7 +327,6 @@ class CustomEvalBackend:
             try:
                 return self._evaluate_exact_match_lm_eval(
                     rows, target, config, columns, tokenizer, matcher,
-                    rows_total, rows_done_offset
                 )
             except Exception as e:
                 logger.warning(f"lm-eval exact_match failed, falling back to direct inference: {e}")
@@ -345,10 +344,15 @@ class CustomEvalBackend:
             columns: Dict[str, str],
             tokenizer: str,
             matcher: Matcher,
-            rows_total: int | None = None,
-            rows_done_offset: int = 0
     ) -> List[Dict[str, Any]]:
-        """Evaluate exact_match rows using LM-Eval backend."""
+        """Evaluate exact_match rows using LM-Eval backend.
+
+        No row-level progress reporting on this path: `LMEvalBackend.evaluate`
+        runs its own batch internally and returns all rows at once, so there
+        is no per-row point to report from. Unlike the direct-inference path,
+        this does not take rows_total/rows_done_offset -- do not add them
+        back without also making them report something.
+        """
         logger.info(f"Evaluating {len(rows)} exact_match rows with lm-eval")
 
         from .lm_eval_backend import LMEvalBackend

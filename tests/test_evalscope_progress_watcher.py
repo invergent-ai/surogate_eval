@@ -395,6 +395,42 @@ def test_a_stale_watcher_cannot_overwrite_the_next_benchmarks_row_block(tmp_path
     assert after["rows_done"] == 0, "a stale watcher must not resurrect the old benchmark's row block"
 
 
+def test_watcher_publishes_coherent_progress_when_the_tracker_lags_the_reviews_file(tmp_path, monkeypatch):
+    """End-to-end regression for Finding 1, through the real (unmocked)
+    ``report_rows``: evalscope's tracker file flushes at most once a second
+    and so reliably lags the reviews JSONL, which is appended to before the
+    tracker is updated. That lag must never surface as a negative errored
+    count or a rows_done smaller than scored.
+    """
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.setattr(
+        runners, "_PROGRESS",
+        {
+            "current_benchmark": "", "completed": 0, "total": 1,
+            "rows_done": 0, "rows_total": 0, "scored": 0, "errored": 0,
+            "passed": 0, "score_sum": 0.0,
+        },
+    )
+    runners._write_progress("gsm8k", 0, 1)
+
+    reviews_dir = tmp_path / "reviews" / "m"
+    # 5 rows already scored, but the tracker (flushed at most once a second)
+    # still reports only 3 processed -- the reviews file is reliably ahead
+    # of the tracker on evalscope's own write order.
+    _write_lines(reviews_dir / "gsm8k_main.jsonl", [_review(1.0)] * 5)
+    _write_evalscope_tracker(reviews_dir, processed_count=3, total_count=20)
+
+    watcher = ReviewWatcher(lambda: reviews_dir, "gsm8k", benchmark_name="gsm8k", interval=0.05)
+    watcher.start()
+    _wait_until(lambda: _read_progress().get("scored"))
+    watcher.stop()
+
+    data = _read_progress()
+    assert data["scored"] == 5
+    assert data["errored"] >= 0, "errored must never go negative"
+    assert data["rows_done"] >= data["scored"], "rows_done must never show fewer rows than scored"
+
+
 class _FakeTarget:
     name = "t1"
     config = {"model": "m", "base_url": "https://target.example", "api_key": "k"}

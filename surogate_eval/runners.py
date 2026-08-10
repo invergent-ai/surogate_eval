@@ -449,10 +449,25 @@ def report_rows(
     atomic on its own, and a benchmark switch landing in that gap is the
     same stale-write hazard as the leaked-watcher case above, just reached
     by a race instead of a slow ``stop()``.
+
+    ``rows_done`` and ``scored`` are not always from the same instant.
+    ``custom_eval`` derives both from the same in-memory results list, so
+    there they always agree (``rows_done`` is never less than ``scored``).
+    The evalscope watcher does not have that luxury: its ``rows_done`` comes
+    from evalscope's own ``ProgressTracker`` file, which flushes at most
+    once a second, while its ``scored`` comes from a fresh read of the
+    reviews JSONL, which evalscope appends to *before* it updates the
+    tracker -- so ``scored`` is reliably ahead of ``rows_done`` on nearly
+    every tick of a healthy run. Reconciling here, not just clamping the
+    subtraction, keeps both published numbers coherent: a bar that shows
+    fewer rows done than rows scored is wrong on its face, and this is the
+    one place every caller's numbers pass through before publication. Do
+    not simplify this back to ``rows_done - scored``.
     """
     with _PROGRESS_LOCK:
         if for_benchmark is not None and for_benchmark != _PROGRESS["current_benchmark"]:
             return
+        rows_done = max(rows_done, scored)
         _PROGRESS.update({
             "rows_done": rows_done,
             "rows_total": rows_total,

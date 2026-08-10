@@ -137,6 +137,28 @@ def test_the_file_is_readable_by_another_account():
     assert mode & stat.S_IROTH, oct(mode)
 
 
+def test_report_rows_reconciles_a_rows_done_that_lags_scored():
+    """The evalscope watcher's rows_done comes from evalscope's own tracker
+    file, which flushes at most once a second; scored comes from a fresh
+    read of the reviews JSONL, which evalscope appends to *before* it
+    updates the tracker. scored is therefore reliably ahead of rows_done on
+    nearly every tick of a healthy run -- `rows_done - scored` would be
+    negative almost every time (Finding 1). report_rows must reconcile the
+    two before publishing: rows_done can never be smaller than scored (a bar
+    cannot show fewer rows done than rows scored), and errored can never be
+    negative.
+    """
+    runners._write_progress("gsm8k", 0, 1)
+    runners.report_rows(rows_done=3, rows_total=10, scored=5, passed=5, score_sum=5.0)
+
+    data = _read()
+    assert data["scored"] == 5
+    assert data["errored"] >= 0, "errored must never go negative"
+    assert data["rows_done"] >= data["scored"], "rows_done must never be reported as less than scored"
+    assert data["rows_done"] == 5, "rows_done is raised to scored, the coherent floor"
+    assert data["errored"] == 0
+
+
 def test_report_rows_cannot_interleave_with_a_benchmark_switch(monkeypatch):
     """`report_rows`'s "does for_benchmark match?" read and its write are two
     separate statements. Without a lock shared with `_write_progress`, the

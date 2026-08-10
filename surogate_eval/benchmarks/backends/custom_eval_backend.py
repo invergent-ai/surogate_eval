@@ -23,27 +23,35 @@ _PROGRESS_INTERVAL_SECONDS = 2.0
 
 
 def _row_counts(results: list, offset: tuple = (0, 0, 0, 0.0)) -> tuple:
-    """(scored, errored, passed, score_sum) over the rows measured so far.
+    """(rows_done, scored, passed, score_sum) over the rows measured so far.
 
     Derived from the results list both loops already build, rather than
     counters threaded through every append site: there are five of those
     between the two loops and each one is a place to forget.
 
+    ``rows_done`` is ``len(results)`` plus its offset, not a separate count:
+    every row's status is exactly ``scored`` or ``errored``, so it already
+    equals ``scored + errored`` without needing ``errored`` tracked at all
+    -- and a caller that does need the error count derives it the same way
+    ``report_rows`` does, as ``rows_done - scored``.
+
     ``offset`` folds in counts an earlier loop over the same benchmark
     already reported (hybrid mode runs exact_match rows to completion
-    before judge rows start). Without it, the same shape ``rows_done``
-    already avoids via ``rows_done_offset`` -- these counters would reset to
-    only what the second loop has measured on its own first report, and ops'
-    running average would drop backward the instant the judge loop starts.
+    before judge rows start). Without it, these counters would reset to
+    only what the second loop has measured on its own first report, and
+    ops' running average would drop backward the instant the judge loop
+    starts. Passing this call's own return value back in as the next call's
+    ``offset`` is also what lets a loop drop a separate rows-done-so-far
+    parameter: it is already the first element here.
     """
-    off_scored, off_errored, off_passed, off_score_sum = offset
+    off_rows_done, off_scored, off_passed, off_score_sum = offset
     scored = off_scored + sum(1 for r in results if r.get("status") == "scored")
-    errored = off_errored + sum(1 for r in results if r.get("status") == "errored")
     passed = off_passed + sum(1 for r in results if r.get("success"))
     score_sum = off_score_sum + sum(
         r["score"] for r in results if r.get("score") is not None
     )
-    return scored, errored, passed, float(score_sum)
+    rows_done = off_rows_done + len(results)
+    return rows_done, scored, passed, float(score_sum)
 
 try:
     from datasets import load_dataset, Dataset
@@ -292,7 +300,6 @@ class CustomEvalBackend:
             config: Dict[str, Any],
             columns: Dict[str, str],
             rows_total: int | None = None,
-            rows_done_offset: int = 0,
             counts_offset: tuple = (0, 0, 0, 0.0)
     ) -> List[Dict[str, Any]]:
         """Evaluate exact_match rows.
@@ -302,10 +309,9 @@ class CustomEvalBackend:
 
         Args:
             rows_total: Total number of rows in the benchmark. If None, defaults to len(rows).
-            rows_done_offset: Number of rows already processed in previous loops.
-            counts_offset: (scored, errored, passed, score_sum) already reported
+            counts_offset: (rows_done, scored, passed, score_sum) already reported
                 by a previous loop, folded into this loop's own progress reports
-                so they stay cumulative the same way rows_done_offset does.
+                so they stay cumulative.
         """
         if not rows:
             return []
@@ -333,7 +339,7 @@ class CustomEvalBackend:
 
         return self._evaluate_exact_match_direct(
             rows, target, config, columns, matcher,
-            rows_total, rows_done_offset, counts_offset,
+            rows_total, counts_offset,
         )
 
     def _evaluate_exact_match_lm_eval(
@@ -350,8 +356,8 @@ class CustomEvalBackend:
         No row-level progress reporting on this path: `LMEvalBackend.evaluate`
         runs its own batch internally and returns all rows at once, so there
         is no per-row point to report from. Unlike the direct-inference path,
-        this does not take rows_total/rows_done_offset -- do not add them
-        back without also making them report something.
+        this does not take rows_total/counts_offset -- do not add them back
+        without also making them report something.
         """
         logger.info(f"Evaluating {len(rows)} exact_match rows with lm-eval")
 
@@ -510,7 +516,6 @@ class CustomEvalBackend:
             columns: Dict[str, str],
             matcher: Matcher,
             rows_total: int | None = None,
-            rows_done_offset: int = 0,
             counts_offset: tuple = (0, 0, 0, 0.0)
     ) -> List[Dict[str, Any]]:
         """Evaluate exact_match rows via direct inference + string comparison."""
@@ -616,11 +621,11 @@ class CustomEvalBackend:
             now = time.monotonic()
             if now - last_report >= _PROGRESS_INTERVAL_SECONDS:
                 last_report = now
-                runners.report_rows(
-                    rows_done_offset + len(results), total, *_row_counts(results, counts_offset),
-                )
+                rows_done, scored, passed, score_sum = _row_counts(results, counts_offset)
+                runners.report_rows(rows_done, total, scored, passed, score_sum)
 
-        runners.report_rows(rows_done_offset + len(results), total, *_row_counts(results, counts_offset))
+        rows_done, scored, passed, score_sum = _row_counts(results, counts_offset)
+        runners.report_rows(rows_done, total, scored, passed, score_sum)
 
         errored_n = sum(1 for r in results if r['status'] == 'errored')
         scored_n = len(results) - errored_n
@@ -638,17 +643,15 @@ class CustomEvalBackend:
             columns: Dict[str, str],
             judge_target: Optional[BaseTarget] = None,
             rows_total: int | None = None,
-            rows_done_offset: int = 0,
             counts_offset: tuple = (0, 0, 0, 0.0)
     ) -> List[Dict[str, Any]]:
         """Evaluate judge rows using G-Eval.
 
         Args:
             rows_total: Total number of rows in the benchmark. If None, defaults to len(rows).
-            rows_done_offset: Number of rows already processed in previous loops.
-            counts_offset: (scored, errored, passed, score_sum) already reported
+            counts_offset: (rows_done, scored, passed, score_sum) already reported
                 by a previous loop, folded into this loop's own progress reports
-                so they stay cumulative the same way rows_done_offset does.
+                so they stay cumulative.
         """
         if not rows:
             return []
@@ -820,11 +823,11 @@ class CustomEvalBackend:
             now = time.monotonic()
             if now - last_report >= _PROGRESS_INTERVAL_SECONDS:
                 last_report = now
-                runners.report_rows(
-                    rows_done_offset + len(results), total, *_row_counts(results, counts_offset),
-                )
+                rows_done, scored, passed, score_sum = _row_counts(results, counts_offset)
+                runners.report_rows(rows_done, total, scored, passed, score_sum)
 
-        runners.report_rows(rows_done_offset + len(results), total, *_row_counts(results, counts_offset))
+        rows_done, scored, passed, score_sum = _row_counts(results, counts_offset)
+        runners.report_rows(rows_done, total, scored, passed, score_sum)
 
         errored_n = sum(1 for r in results if r['status'] == 'errored')
         scored_n = len(results) - errored_n
@@ -1048,14 +1051,14 @@ class CustomEvalBackend:
         # Evaluate each type
         exact_match_results = self._evaluate_exact_match_rows(
             exact_match_rows, target, config, columns,
-            rows_total=total_rows, rows_done_offset=0
+            rows_total=total_rows,
         )
 
         judge_results = self._evaluate_judge_rows(
             judge_rows, target, config, columns, judge_target,
-            rows_total=total_rows, rows_done_offset=len(exact_match_results),
+            rows_total=total_rows,
             # So the judge loop's own progress reports carry the exact_match
-            # loop's scored/errored/passed/score_sum forward instead of
+            # loop's rows_done/scored/passed/score_sum forward instead of
             # resetting to what only the judge loop itself has measured.
             counts_offset=_row_counts(exact_match_results),
         )

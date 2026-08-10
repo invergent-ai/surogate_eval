@@ -9,19 +9,23 @@ from surogate_eval.targets.base import TargetResponse
 
 
 def test_counts_split_scored_from_errored():
-    """An errored row is not a zero score. It must raise `errored`, leave
-    `passed` alone, and contribute nothing to `score_sum`, or a run whose
-    target died reads as a model that answered everything wrong."""
+    """An errored row is not a zero score. It must count toward `rows_done`
+    without inflating `scored`, leave `passed` alone, and contribute nothing
+    to `score_sum`, or a run whose target died reads as a model that
+    answered everything wrong. `errored` is not a return value of
+    `_row_counts` -- every row is `scored` or `errored`, so it is always
+    `rows_done - scored`, same as `report_rows` derives it."""
     results = [
         {"status": "scored", "score": 1.0, "success": True},
         {"status": "scored", "score": 0.0, "success": False},
         {"status": "errored", "score": None, "success": False},
     ]
 
-    scored, errored, passed, score_sum = _row_counts(results)
+    rows_done, scored, passed, score_sum = _row_counts(results)
 
+    assert rows_done == 3
     assert scored == 2
-    assert errored == 1
+    assert rows_done - scored == 1, "the one errored row"
     assert passed == 1
     assert score_sum == 1.0
 
@@ -34,7 +38,7 @@ def test_a_judge_partial_score_sums_rather_than_rounds():
         {"status": "scored", "score": 0.4, "success": False},
     ]
 
-    scored, errored, passed, score_sum = _row_counts(results)
+    rows_done, scored, passed, score_sum = _row_counts(results)
 
     assert scored == 2
     assert passed == 1
@@ -75,13 +79,12 @@ def test_exact_match_loop_reports_progress(monkeypatch):
     # Record all calls to report_rows
     report_calls = []
 
-    def fake_report_rows(rows_done, rows_total, scored, errored, passed, score_sum):
+    def fake_report_rows(rows_done, rows_total, scored, passed, score_sum):
         report_calls.append(
             {
                 "rows_done": rows_done,
                 "rows_total": rows_total,
                 "scored": scored,
-                "errored": errored,
                 "passed": passed,
                 "score_sum": score_sum,
             }
@@ -110,7 +113,7 @@ def test_exact_match_loop_reports_progress(monkeypatch):
     passed_results = [r for r in results if r["success"]]
 
     assert final_call["scored"] == len(scored_results) == 2
-    assert final_call["errored"] == len(errored_results) == 1
+    assert final_call["rows_done"] - final_call["scored"] == len(errored_results) == 1
     assert final_call["passed"] == len(passed_results) == 2
     assert final_call["score_sum"] == sum(r["score"] for r in scored_results) == 2.0
 
@@ -156,13 +159,12 @@ def test_mixed_benchmark_progress_is_cumulative(monkeypatch):
     # Record all calls to report_rows
     report_calls = []
 
-    def fake_report_rows(rows_done, rows_total, scored, errored, passed, score_sum):
+    def fake_report_rows(rows_done, rows_total, scored, passed, score_sum):
         report_calls.append(
             {
                 "rows_done": rows_done,
                 "rows_total": rows_total,
                 "scored": scored,
-                "errored": errored,
                 "passed": passed,
                 "score_sum": score_sum,
             }

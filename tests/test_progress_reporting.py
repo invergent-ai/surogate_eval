@@ -40,7 +40,7 @@ def test_row_progress_keeps_the_benchmark_context():
     row keys would erase the name the UI shows."""
     runners._write_progress("gsm8k", 1, 3)
     runners.report_rows(
-        rows_done=7, rows_total=30, scored=6, errored=1, passed=4, score_sum=4.0,
+        rows_done=7, rows_total=30, scored=6, passed=4, score_sum=4.0,
     )
 
     data = _read()
@@ -68,7 +68,7 @@ def test_a_new_benchmark_zeroes_the_previous_rows():
     """
     runners._write_progress("gsm8k", 0, 2)
     runners.report_rows(
-        rows_done=30, rows_total=30, scored=30, errored=0, passed=20, score_sum=20.0,
+        rows_done=30, rows_total=30, scored=30, passed=20, score_sum=20.0,
     )
 
     runners._write_progress("mmlu", 1, 2)
@@ -101,7 +101,7 @@ def test_the_file_is_never_observed_half_written(monkeypatch):
 
     runners._write_progress("gsm8k", 0, 1)
     runners.report_rows(
-        rows_done=1, rows_total=2, scored=1, errored=0, passed=1, score_sum=1.0,
+        rows_done=1, rows_total=2, scored=1, passed=1, score_sum=1.0,
     )
 
     assert len(written) == 2
@@ -118,7 +118,7 @@ def test_a_write_failure_never_raises(monkeypatch):
 
     runners._write_progress("gsm8k", 0, 1)  # must not raise
     runners.report_rows(
-        rows_done=1, rows_total=2, scored=1, errored=0, passed=1, score_sum=1.0,
+        rows_done=1, rows_total=2, scored=1, passed=1, score_sum=1.0,
     )
 
 
@@ -170,7 +170,7 @@ def test_report_rows_cannot_interleave_with_a_benchmark_switch(monkeypatch):
     reporter = threading.Thread(
         target=runners.report_rows,
         kwargs=dict(
-            rows_done=30, rows_total=30, scored=30, errored=0, passed=20,
+            rows_done=30, rows_total=30, scored=30, passed=20,
             score_sum=20.0, for_benchmark="gsm8k",
         ),
     )

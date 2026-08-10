@@ -147,9 +147,9 @@ def test_watcher_reports_on_a_tick_and_stop_joins_the_thread(tmp_path, monkeypat
 
     assert calls, "the watcher never reported a tick"
     args, kwargs = calls[0]
-    # (rows_done, rows_total, scored, errored, passed, score_sum). No
-    # evalscope tracker file here, so rows_total falls back to 0 (unknown).
-    assert args == (1, 0, 1, 0, 1, 1.0)
+    # (rows_done, rows_total, scored, passed, score_sum). No evalscope
+    # tracker file here, so rows_total falls back to 0 (unknown).
+    assert args == (1, 0, 1, 1, 1.0)
     assert kwargs == {"for_benchmark": "gsm8k"}, "every write must be tagged with its own benchmark"
     assert not watcher._thread.is_alive(), "stop() must join the watcher thread"
 
@@ -235,8 +235,8 @@ def test_tracker_file_supplies_rows_done_and_total_overriding_review_count(tmp_p
 
     assert calls, "the watcher never reported a tick"
     args, _ = calls[0]
-    # (rows_done, rows_total, scored, errored, passed, score_sum)
-    assert args == (7, 20, 2, 5, 1, 1.0), "rows_done/rows_total from the tracker; scores still from the reviews file"
+    # (rows_done, rows_total, scored, passed, score_sum)
+    assert args == (7, 20, 2, 1, 1.0), "rows_done/rows_total from the tracker; scores still from the reviews file"
 
 
 def test_tracker_file_absent_falls_back_to_review_count_with_total_zero(tmp_path, monkeypatch):
@@ -266,7 +266,7 @@ def test_tracker_file_absent_falls_back_to_review_count_with_total_zero(tmp_path
 
     assert calls, "the watcher never reported a tick"
     args, _ = calls[0]
-    assert args == (1, 0, 1, 0, 1, 1.0)
+    assert args == (1, 0, 1, 1, 1.0)
 
 
 def test_malformed_tracker_file_falls_back_without_raising(tmp_path, monkeypatch):
@@ -299,7 +299,7 @@ def test_malformed_tracker_file_falls_back_without_raising(tmp_path, monkeypatch
 
     assert calls, "a malformed tracker file must not stop the watcher from reporting"
     args, _ = calls[0]
-    assert args == (1, 0, 1, 0, 1, 1.0), "same fallback as an absent tracker file"
+    assert args == (1, 0, 1, 1, 1.0), "same fallback as an absent tracker file"
 
 
 def test_tracker_file_is_read_from_the_post_mutation_work_dir(tmp_path, monkeypatch):
@@ -345,7 +345,7 @@ def test_tracker_file_is_read_from_the_post_mutation_work_dir(tmp_path, monkeypa
 
     assert calls, "the watcher never picked up the tracker file once work_dir moved"
     args, _ = calls[0]
-    assert args == (9, 42, 1, 8, 1, 1.0), "rows_done/rows_total from the tracker at the moved work_dir"
+    assert args == (9, 42, 1, 1, 1.0), "rows_done/rows_total from the tracker at the moved work_dir"
 
 
 def test_report_rows_is_a_no_op_once_the_context_has_moved_past_it(tmp_path, monkeypatch):
@@ -364,14 +364,14 @@ def test_report_rows_is_a_no_op_once_the_context_has_moved_past_it(tmp_path, mon
 
     runners._write_progress("gsm8k", 0, 2)
     runners.report_rows(
-        rows_done=5, rows_total=10, scored=5, errored=0, passed=3, score_sum=3.0,
+        rows_done=5, rows_total=10, scored=5, passed=3, score_sum=3.0,
         for_benchmark="gsm8k",
     )
     assert _read_progress()["rows_done"] == 5, "must write while for_benchmark matches the current context"
 
     runners._write_progress("mmlu", 1, 2)  # the next benchmark starts, and zeroes the row block
     runners.report_rows(
-        rows_done=99, rows_total=10, scored=99, errored=0, passed=99, score_sum=99.0,
+        rows_done=99, rows_total=10, scored=99, passed=99, score_sum=99.0,
         for_benchmark="gsm8k",  # stale tag: the context has already moved on
     )
 

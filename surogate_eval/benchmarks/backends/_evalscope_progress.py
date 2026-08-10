@@ -223,8 +223,7 @@ class ReviewWatcher:
                 # already started gets silently dropped by report_rows
                 # instead of stamping this benchmark's counts over it.
                 runners.report_rows(
-                    rows_done, rows_total, scored,
-                    rows_done - scored, passed, score_sum,
+                    rows_done, rows_total, scored, passed, score_sum,
                     for_benchmark=self._benchmark_name,
                 )
 

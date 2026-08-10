@@ -412,7 +412,6 @@ def report_rows(
     rows_done: int,
     rows_total: int,
     scored: int,
-    errored: int,
     passed: int,
     score_sum: float,
     *,
@@ -422,6 +421,11 @@ def report_rows(
 
     ``score_sum`` rather than an average so ops does the division: a partial
     file then cannot be internally inconsistent.
+
+    Not a parameter: every row is exactly ``scored`` or ``errored``, so
+    ``errored`` is always ``rows_done - scored`` -- every caller used to
+    compute exactly that before calling in, so deriving it here leaves one
+    place for that arithmetic instead of one per caller.
 
     ``for_benchmark``, when given, must match ``_PROGRESS_CONTEXT``'s current
     benchmark or the write is dropped. A background watcher's ``stop()`` can
@@ -449,7 +453,7 @@ def report_rows(
             "rows_done": rows_done,
             "rows_total": rows_total,
             "scored": scored,
-            "errored": errored,
+            "errored": rows_done - scored,
             "passed": passed,
             "score_sum": score_sum,
         }

@@ -53,6 +53,37 @@ def _row_counts(results: list, offset: tuple = (0, 0, 0, 0.0)) -> tuple:
     rows_done = off_rows_done + len(results)
     return rows_done, scored, passed, float(score_sum)
 
+
+class _RowProgressReporter:
+    """Throttled ``report_rows`` writer shared by every per-row eval loop.
+
+    ``_evaluate_exact_match_direct``, ``_evaluate_judge_rows``, and
+    ``_evaluate_toxicity_rows`` all report progress the same way -- a write
+    every ``_PROGRESS_INTERVAL_SECONDS`` while the loop runs, plus one
+    unconditional write once it ends -- so this owns that throttle state
+    once instead of each loop pasting its own copy of it.
+    ``_evaluate_toxicity_rows`` used to have no ``report_rows`` call at all:
+    it shares the same loop shape as the other two (and its comments already
+    said so), but never got the block, so it reported no live progress.
+    """
+
+    def __init__(self, total: int, counts_offset: tuple = (0, 0, 0, 0.0)):
+        self._total = total
+        self._counts_offset = counts_offset
+        self._last_report = 0.0
+
+    def maybe_report(self, results: list) -> None:
+        """Report if the cadence allows. Call once per row, after appending it."""
+        now = time.monotonic()
+        if now - self._last_report >= _PROGRESS_INTERVAL_SECONDS:
+            self._last_report = now
+            self.report(results)
+
+    def report(self, results: list) -> None:
+        """Report unconditionally. Call once after the loop ends."""
+        rows_done, scored, passed, score_sum = _row_counts(results, self._counts_offset)
+        runners.report_rows(rows_done, self._total, scored, passed, score_sum)
+
 try:
     from datasets import load_dataset, Dataset
     DATASETS_AVAILABLE = True
@@ -525,9 +556,9 @@ class CustomEvalBackend:
 
         system_prompt = config.get('system_prompt')
         results = []
-        last_report = 0.0
         # Use provided total or default to len(rows)
         total = rows_total if rows_total is not None else len(rows)
+        reporter = _RowProgressReporter(total, counts_offset)
 
         for row in rows:
             original_idx = row['_original_idx']
@@ -618,14 +649,9 @@ class CustomEvalBackend:
                 'reason': f'{matcher.mode} match' if success else 'No match',
             })
 
-            now = time.monotonic()
-            if now - last_report >= _PROGRESS_INTERVAL_SECONDS:
-                last_report = now
-                rows_done, scored, passed, score_sum = _row_counts(results, counts_offset)
-                runners.report_rows(rows_done, total, scored, passed, score_sum)
+            reporter.maybe_report(results)
 
-        rows_done, scored, passed, score_sum = _row_counts(results, counts_offset)
-        runners.report_rows(rows_done, total, scored, passed, score_sum)
+        reporter.report(results)
 
         errored_n = sum(1 for r in results if r['status'] == 'errored')
         scored_n = len(results) - errored_n
@@ -683,9 +709,9 @@ class CustomEvalBackend:
         prompt_template = config.get('prompt_template')
 
         results = []
-        last_report = 0.0
         # Use provided total or default to len(rows)
         total = rows_total if rows_total is not None else len(rows)
+        reporter = _RowProgressReporter(total, counts_offset)
 
         for row in rows:
             original_idx = row['_original_idx']
@@ -820,14 +846,9 @@ class CustomEvalBackend:
                     'criteria': row_criteria,
                 })
 
-            now = time.monotonic()
-            if now - last_report >= _PROGRESS_INTERVAL_SECONDS:
-                last_report = now
-                rows_done, scored, passed, score_sum = _row_counts(results, counts_offset)
-                runners.report_rows(rows_done, total, scored, passed, score_sum)
+            reporter.maybe_report(results)
 
-        rows_done, scored, passed, score_sum = _row_counts(results, counts_offset)
-        runners.report_rows(rows_done, total, scored, passed, score_sum)
+        reporter.report(results)
 
         errored_n = sum(1 for r in results if r['status'] == 'errored')
         scored_n = len(results) - errored_n
@@ -873,6 +894,7 @@ class CustomEvalBackend:
 
         prompt_template = config.get('prompt_template')
         results = []
+        reporter = _RowProgressReporter(len(rows))
 
         for idx, row in enumerate(rows):
             instruction = self._get_column_value(row, columns, 'instruction', '')
@@ -946,6 +968,8 @@ class CustomEvalBackend:
                 'reason': reason,
             })
 
+            reporter.maybe_report(results)
+
             if (idx + 1) % 5 == 0 or idx == len(rows) - 1:
                 safe_so_far = sum(1 for r in results if r['success'])
                 errored_so_far = sum(1 for r in results if r['status'] == 'errored')
@@ -954,6 +978,7 @@ class CustomEvalBackend:
                     f"{errored_so_far} not measured"
                 )
 
+        reporter.report(results)
         return results
 
     def evaluate(

@@ -482,8 +482,26 @@ class EvalScopeBackend:
                 # don't follow the exact ANSWER: format.
                 self._patch_mcq_extract_answer(evalscope_dataset)
 
-                # Run the task
-                results = run_task(task_cfg=task_config)
+                # Run the task. run_task() blocks for the whole benchmark, so
+                # a background watcher counts the reviews file evalscope
+                # appends to as it scores and reports row progress; it must
+                # be stopped before this method returns, or a late write
+                # could stamp this benchmark's counts onto the next one's.
+                from ._evalscope_progress import ReviewWatcher
+
+                watcher = ReviewWatcher(
+                    reviews_dir=Path(task_config.work_dir) / 'reviews' / task_config.model_id,
+                    dataset=evalscope_dataset,
+                    # 0 when no limit is configured: the dataset size is not
+                    # knowable from the reviews file, and the frontend treats a
+                    # non-positive total as "unknown" rather than as zero work.
+                    rows_total=int(config.get('limit') or 0),
+                )
+                watcher.start()
+                try:
+                    results = run_task(task_cfg=task_config)
+                finally:
+                    watcher.stop()
 
                 # EvalScope saves results to work_dir/reports/{model_id}/{dataset}.json
                 import json

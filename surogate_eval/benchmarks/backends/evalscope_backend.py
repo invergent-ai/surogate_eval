@@ -489,31 +489,53 @@ class EvalScopeBackend:
                 # could stamp this benchmark's counts onto the next one's.
                 from ._evalscope_progress import ReviewWatcher
 
-                watcher = ReviewWatcher(
-                    # A closure, not a value computed here: run_task mutates
-                    # task_config.work_dir in place (setup_work_directory
-                    # appends a timestamp) after this call, so the watcher
-                    # must read work_dir fresh on every tick or it watches a
-                    # directory that never receives anything.
-                    reviews_dir=lambda: Path(task_config.work_dir) / 'reviews' / task_config.model_id,
-                    dataset=evalscope_dataset,
-                    # The name eval.py's progress context tracks (`name` in
-                    # _run_single_benchmark), not evalscope_dataset -- they
-                    # differ for benchmarks like 'aime' -> 'aime24'. Every
-                    # write is tagged with this so a stale tick from a
-                    # watcher whose stop() timed out cannot land as this
-                    # benchmark's counts once the context has moved on.
-                    benchmark_name=benchmark_name,
-                    # 0 when no limit is configured: the dataset size is not
-                    # knowable from the reviews file, and the frontend treats a
-                    # non-positive total as "unknown" rather than as zero work.
-                    rows_total=int(config.get('limit') or 0),
-                )
-                watcher.start()
+                # Setup and start are guarded on their own: a bad limit, a
+                # work_dir that isn't there yet, or the OS refusing to start
+                # a new thread must not fail a benchmark that is otherwise
+                # fine. Progress reporting is a nice-to-have layered on top
+                # of the run, never something the run depends on.
+                watcher = None
+                try:
+                    watcher = ReviewWatcher(
+                        # A closure, not a value computed here: run_task
+                        # mutates task_config.work_dir in place
+                        # (setup_work_directory appends a timestamp) after
+                        # this call, so the watcher must read work_dir fresh
+                        # on every tick or it watches a directory that never
+                        # receives anything.
+                        reviews_dir=lambda: Path(task_config.work_dir) / 'reviews' / task_config.model_id,
+                        dataset=evalscope_dataset,
+                        # The name eval.py's progress context tracks (`name`
+                        # in _run_single_benchmark), not evalscope_dataset --
+                        # they differ for benchmarks like 'aime' -> 'aime24'.
+                        # Every write is tagged with this so a stale tick
+                        # from a watcher whose stop() timed out cannot land
+                        # as this benchmark's counts once the context has
+                        # moved on.
+                        benchmark_name=benchmark_name,
+                        # 0 when no limit is configured: the dataset size is
+                        # not knowable from the reviews file, and the
+                        # frontend treats a non-positive total as "unknown"
+                        # rather than as zero work.
+                        rows_total=int(config.get('limit') or 0),
+                    )
+                    watcher.start()
+                except Exception:
+                    logger.warning(
+                        "Could not start row-progress watcher; continuing "
+                        "without row progress for this benchmark",
+                        exc_info=True,
+                    )
+                    watcher = None
+
                 try:
                     results = run_task(task_cfg=task_config)
                 finally:
-                    watcher.stop()
+                    # Only stop a watcher that actually started: stop() on
+                    # one whose start() never ran (or never happened) joins
+                    # a thread that was never launched.
+                    if watcher is not None:
+                        watcher.stop()
 
                 # EvalScope saves results to work_dir/reports/{model_id}/{dataset}.json
                 import json

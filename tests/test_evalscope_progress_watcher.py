@@ -2,8 +2,11 @@ import json
 import time
 from pathlib import Path
 
+import pytest
+
 from surogate_eval import runners
 from surogate_eval.benchmarks.backends._evalscope_progress import ReviewWatcher, count_reviews
+from surogate_eval.benchmarks.backends.evalscope_backend import EvalScopeBackend
 
 
 def _read_progress():
@@ -223,3 +226,48 @@ def test_a_stale_watcher_cannot_overwrite_the_next_benchmarks_row_block(tmp_path
     after = _read_progress()
     assert after["current_benchmark"] == "mmlu"
     assert "rows_done" not in after, "a stale watcher must not resurrect the old benchmark's row block"
+
+
+class _FakeTarget:
+    name = "t1"
+    config = {"model": "m", "base_url": "https://target.example", "api_key": "k"}
+
+
+class _RaisesOnInit:
+    def __init__(self, *args, **kwargs):
+        raise RuntimeError("boom: could not resolve reviews_dir")
+
+
+class _RaisesOnStart:
+    def __init__(self, *args, **kwargs):
+        pass
+
+    def start(self):
+        raise RuntimeError("can't start new thread")
+
+    def stop(self):  # pragma: no cover - must never be reached
+        raise AssertionError("stop() must not run on a watcher that never started")
+
+
+@pytest.mark.parametrize("fake_watcher_cls", [_RaisesOnInit, _RaisesOnStart])
+def test_a_broken_progress_watcher_does_not_fail_an_otherwise_healthy_benchmark(
+    monkeypatch, fake_watcher_cls,
+):
+    """Row-progress reporting is a nice-to-have layered onto a benchmark run,
+    never something that can take the run down with it. A bad limit, a
+    missing work_dir, or a thread the OS refuses to start must all be
+    swallowed, and a watcher that never started must never be stopped.
+    """
+    monkeypatch.setattr(
+        "surogate_eval.benchmarks.backends.evalscope_backend.run_task",
+        lambda task_cfg: {},
+    )
+    monkeypatch.setattr(
+        "surogate_eval.benchmarks.backends._evalscope_progress.ReviewWatcher",
+        fake_watcher_cls,
+    )
+
+    backend = EvalScopeBackend()
+    result = backend.evaluate(_FakeTarget(), "gsm8k", {})
+
+    assert result["metadata"]["backend"] == "evalscope"

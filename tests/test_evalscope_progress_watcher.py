@@ -5,7 +5,7 @@ from pathlib import Path
 import pytest
 
 from surogate_eval import runners
-from surogate_eval.benchmarks.backends._evalscope_progress import ReviewWatcher, count_reviews
+from surogate_eval.benchmarks.backends._evalscope_progress import ReviewCounter, ReviewWatcher, count_reviews
 from surogate_eval.benchmarks.backends.evalscope_backend import EvalScopeBackend
 
 
@@ -137,6 +137,59 @@ def test_the_subset_suffix_does_not_match_a_prefix_sibling(tmp_path):
     _write_lines(base / "mmmu_pro_val.jsonl", [_review(1.0), _review(1.0)])
 
     assert count_reviews(base, "mmmu")[0] == 1
+
+
+def test_incremental_counter_counts_an_appended_file_once_not_twice(tmp_path):
+    """A tick after the first must add only newly appended rows to the
+    running total -- the same result `count_reviews` gives, but without
+    re-parsing the whole file from the start each time (Finding 2)."""
+    f = tmp_path / "reviews" / "m" / "gsm8k_main.jsonl"
+    _write_lines(f, [_review(1.0), _review(0.0)])
+
+    counter = ReviewCounter()
+    assert counter.update(tmp_path / "reviews" / "m", "gsm8k") == (2, 2, 1, 1.0)
+
+    _write_lines(f, [_review(1.0)])
+    assert counter.update(tmp_path / "reviews" / "m", "gsm8k") == (3, 3, 2, 2.0)
+
+
+def test_incremental_counter_holds_a_trailing_partial_line_until_it_is_complete(tmp_path):
+    """The reviews file is being appended to concurrently while this reads
+    it, so the last line on disk may be half-written. That line must not be
+    counted -- as done or as an unreadable row -- until a later tick sees it
+    terminated by a newline, and it must then count exactly once, not twice
+    (Finding 2). A full re-parse (`count_reviews`) does not have this
+    problem to begin with: it treats a half-written trailing line as an
+    unreadable *complete* row and folds it into rows_done immediately --
+    which is exactly the behaviour this incremental counter must avoid,
+    since here that same partial line is re-read (and would otherwise be
+    double-counted) on the next tick once it is finished.
+    """
+    reviews_dir = tmp_path / "reviews" / "m"
+    f = reviews_dir / "gsm8k_main.jsonl"
+    f.parent.mkdir(parents=True, exist_ok=True)
+    complete_line = json.dumps(_review(1.0))
+    second_line = json.dumps(_review(1.0))
+    split_at = len(second_line) // 2
+    # One finished row, then a second row's bytes with no trailing newline
+    # yet -- exactly what a concurrent writer produces mid-append.
+    f.write_text(complete_line + "\n" + second_line[:split_at])
+
+    counter = ReviewCounter()
+    rows_done, scored, passed, score_sum = counter.update(reviews_dir, "gsm8k")
+    assert rows_done == 1, "the partial trailing line must not be counted yet"
+    assert scored == 1
+    assert score_sum == 1.0
+
+    # The writer finishes the line.
+    with open(f, "a") as fh:
+        fh.write(second_line[split_at:] + "\n")
+
+    rows_done, scored, passed, score_sum = counter.update(reviews_dir, "gsm8k")
+    assert rows_done == 2, "the completed line must now be counted, exactly once"
+    assert scored == 2
+    assert passed == 2
+    assert score_sum == 2.0
 
 
 def test_watcher_reports_on_a_tick_and_stop_joins_the_thread(tmp_path, report_rows_calls):

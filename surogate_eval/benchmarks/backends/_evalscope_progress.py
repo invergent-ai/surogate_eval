@@ -24,7 +24,7 @@ else.
 import json
 import threading
 from pathlib import Path
-from typing import Callable, List, Optional, Tuple
+from typing import Callable, Dict, List, Optional, Tuple
 
 from surogate_eval import runners
 from surogate_eval.utils.logger import get_logger
@@ -100,20 +100,40 @@ def resolve_review_paths(reviews_dir: Path, dataset: str) -> List[Path]:
     return matches
 
 
+def _read_line_score(line: str) -> Optional[float]:
+    """The score on one reviews-file line, or ``None`` if it could not be
+    read.
+
+    Shared by ``count_reviews`` (a fresh full pass) and ``ReviewCounter``
+    (incremental) so the two cannot drift on what counts as a readable row.
+    Reads with ``evalscope_backend._extract_sample_score`` -- the same
+    picker the final report uses in ``_review_row_to_record`` -- so a row
+    with several numeric score keys (DROP carries both ``em`` and ``f1``)
+    cannot read a different score, live versus in the final report.
+    """
+    try:
+        row = json.loads(line)
+        sample_score = row.get("sample_score")
+        if not isinstance(sample_score, dict):
+            sample_score = {}
+        score, _, _ = _extract_sample_score(sample_score.get("score") or {})
+        return score
+    except Exception:
+        return None
+
+
 def count_reviews(reviews_dir: Path, dataset: str) -> Tuple[int, int, int, float]:
     """(rows_done, scored, passed, score_sum) from the reviews JSONL so far.
 
+    A fresh, full pass over every matching file every call -- correct, and
+    fine for a one-off count, but not what the watcher's own tick uses (see
+    ``ReviewCounter``, which tracks incrementally instead of re-reading the
+    whole file on the cadence this function would require).
+
     ``rows_done`` counts every line, including one we could not read a score
     from: the sample was processed either way, and a progress bar that stalls
-    on an unreadable row is worse than one that advances.
-
-    The score itself is read with ``evalscope_backend._extract_sample_score``
-    -- the same picker the final report uses in ``_review_row_to_record`` --
-    and a row passes on ``score > 0``, the same rule ``_review_row_to_record``
-    applies. A row with several numeric score keys (DROP carries both ``em``
-    and ``f1``) used to be able to read a different score, and pass/fail
-    differently, live versus in the final report; picking the same key by
-    the same rule and passing by the same threshold makes that impossible.
+    on an unreadable row is worse than one that advances. A row passes on
+    ``score > 0``, the same rule ``_review_row_to_record`` applies.
     """
     rows_done = scored = passed = 0
     score_sum = 0.0
@@ -126,14 +146,7 @@ def count_reviews(reviews_dir: Path, dataset: str) -> Tuple[int, int, int, float
                     if not line.strip():
                         continue
                     rows_done += 1
-                    try:
-                        row = json.loads(line)
-                        sample_score = row.get("sample_score")
-                        if not isinstance(sample_score, dict):
-                            sample_score = {}
-                        score, _, _ = _extract_sample_score(sample_score.get("score") or {})
-                    except Exception:
-                        continue
+                    score = _read_line_score(line)
                     if score is None:
                         continue
                     scored += 1
@@ -143,6 +156,94 @@ def count_reviews(reviews_dir: Path, dataset: str) -> Tuple[int, int, int, float
     except Exception:
         logger.debug("review count failed", exc_info=True)
     return (rows_done, scored, passed, score_sum)
+
+
+class ReviewCounter:
+    """Incremental, stateful counterpart to ``count_reviews`` for a watcher
+    that ticks repeatedly against the same growing files.
+
+    ``count_reviews`` re-reads and re-parses every matching file, in full,
+    on every call. On a 14k-row benchmark that is roughly a 40MB re-parse
+    every couple of seconds, in a GIL-holding background thread, for the
+    life of the run -- expensive enough that it is what can make a tick
+    outlive ``ReviewWatcher.stop()``'s 5s join. This class instead tracks a
+    byte offset (and any trailing partial line) per file, so a tick after
+    the first only reads and scores the bytes appended since the previous
+    one, while returning the same running-total shape ``count_reviews``
+    does.
+
+    A trailing line with no ``\\n`` yet is a real possibility, not an edge
+    case: the file is being appended to concurrently by evalscope while this
+    reads it, so the last line on disk may be half-written. That line is
+    held rather than counted or discarded, and is re-read -- prefixed onto
+    whatever is read next -- until a tick sees it complete. One instance is
+    scoped to one benchmark's watch (a fresh ``ReviewWatcher`` per
+    benchmark constructs a fresh counter), so offsets never leak from one
+    benchmark's files into the next.
+    """
+
+    def __init__(self) -> None:
+        self._offsets: Dict[Path, int] = {}
+        self._partial: Dict[Path, bytes] = {}
+        self._rows_done = 0
+        self._scored = 0
+        self._passed = 0
+        self._score_sum = 0.0
+
+    def update(self, reviews_dir: Path, dataset: str) -> Tuple[int, int, int, float]:
+        """Advance the running totals with whatever is newly available, and
+        return them. Best-effort like ``count_reviews``: any failure costs
+        only this call, never raises, and never rolls back what was already
+        counted.
+        """
+        try:
+            if reviews_dir.is_dir():
+                for path in resolve_review_paths(reviews_dir, dataset):
+                    self._consume(path)
+        except Exception:
+            logger.debug("incremental review count failed", exc_info=True)
+        return (self._rows_done, self._scored, self._passed, self._score_sum)
+
+    def _consume(self, path: Path) -> None:
+        offset = self._offsets.get(path, 0)
+        try:
+            with open(path, "rb") as f:
+                f.seek(offset)
+                chunk = f.read()
+        except Exception:
+            return
+        if not chunk:
+            return
+        buf = self._partial.pop(path, b"") + chunk
+        lines = buf.split(b"\n")
+        # The last element is either b"" (the chunk ended exactly on a
+        # newline) or a line still being written -- either way, not ours to
+        # count yet. Held for the next tick rather than counted or dropped.
+        # The file offset still advances past it: those bytes have already
+        # been read into `_partial` and must not be re-read from disk next
+        # time, or they would be double-counted once the line completes.
+        trailing = lines[-1]
+        self._partial[path] = trailing
+        self._offsets[path] = offset + len(chunk)
+        for raw_line in lines[:-1]:
+            self._count_line(raw_line)
+
+    def _count_line(self, raw_line: bytes) -> None:
+        stripped = raw_line.strip()
+        if not stripped:
+            return
+        self._rows_done += 1
+        try:
+            text = stripped.decode("utf-8")
+        except UnicodeDecodeError:
+            return
+        score = _read_line_score(text)
+        if score is None:
+            return
+        self._scored += 1
+        self._score_sum += score
+        if score > 0:
+            self._passed += 1
 
 
 def read_evalscope_tracker(reviews_dir: Path) -> Optional[Tuple[int, int]]:
@@ -197,13 +298,19 @@ class ReviewWatcher:
         self._dataset = dataset
         self._benchmark_name = benchmark_name
         self._interval = interval
+        # Incremental, not count_reviews: a full re-parse of a 14k-row
+        # benchmark's reviews file every couple of seconds, in this
+        # GIL-holding background thread, is expensive enough to be what
+        # makes a tick outlive stop()'s join. One counter per watcher, so
+        # its byte offsets are scoped to this benchmark's files only.
+        self._counter = ReviewCounter()
         self._stop = threading.Event()
         self._thread = threading.Thread(target=self._loop, daemon=True)
 
     def _loop(self) -> None:
         while not self._stop.wait(self._interval):
             reviews_dir = self._reviews_dir()
-            rows_done, scored, passed, score_sum = count_reviews(
+            rows_done, scored, passed, score_sum = self._counter.update(
                 reviews_dir, self._dataset,
             )
             # The reviews file still supplies scores -- evalscope's tracker

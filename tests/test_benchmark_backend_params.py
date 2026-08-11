@@ -164,3 +164,34 @@ def test_a_key_the_yaml_did_set_still_arrives():
     assert passed["eval_type"] == "judge"
     assert passed["max_tokens"] == 0
     assert passed["num_fewshot"] == 0
+
+
+def test_a_custom_dataset_path_turns_the_progress_tracker_off():
+    """evalscope's tracker total describes the wrong dataset here.
+
+    ``compute_eval_total_count`` (evalscope 1.7.0,
+    ``utils/resource_utils.py``) sums per-subset ``sample_count`` out of the
+    *bundled* ``_meta`` files and reads ``dataset_args['subset_list']``, but
+    never ``dataset_args['dataset_id']`` -- which is exactly the key a
+    ``path:``/``dataset_path:`` override sets. So the tracker would publish
+    the size of the upstream dataset while the run evaluates a different
+    one: a smaller custom dataset stalls the bar partway forever, a larger
+    one has rows_done sail past rows_total.
+
+    With the tracker off, no ``<work_dir>/progress.json`` is written,
+    ``read_evalscope_tracker`` finds nothing, and the watcher publishes
+    ``rows_total=0`` -- the "unknown" sentinel both repos already fall back
+    on. ``rows_done`` still comes from the reviews line count, so live
+    progress survives; only the unknowable total is withheld.
+    """
+    config, backend = _run()
+
+    without_path = backend._prepare_task_config(FakeTarget(), "tau_bench", config)
+    assert without_path.enable_progress_tracker is True, (
+        "sanity: a bundled dataset must keep the tracker, or this proves nothing"
+    )
+
+    with_path = backend._prepare_task_config(
+        FakeTarget(), "tau_bench", dict(config, dataset_path="/data/mine.jsonl"),
+    )
+    assert with_path.enable_progress_tracker is False

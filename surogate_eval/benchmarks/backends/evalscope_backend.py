@@ -606,8 +606,8 @@ class EvalScopeBackend:
         # 'mmmu': fnmatch's `*` does not stop at the next underscore).
         # resolve_review_paths cross-checks against the sibling-dataset list
         # to tell a subset name from a sibling dataset, and is shared with
-        # count_reviews so the two cannot resolve a dataset's reviews to
-        # different files.
+        # the live ReviewCounter so the two cannot resolve a dataset's
+        # reviews to different files.
         from ._evalscope_progress import resolve_review_paths
 
         matches = resolve_review_paths(reviews_dir, dataset_name)
@@ -1128,6 +1128,26 @@ class EvalScopeBackend:
 
             task_cfg_dict['dataset_args'][dataset_name]['dataset_id'] = dataset_path
             task_cfg_dict['dataset_args'][dataset_name]['default_subset'] = 'default'
+
+            # The tracker's total would be a confident lie for this run.
+            # evalscope's compute_eval_total_count reads per-subset
+            # sample_count out of the *bundled* _meta files and consults
+            # dataset_args['subset_list'] but never dataset_args
+            # ['dataset_id'], so it reports the size of the upstream dataset
+            # rather than the one actually being evaluated. Smaller custom
+            # dataset: the bar stalls partway and never completes. Larger:
+            # rows_done sails past rows_total. Off, so
+            # read_evalscope_tracker finds no file and the watcher publishes
+            # rows_total=0 -- the established "unknown" sentinel both repos
+            # already fall back on (live-progress.ts treats <= 0 as
+            # unknown). rows_done still comes from the reviews line count,
+            # so progress is not lost, only the total nobody can know here.
+            task_cfg_dict['enable_progress_tracker'] = False
+            logger.info(
+                "Custom dataset path set for %s; progress total unavailable "
+                "(evalscope's estimate would describe the upstream dataset)",
+                dataset_name,
+            )
 
             # If local dataset has no train split, use test for few-shot examples
             if available_splits is not None and 'train' not in available_splits:

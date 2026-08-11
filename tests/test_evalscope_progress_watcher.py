@@ -1,11 +1,12 @@
 import json
+import threading
 import time
 from pathlib import Path
 
 import pytest
 
 from surogate_eval import runners
-from surogate_eval.benchmarks.backends._evalscope_progress import ReviewCounter, ReviewWatcher, count_reviews
+from surogate_eval.benchmarks.backends._evalscope_progress import ReviewCounter, ReviewWatcher
 from surogate_eval.benchmarks.backends.evalscope_backend import EvalScopeBackend
 
 
@@ -69,21 +70,8 @@ def report_rows_calls(monkeypatch):
     return calls
 
 
-def test_counts_lines_as_they_are_appended(tmp_path):
-    """Evalscope appends one line per sample as it completes, so a count taken
-    mid-run is a real row count."""
-    f = tmp_path / "reviews" / "m" / "gsm8k_main.jsonl"
-    _write_lines(f, [_review(1.0), _review(0.0)])
-
-    assert count_reviews(tmp_path / "reviews" / "m", "gsm8k") == (2, 2, 1, 1.0)
-
-    _write_lines(f, [_review(1.0)])
-
-    assert count_reviews(tmp_path / "reviews" / "m", "gsm8k") == (3, 3, 2, 2.0)
-
-
 def test_multi_key_score_picks_the_same_key_the_final_report_would(tmp_path):
-    """`count_reviews` must read a multi-key row (DROP: `em` + `f1`) the same
+    """The counter must read a multi-key row (DROP: `em` + `f1`) the same
     way `_extract_sample_score` does for the final report -- not just take
     the first key in dict order, which used to disagree with the report
     whenever the "first" key was not the one `main_score_name`/the fallback
@@ -97,7 +85,7 @@ def test_multi_key_score_picks_the_same_key_the_final_report_would(tmp_path):
     f = tmp_path / "reviews" / "m" / "drop_main.jsonl"
     _write_lines(f, [_multi_key_review(f1=0.7, em=0.3)])
 
-    rows_done, scored, passed, score_sum = count_reviews(
+    rows_done, scored, passed, score_sum = ReviewCounter().update(
         tmp_path / "reviews" / "m", "drop",
     )
 
@@ -114,7 +102,7 @@ def test_a_malformed_line_does_not_stop_the_count(tmp_path):
     f.parent.mkdir(parents=True, exist_ok=True)
     f.write_text(json.dumps(_review(1.0)) + "\n" + '{"sample_sc' + "\n")
 
-    rows_done, scored, passed, score_sum = count_reviews(
+    rows_done, scored, passed, score_sum = ReviewCounter().update(
         tmp_path / "reviews" / "m", "gsm8k",
     )
 
@@ -126,7 +114,7 @@ def test_a_malformed_line_does_not_stop_the_count(tmp_path):
 
 def test_a_missing_directory_is_no_progress_yet_not_an_error(tmp_path):
     """The reviews directory does not exist until the first sample lands."""
-    assert count_reviews(tmp_path / "nope", "gsm8k") == (0, 0, 0, 0.0)
+    assert ReviewCounter().update(tmp_path / "nope", "gsm8k") == (0, 0, 0, 0.0)
 
 
 def test_the_subset_suffix_does_not_match_a_prefix_sibling(tmp_path):
@@ -136,12 +124,12 @@ def test_the_subset_suffix_does_not_match_a_prefix_sibling(tmp_path):
     _write_lines(base / "mmmu_val.jsonl", [_review(1.0)])
     _write_lines(base / "mmmu_pro_val.jsonl", [_review(1.0), _review(1.0)])
 
-    assert count_reviews(base, "mmmu")[0] == 1
+    assert ReviewCounter().update(base, "mmmu")[0] == 1
 
 
 def test_incremental_counter_counts_an_appended_file_once_not_twice(tmp_path):
     """A tick after the first must add only newly appended rows to the
-    running total -- the same result `count_reviews` gives, but without
+    running total -- the same result a full re-parse gives, but without
     re-parsing the whole file from the start each time (Finding 2)."""
     f = tmp_path / "reviews" / "m" / "gsm8k_main.jsonl"
     _write_lines(f, [_review(1.0), _review(0.0)])
@@ -158,7 +146,7 @@ def test_incremental_counter_holds_a_trailing_partial_line_until_it_is_complete(
     it, so the last line on disk may be half-written. That line must not be
     counted -- as done or as an unreadable row -- until a later tick sees it
     terminated by a newline, and it must then count exactly once, not twice
-    (Finding 2). A full re-parse (`count_reviews`) does not have this
+    (Finding 2). A full re-parse of the file each tick would not have this
     problem to begin with: it treats a half-written trailing line as an
     unreadable *complete* row and folds it into rows_done immediately --
     which is exactly the behaviour this incremental counter must avoid,
@@ -196,7 +184,7 @@ def test_incremental_counter_recovers_when_a_file_shrinks_between_ticks(tmp_path
     """A truncated or replaced reviews file (evalscope restarting a
     benchmark into the same work_dir, say) must not freeze the counter at a
     stale offset forever, nor -- once the file regrows past that stale
-    offset -- make it resume reading mid-line. `count_reviews` never had
+    offset -- make it resume reading mid-line. A full re-parse never had
     this problem, since it always reads from zero; tracking an offset is
     what introduces it, so recovery has to be handled explicitly."""
     reviews_dir = tmp_path / "reviews" / "m"
@@ -222,9 +210,9 @@ def test_incremental_counter_recovers_when_a_file_shrinks_between_ticks(tmp_path
 
 
 def test_watcher_reports_on_a_tick_and_stop_joins_the_thread(tmp_path, report_rows_calls):
-    """The threading glue itself, not just count_reviews.
+    """The threading glue itself, not just the counting.
 
-    The tests above only call ``count_reviews`` directly; none of them starts
+    The tests above only exercise ``ReviewCounter`` directly; none starts
     a watcher. This is the one check on ``start``/``_loop``/``stop`` wiring,
     so a broken cadence, a wrong argument order into ``report_rows``, or a
     ``stop()`` that fails to join cannot slip through unnoticed -- the exact
@@ -535,13 +523,13 @@ def test_stop_overwrites_the_last_mid_run_tick_with_the_final_state(tmp_path, re
 def test_watcher_counts_incrementally_rather_than_re_parsing_the_whole_file(tmp_path, report_rows_calls):
     """Behavioural pin for the watcher actually using `ReviewCounter`
     (Finding 2), not just `ReviewCounter` existing and being correct in
-    isolation: reverting the watcher's tick to call `count_reviews` instead
+    isolation: reverting the watcher's tick to a full re-parse of the file
     would leave every other test in this file green, since both give the
     same final totals for an ordinarily-growing file.
 
     The fingerprint that only the incremental counter has: a trailing line
     with no newline yet is held back and not counted at all, whereas a full
-    re-parse (`count_reviews`) counts that same unterminated line
+    re-parse counts that same unterminated line
     immediately, as an unreadable-but-present row (see
     `test_a_malformed_line_does_not_stop_the_count`). So with a partial line
     on disk when the watcher starts, the incremental counter reports
@@ -654,3 +642,91 @@ def test_a_broken_progress_watcher_does_not_fail_an_otherwise_healthy_benchmark(
     result = backend.evaluate(_FakeTarget(), "gsm8k", {})
 
     assert result["metadata"]["backend"] == "evalscope"
+
+
+def test_a_known_total_publishes_before_any_row_has_been_scored(tmp_path, report_rows_calls):
+    """The tracker is created with the real dataset size from its first
+    write, before any sample completes. Withholding it until `rows_done`
+    was non-zero left a benchmark with a slow first sample (cold model, a
+    judge round-trip per row) publishing 0 / 0 for its whole warm-up, which
+    ops reads as "no row data" and answers with the old benchmark-level
+    bar -- the one number the feature exists to show, available and
+    deliberately dropped.
+    """
+    reviews_dir = tmp_path / "work" / "reviews" / "m"
+    reviews_dir.mkdir(parents=True)
+    _write_evalscope_tracker(reviews_dir, processed_count=0, total_count=500)
+
+    watcher = ReviewWatcher(
+        reviews_dir=lambda: reviews_dir,
+        dataset="gsm8k",
+        benchmark_name="gsm8k",
+        interval=0.05,
+    )
+    watcher.start()
+    _wait_until(lambda: report_rows_calls)
+    watcher.stop()
+
+    assert report_rows_calls, "a known total must be published on its own"
+    rows_done, rows_total = report_rows_calls[0][0][0], report_rows_calls[0][0][1]
+    assert (rows_done, rows_total) == (0, 500)
+
+
+def test_a_tick_before_the_work_dir_is_resolved_publishes_nothing(tmp_path, report_rows_calls):
+    """`run_task` appends a timestamp to `work_dir` in place, and `_loop`
+    ticks immediately rather than after a full interval, so the first tick
+    can resolve `reviews_dir` against the pre-timestamp path -- for a
+    default config, `tempfile.gettempdir()`. A stale `progress.json` left in
+    that directory by anything at all would then be published under this
+    benchmark's own `for_benchmark` tag, indistinguishable from real data.
+    """
+    unresolved = tmp_path / "not-created-yet" / "reviews" / "m"
+    # A stale tracker exactly where the unresolved path would read one.
+    _write_evalscope_tracker(unresolved, processed_count=417, total_count=900)
+    assert not unresolved.is_dir()
+
+    watcher = ReviewWatcher(
+        reviews_dir=lambda: unresolved,
+        dataset="gsm8k",
+        benchmark_name="gsm8k",
+        interval=0.05,
+    )
+    watcher.start()
+    time.sleep(0.2)  # several ticks
+    watcher.stop()
+
+    assert report_rows_calls == [], (
+        "another run's counts must not be published as this benchmark's"
+    )
+
+
+def test_stop_does_not_block_forever_on_a_wedged_tick(tmp_path, report_rows_calls):
+    """`join(timeout=5)` exists so a wedged watcher cannot hold up the run,
+    but stop()'s own final tick used to take the tick lock with an unbounded
+    `with`, so it never reached the join it was given a timeout for. A
+    background tick stuck on a hung file read (an NFS stall, a reviews file
+    on a dead mount) would hang the whole run.
+    """
+    released = threading.Event()
+    entered = threading.Event()
+
+    def blocking_reviews_dir():
+        entered.set()
+        released.wait(30)
+        return tmp_path / "nope"
+
+    watcher = ReviewWatcher(
+        reviews_dir=blocking_reviews_dir,
+        dataset="gsm8k",
+        benchmark_name="gsm8k",
+        interval=0.05,
+    )
+    watcher.start()
+    assert entered.wait(2), "the background tick should have started"
+
+    started = time.monotonic()
+    watcher.stop()
+    elapsed = time.monotonic() - started
+
+    released.set()
+    assert elapsed < 12, f"stop() took {elapsed:.1f}s; it must not wait unbounded"

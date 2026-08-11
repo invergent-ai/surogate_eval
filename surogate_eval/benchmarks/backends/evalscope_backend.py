@@ -513,6 +513,13 @@ class EvalScopeBackend:
                         # as this benchmark's counts once the context has
                         # moved on.
                         benchmark_name=benchmark_name,
+                        # Off for a custom dataset path (see
+                        # _prepare_task_config): no tracker is written, and
+                        # a same-second work_dir collision with the previous
+                        # benchmark would otherwise have us read its file.
+                        read_tracker=bool(
+                            getattr(task_config, 'enable_progress_tracker', True)
+                        ),
                     )
                     watcher.start()
                 except Exception:

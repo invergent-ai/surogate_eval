@@ -293,6 +293,7 @@ class ReviewWatcher:
         dataset: str,
         benchmark_name: str,
         interval: float = 2.0,
+        read_tracker: bool = True,
     ) -> None:
         # A callable, not a path: evalscope's TaskConfig.work_dir gets a
         # timestamp appended *in place* by setup_work_directory once
@@ -304,6 +305,16 @@ class ReviewWatcher:
         self._dataset = dataset
         self._benchmark_name = benchmark_name
         self._interval = interval
+        # False when the caller disabled evalscope's tracker for this
+        # benchmark, which `_prepare_task_config` does for a custom dataset
+        # path -- the tracker's total would describe the upstream dataset.
+        # Asking directly beats inferring it from the file being absent:
+        # `setup_work_directory` timestamps `work_dir` to the second, so a
+        # benchmark starting in the same wall-clock second as the previous
+        # one ends shares its directory, and "absent" would silently become
+        # "the previous benchmark's total", published under this
+        # benchmark's own tag.
+        self._read_tracker = read_tracker
         # Incremental, not a full re-parse each tick: re-reading a 14k-row
         # benchmark's reviews file every couple of seconds, in this
         # GIL-holding background thread, is expensive enough to be what
@@ -359,7 +370,7 @@ class ReviewWatcher:
         # written, its processed_count/total_count are a real fact and
         # replace the reviews line count (a proxy for rows_done) and the old
         # config['limit'] guess (gone; see _prepare_task_config).
-        tracker = read_evalscope_tracker(reviews_dir)
+        tracker = read_evalscope_tracker(reviews_dir) if self._read_tracker else None
         if tracker is not None:
             rows_done, rows_total = tracker
         else:

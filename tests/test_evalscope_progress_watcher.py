@@ -730,3 +730,40 @@ def test_stop_does_not_block_forever_on_a_wedged_tick(tmp_path, report_rows_call
 
     released.set()
     assert elapsed < 12, f"stop() took {elapsed:.1f}s; it must not wait unbounded"
+
+
+def test_a_tracker_disabled_watcher_ignores_a_tracker_file_it_finds(tmp_path, report_rows_calls):
+    """Absence of the file is not a safe proxy for "no tracker here".
+
+    `_prepare_task_config` disables evalscope's tracker for a custom dataset
+    path, because its total would describe the upstream dataset. That made
+    the file's absence load-bearing -- but `setup_work_directory` timestamps
+    `work_dir` to the second, so a benchmark starting in the same wall-clock
+    second that the previous one ends shares its directory, and the previous
+    benchmark's `progress.json` is sitting right there. Read, it would be
+    published as this benchmark's total under this benchmark's own tag: the
+    exact wrongness disabling the tracker was meant to avoid.
+
+    The watcher is told directly instead, so a file that happens to be there
+    is ignored and `rows_total` stays the 0 sentinel.
+    """
+    reviews_dir = tmp_path / "work" / "reviews" / "m"
+    _write_lines(reviews_dir / "gsm8k_main.jsonl", [_review(1.0), _review(0.0)])
+    # The previous benchmark's tracker, left in a shared work_dir.
+    _write_evalscope_tracker(reviews_dir, processed_count=880, total_count=1319)
+
+    watcher = ReviewWatcher(
+        reviews_dir=lambda: reviews_dir,
+        dataset="gsm8k",
+        benchmark_name="gsm8k",
+        interval=0.05,
+        read_tracker=False,
+    )
+    watcher.start()
+    _wait_until(lambda: report_rows_calls)
+    watcher.stop()
+
+    assert report_rows_calls
+    rows_done, rows_total = report_rows_calls[-1][0][0], report_rows_calls[-1][0][1]
+    assert rows_total == 0, "a stale tracker must not become this benchmark's total"
+    assert rows_done == 2, "the reviews line count still drives the bar"

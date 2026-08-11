@@ -7,6 +7,7 @@ evaluation path against fake targets (no network), and assert on the process
 exit code the run returns.
 """
 
+import json
 from pathlib import Path
 from types import SimpleNamespace
 
@@ -737,3 +738,40 @@ def test_crashed_metric_batch_counts_every_unmeasured_case(
     assert outcome["scored"] == 0
     assert outcome["errored"] == 2
     assert exit_code == 1
+
+
+def test_a_finished_run_leaves_its_real_row_counts_on_disk(
+    tmp_path, monkeypatch, fake_targets
+):
+    """Drives the end-of-run progress write through the real ``run()``.
+
+    ``tests/test_progress_reporting.py`` covers ``_write_progress`` directly,
+    passing ``clear_rows=False`` itself -- so it pins the mechanism and not
+    ``eval.py``'s call site, which is where this actually broke: the
+    end-of-run write reused the benchmark-switch path and zeroed the row
+    block, and ops ingested those zeros in the poll immediately before
+    finalize. Every completed run then read 0 rows scored.
+
+    Deleting ``clear_rows=False`` from ``eval.py`` turns this red and leaves
+    the direct writer tests green, which is the whole point of running it
+    through ``run()``.
+
+    Uses a ``benchmarks:`` target because that is the only shape ops
+    generates (``core/compute/evaluate.py``) and the only one either
+    producer reports rows from.
+    """
+    dataset = write_dataset(tmp_path)
+    config = build_config(tmp_path, [benchmark_target_block("t1", dataset)])
+
+    command = SurogateEval(config=config, args={})
+    monkeypatch.chdir(tmp_path)
+    assert command.run() == 0
+
+    progress = json.loads(
+        (tmp_path / "eval_results" / "progress.json").read_text(encoding="utf-8")
+    )
+    assert progress["current_benchmark"] == "done"
+    # The two dataset rows, still there after the run ended.
+    assert progress["rows_done"] == 2
+    assert progress["scored"] == 2
+    assert progress["errored"] == 0

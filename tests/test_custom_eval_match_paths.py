@@ -333,6 +333,20 @@ def test_the_shipped_tokenizer_config_sets_a_mode():
     assert benchmark.get("matcher", {}).get("mode"), "must not rely on the default"
 
 
+def test_the_lm_eval_path_does_not_pretend_to_take_progress_params():
+    """`_evaluate_exact_match_lm_eval` accepted `rows_total`/`rows_done_offset`
+    but never reported progress with them -- every test above drives it
+    without them and none of its body ever reads them. Accepting dead
+    parameters reads as coverage (instrumentation) that does not actually
+    exist, so they must be dropped rather than merely left unused.
+    """
+    import inspect
+
+    params = inspect.signature(CustomEvalBackend._evaluate_exact_match_lm_eval).parameters
+    assert "rows_total" not in params
+    assert "rows_done_offset" not in params
+
+
 def test_an_lm_eval_failure_carries_its_real_cause_into_the_row_reason():
     """`LMEvalBackend.evaluate` does not raise when `simple_evaluate` fails.
 

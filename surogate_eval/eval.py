@@ -316,7 +316,9 @@ class SurogateEval(SurogateCommand):
                 target_result["guardrails"] = gr_result
                 _write_bench_result({"benchmark_name": "guardrails", **gr_result})
 
-        _write_progress("done", total, total)
+        # Not a benchmark switch -- the run is ending, so the row block must
+        # keep the last benchmark's real final counts rather than zero them.
+        _write_progress("done", total, total, clear_rows=False)
 
         if backend:
             backend.shutdown()

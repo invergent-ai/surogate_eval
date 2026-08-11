@@ -3,6 +3,7 @@
 
 import os
 import json
+import time
 import tempfile
 from pathlib import Path
 from typing import Dict, Any, List, Optional
@@ -11,8 +12,77 @@ from surogate_eval.benchmarks.matching import Matcher, build_matcher, clean_form
 from surogate_eval.targets import BaseTarget
 from surogate_eval.utils.logger import get_logger
 from surogate_eval.utils.text import blank_as_none
+from surogate_eval import runners
 
 logger = get_logger()
+
+#: Seconds between row-level progress writes. Ops polls at 5s, so a tighter
+#: cadence buys nothing and a per-row write costs one file write per sample on
+#: a 1319-row benchmark.
+_PROGRESS_INTERVAL_SECONDS = 2.0
+
+
+def _row_counts(results: list, offset: tuple = (0, 0, 0, 0.0)) -> tuple:
+    """(rows_done, scored, passed, score_sum) over the rows measured so far.
+
+    Derived from the results list both loops already build, rather than
+    counters threaded through every append site: there are five of those
+    between the two loops and each one is a place to forget.
+
+    ``rows_done`` is ``len(results)`` plus its offset, not a separate count:
+    every row's status is exactly ``scored`` or ``errored``, so it already
+    equals ``scored + errored`` without needing ``errored`` tracked at all
+    -- and a caller that does need the error count derives it the same way
+    ``report_rows`` does, as ``rows_done - scored``.
+
+    ``offset`` folds in counts an earlier loop over the same benchmark
+    already reported (hybrid mode runs exact_match rows to completion
+    before judge rows start). Without it, these counters would reset to
+    only what the second loop has measured on its own first report, and
+    ops' running average would drop backward the instant the judge loop
+    starts. Passing this call's own return value back in as the next call's
+    ``offset`` is also what lets a loop drop a separate rows-done-so-far
+    parameter: it is already the first element here.
+    """
+    off_rows_done, off_scored, off_passed, off_score_sum = offset
+    scored = off_scored + sum(1 for r in results if r.get("status") == "scored")
+    passed = off_passed + sum(1 for r in results if r.get("success"))
+    score_sum = off_score_sum + sum(
+        r["score"] for r in results if r.get("score") is not None
+    )
+    rows_done = off_rows_done + len(results)
+    return rows_done, scored, passed, float(score_sum)
+
+
+class _RowProgressReporter:
+    """Throttled ``report_rows`` writer shared by every per-row eval loop.
+
+    ``_evaluate_exact_match_direct``, ``_evaluate_judge_rows``, and
+    ``_evaluate_toxicity_rows`` all report progress the same way -- a write
+    every ``_PROGRESS_INTERVAL_SECONDS`` while the loop runs, plus one
+    unconditional write once it ends -- so this owns that throttle state
+    once instead of each loop pasting its own copy of it.
+    ``_evaluate_toxicity_rows`` used to have no ``report_rows`` call at all:
+    it shares the same loop shape as the other two (and its comments already
+    said so), but never got the block, so it reported no live progress.
+    """
+
+    def __init__(self, total: int, counts_offset: tuple = (0, 0, 0, 0.0)):
+        self._total = total
+        self._counts_offset = counts_offset
+        self._last_report = 0.0
+
+    def maybe_report(self, results: list) -> None:
+        """Report if the cadence allows. Call once per row, after appending it."""
+        now = time.monotonic()
+        if now - self._last_report >= _PROGRESS_INTERVAL_SECONDS:
+            self._last_report = now
+            self.report(results)
+
+    def report(self, results: list) -> None:
+        """Report unconditionally. Call once after the loop ends."""
+        rows_done, scored, passed, score_sum = _row_counts(results, self._counts_offset)
+        runners.report_rows(rows_done, self._total, scored, passed, score_sum)
 
 try:
     from datasets import load_dataset, Dataset
@@ -259,12 +329,20 @@ class CustomEvalBackend:
             rows: List[Dict[str, Any]],
             target: BaseTarget,
             config: Dict[str, Any],
-            columns: Dict[str, str]
+            columns: Dict[str, str],
+            rows_total: int | None = None,
+            counts_offset: tuple = (0, 0, 0, 0.0)
     ) -> List[Dict[str, Any]]:
         """Evaluate exact_match rows.
 
         Uses lm-eval when a tokenizer is available (local models), otherwise
         falls back to direct inference + string comparison (API-only models).
+
+        Args:
+            rows_total: Total number of rows in the benchmark. If None, defaults to len(rows).
+            counts_offset: (rows_done, scored, passed, score_sum) already reported
+                by a previous loop, folded into this loop's own progress reports
+                so they stay cumulative.
         """
         if not rows:
             return []
@@ -285,12 +363,15 @@ class CustomEvalBackend:
         if tokenizer:
             try:
                 return self._evaluate_exact_match_lm_eval(
-                    rows, target, config, columns, tokenizer, matcher
+                    rows, target, config, columns, tokenizer, matcher,
                 )
             except Exception as e:
                 logger.warning(f"lm-eval exact_match failed, falling back to direct inference: {e}")
 
-        return self._evaluate_exact_match_direct(rows, target, config, columns, matcher)
+        return self._evaluate_exact_match_direct(
+            rows, target, config, columns, matcher,
+            rows_total, counts_offset,
+        )
 
     def _evaluate_exact_match_lm_eval(
             self,
@@ -301,7 +382,14 @@ class CustomEvalBackend:
             tokenizer: str,
             matcher: Matcher,
     ) -> List[Dict[str, Any]]:
-        """Evaluate exact_match rows using LM-Eval backend."""
+        """Evaluate exact_match rows using LM-Eval backend.
+
+        No row-level progress reporting on this path: `LMEvalBackend.evaluate`
+        runs its own batch internally and returns all rows at once, so there
+        is no per-row point to report from. Unlike the direct-inference path,
+        this does not take rows_total/counts_offset -- do not add them back
+        without also making them report something.
+        """
         logger.info(f"Evaluating {len(rows)} exact_match rows with lm-eval")
 
         from .lm_eval_backend import LMEvalBackend
@@ -458,6 +546,8 @@ class CustomEvalBackend:
             config: Dict[str, Any],
             columns: Dict[str, str],
             matcher: Matcher,
+            rows_total: int | None = None,
+            counts_offset: tuple = (0, 0, 0, 0.0)
     ) -> List[Dict[str, Any]]:
         """Evaluate exact_match rows via direct inference + string comparison."""
         logger.info(f"Evaluating {len(rows)} exact_match rows (direct inference)")
@@ -466,6 +556,9 @@ class CustomEvalBackend:
 
         system_prompt = config.get('system_prompt')
         results = []
+        # Use provided total or default to len(rows)
+        total = rows_total if rows_total is not None else len(rows)
+        reporter = _RowProgressReporter(total, counts_offset)
 
         for row in rows:
             original_idx = row['_original_idx']
@@ -535,6 +628,12 @@ class CustomEvalBackend:
                     'success': False,
                     'reason': row_error,
                 })
+                # Report here too, not just on the scored path below: a
+                # target that errors on every row (the target-is-down case a
+                # user is most likely watching) would otherwise never reach
+                # the scored branch's report call and progress would freeze
+                # until the single unconditional write after the loop ends.
+                reporter.maybe_report(results)
                 continue
 
             results.append({
@@ -556,6 +655,10 @@ class CustomEvalBackend:
                 'reason': f'{matcher.mode} match' if success else 'No match',
             })
 
+            reporter.maybe_report(results)
+
+        reporter.report(results)
+
         errored_n = sum(1 for r in results if r['status'] == 'errored')
         scored_n = len(results) - errored_n
         logger.info(
@@ -570,9 +673,18 @@ class CustomEvalBackend:
             target: BaseTarget,
             config: Dict[str, Any],
             columns: Dict[str, str],
-            judge_target: Optional[BaseTarget] = None
+            judge_target: Optional[BaseTarget] = None,
+            rows_total: int | None = None,
+            counts_offset: tuple = (0, 0, 0, 0.0)
     ) -> List[Dict[str, Any]]:
-        """Evaluate judge rows using G-Eval."""
+        """Evaluate judge rows using G-Eval.
+
+        Args:
+            rows_total: Total number of rows in the benchmark. If None, defaults to len(rows).
+            counts_offset: (rows_done, scored, passed, score_sum) already reported
+                by a previous loop, folded into this loop's own progress reports
+                so they stay cumulative.
+        """
         if not rows:
             return []
 
@@ -603,6 +715,9 @@ class CustomEvalBackend:
         prompt_template = config.get('prompt_template')
 
         results = []
+        # Use provided total or default to len(rows)
+        total = rows_total if rows_total is not None else len(rows)
+        reporter = _RowProgressReporter(total, counts_offset)
 
         for row in rows:
             original_idx = row['_original_idx']
@@ -675,6 +790,12 @@ class CustomEvalBackend:
                     'reason': f'Inference error: {request_error}',
                     'criteria': row_criteria,
                 })
+                # Report here too, not just after G-Eval runs below: a
+                # target that errors on every row (the target-is-down case a
+                # user is most likely watching) would otherwise never reach
+                # that report call and progress would freeze until the
+                # single unconditional write after the loop ends.
+                reporter.maybe_report(results)
                 continue
 
             # Run G-Eval with normalized output
@@ -737,6 +858,10 @@ class CustomEvalBackend:
                     'criteria': row_criteria,
                 })
 
+            reporter.maybe_report(results)
+
+        reporter.report(results)
+
         errored_n = sum(1 for r in results if r['status'] == 'errored')
         scored_n = len(results) - errored_n
         avg_score = (
@@ -781,6 +906,7 @@ class CustomEvalBackend:
 
         prompt_template = config.get('prompt_template')
         results = []
+        reporter = _RowProgressReporter(len(rows))
 
         for idx, row in enumerate(rows):
             instruction = self._get_column_value(row, columns, 'instruction', '')
@@ -854,6 +980,8 @@ class CustomEvalBackend:
                 'reason': reason,
             })
 
+            reporter.maybe_report(results)
+
             if (idx + 1) % 5 == 0 or idx == len(rows) - 1:
                 safe_so_far = sum(1 for r in results if r['success'])
                 errored_so_far = sum(1 for r in results if r['status'] == 'errored')
@@ -862,6 +990,7 @@ class CustomEvalBackend:
                     f"{errored_so_far} not measured"
                 )
 
+        reporter.report(results)
         return results
 
     def evaluate(
@@ -953,13 +1082,22 @@ class CustomEvalBackend:
         # Get judge target if configured
         judge_target = config.get('backend_params', {}).get('judge_target')
 
+        # Calculate total rows for progress reporting across both loops
+        total_rows = len(exact_match_rows) + len(judge_rows)
+
         # Evaluate each type
         exact_match_results = self._evaluate_exact_match_rows(
-            exact_match_rows, target, config, columns
+            exact_match_rows, target, config, columns,
+            rows_total=total_rows,
         )
 
         judge_results = self._evaluate_judge_rows(
-            judge_rows, target, config, columns, judge_target
+            judge_rows, target, config, columns, judge_target,
+            rows_total=total_rows,
+            # So the judge loop's own progress reports carry the exact_match
+            # loop's rows_done/scored/passed/score_sum forward instead of
+            # resetting to what only the judge loop itself has measured.
+            counts_offset=_row_counts(exact_match_results),
         )
 
         # Merge results

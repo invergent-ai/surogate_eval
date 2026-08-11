@@ -1,13 +1,50 @@
 """Evaluation runners for different test types."""
 
 import asyncio
+import json
 import os
+import tempfile
+import threading
+from pathlib import Path
 from typing import Any, Callable, Dict, List, Optional
 
 from surogate_eval.targets import BaseTarget
 from surogate_eval.utils.logger import get_logger
 
 logger = get_logger()
+
+#: Combined benchmark-level and row-level state for `progress.json`, set by
+#: `eval.py` before each benchmark (the benchmark-level keys) and re-used by
+#: row-level updates (the rest). One dict, not two: `_write_progress` and
+#: `report_rows` always read and write across both halves together --
+#: `_flush_progress` used to merge two separate dicts on every write, which
+#: bought nothing but an extra step, since nothing ever needed one half
+#: without the other. Seeded with every key up front so `_flush_progress`
+#: can serialize it directly.
+#:
+#: Module state rather than a parameter because the backends that report rows
+#: (`custom_eval`, the evalscope watcher) have no access to the task list and
+#: threading it through every backend signature would touch far more code than
+#: this feature is worth. One writer owns the whole document either way, so a
+#: partial file is never produced.
+_PROGRESS: dict = {
+    "current_benchmark": "", "completed": 0, "total": 1,
+    "rows_done": 0, "rows_total": 0, "scored": 0, "errored": 0,
+    "passed": 0, "score_sum": 0.0,
+}
+
+#: Guards every read-check-write of `_PROGRESS`. `report_rows` reads
+#: `current_benchmark` (the `for_benchmark` check) and then writes the row
+#: keys, as two separate statements; without a lock, `_write_progress` can
+#: run a full benchmark switch in between, and `report_rows` then resumes
+#: and stamps the old benchmark's row counts onto the new benchmark's
+#: context. `eval.py` calls `_write_progress` from the main thread while a
+#: background watcher (or `custom_eval`'s own scoring loop) calls
+#: `report_rows`, so this is a real cross-thread window, not a hypothetical
+#: one. ``ponytail: one coarse lock, not per-field -- these writes are a few
+#: dict operations every couple of seconds, so contention is not a real
+#: cost.``
+_PROGRESS_LOCK = threading.Lock()
 
 
 def run_evaluation(
@@ -316,23 +353,150 @@ def _write_bench_result(result: Dict[str, Any]) -> None:
         logger.warning(f"Failed to write benchmark result for {name}: {e}")
 
 
-def _write_progress(current_benchmark: str, completed: int, total: int) -> None:
-    """Write eval_results/progress.json so the monitor can show live status."""
-    import json as _json
-    from pathlib import Path as _Path
+def _progress_path() -> Path:
+    return Path("eval_results") / "progress.json"
 
+
+def _flush_progress() -> None:
+    """Write the whole document atomically.
+
+    Temp file plus rename, because ops polls this path every 5s and a
+    truncating in-place write can be read half-finished and parsed as invalid
+    JSON. Best-effort: a failure here must never fail the run.
+    """
     try:
-        out = _Path("eval_results")
+        out = Path("eval_results")
         out.mkdir(exist_ok=True)
-        path = out / "progress.json"
-        with open(path, "w") as f:
-            _json.dump({
-                "current_benchmark": current_benchmark,
-                "completed": completed,
-                "total": total,
-            }, f)
+        fd, tmp = tempfile.mkstemp(dir=str(out), suffix=".tmp")
+        try:
+            with os.fdopen(fd, "w") as f:
+                json.dump(_PROGRESS, f)
+            # mkstemp defaults to 0600; the previous writer used open(mode='w')
+            # which produced a umask-derived mode. A reader in another account
+            # must still be able to read this file.
+            os.chmod(tmp, 0o644)
+            os.replace(tmp, str(_progress_path()))
+        except Exception:
+            try:
+                os.unlink(tmp)
+            except Exception:
+                pass
+            raise
     except Exception:
         pass  # Best-effort
+
+
+def _write_progress(
+    current_benchmark: str, completed: int, total: int, *, clear_rows: bool = True,
+) -> None:
+    """Record which benchmark is running, and (usually) zero out any previous
+    row counts.
+
+    Zeroed, not cleared to ``{}``: ops treats an absent row key as "this
+    runner does not report rows" and leaves whatever rows_done/rows_total it
+    already has in the database, so omitting the keys here left benchmark 2
+    displaying benchmark 1's finished bar until its own first report -- and
+    then dropping backwards onto that report's real, much smaller count.
+    Zeros are a real value ops ingests (``0 is not None``), and
+    ``rows_total: 0`` already means "unknown" on both sides, so this is a
+    genuine reset rather than a second flavour of "no data".
+
+    ``clear_rows=False`` for ``eval.py``'s final ``"done"`` call: that write
+    marks the run ending, not a switch to a new benchmark, and the row block
+    it would otherwise zero holds the run's real final counts -- exactly
+    what ops needs to settle a completed run to. Zeroing there was
+    indistinguishable, from ops' side, from a benchmark switch, which is why
+    a completed run's rows read back as 0/0 (Finding 1: `_ingest_incremental`
+    ingests that zeroed write in the same tick, immediately before finalize,
+    so `_settled_progress_updates` sees `rows_total = 0` and leaves the
+    settle a no-op).
+    """
+    with _PROGRESS_LOCK:
+        updates = {
+            "current_benchmark": current_benchmark,
+            "completed": completed,
+            "total": total,
+        }
+        if clear_rows:
+            updates.update({
+                "rows_done": 0,
+                "rows_total": 0,
+                "scored": 0,
+                "errored": 0,
+                "passed": 0,
+                "score_sum": 0.0,
+            })
+        _PROGRESS.update(updates)
+        _flush_progress()
+
+
+def report_rows(
+    rows_done: int,
+    rows_total: int,
+    scored: int,
+    passed: int,
+    score_sum: float,
+    *,
+    for_benchmark: str | None = None,
+) -> None:
+    """Publish row-level progress for the benchmark currently running.
+
+    ``score_sum`` rather than an average so ops does the division: a partial
+    file then cannot be internally inconsistent.
+
+    Not a parameter: every row is exactly ``scored`` or ``errored``, so
+    ``errored`` is always ``rows_done - scored`` -- every caller used to
+    compute exactly that before calling in, so deriving it here leaves one
+    place for that arithmetic instead of one per caller.
+
+    ``for_benchmark``, when given, must match ``_PROGRESS``'s current
+    benchmark or the write is dropped. A background watcher's ``stop()`` can
+    time out while a tick is still in flight (``_evalscope_progress.
+    ReviewWatcher``): the thread stays alive, ticks again, and that write
+    would otherwise land after the *next* benchmark's watcher has already
+    started -- stamping the old benchmark's counts over the new one's row
+    block and sending ``rows_done`` backwards, exactly what Task 2 ruled
+    out. Tagging each write with the benchmark it was measured for turns
+    that stale write into a silent no-op instead. Default ``None`` preserves
+    today's behaviour for ``custom_eval``, which reports from the same
+    thread as its scoring loop and so can never go stale.
+
+    The check and the write below share ``_PROGRESS_LOCK`` with
+    ``_write_progress``'s own critical section: read-then-write is not
+    atomic on its own, and a benchmark switch landing in that gap is the
+    same stale-write hazard as the leaked-watcher case above, just reached
+    by a race instead of a slow ``stop()``.
+
+    ``rows_done`` and ``scored`` are not always from the same instant.
+    ``custom_eval`` derives both from the same in-memory results list, so
+    there they always agree (``rows_done`` is never less than ``scored``).
+    The evalscope watcher does not have that luxury: its ``rows_done`` comes
+    from evalscope's own ``ProgressTracker`` file, which flushes at most
+    once a second, while its ``scored`` comes from an incremental read of
+    the reviews JSONL (``ReviewCounter``), which evalscope appends to
+    *before* it updates the tracker -- so ``scored`` is reliably ahead of
+    ``rows_done`` on nearly every tick of a healthy run. Reconciling here,
+    not just clamping the subtraction, keeps both published numbers
+    coherent: a bar that shows fewer rows done than rows scored is wrong on
+    its face, and this is the one place every caller's numbers pass through
+    before publication. Do not simplify this back to ``rows_done - scored``.
+    """
+    with _PROGRESS_LOCK:
+        if for_benchmark is not None and for_benchmark != _PROGRESS["current_benchmark"]:
+            return
+        # rows_done can lag scored (see above) -- raised to the coherent
+        # floor before errored is derived from it. Not a redundant max: see
+        # the docstring for why the two can disagree.
+        rows_done = max(rows_done, scored)
+        _PROGRESS.update({
+            "rows_done": rows_done,
+            "rows_total": rows_total,
+            "scored": scored,
+            "errored": rows_done - scored,
+            "passed": passed,
+            "score_sum": score_sum,
+        })
+        _flush_progress()
 
 
 def _run_single_benchmark(

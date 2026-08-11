@@ -137,3 +137,36 @@ def test_an_empty_answer_is_still_an_answer(fake_metric):
 
     assert [r["status"] for r in results] == ["scored", "scored"]
     assert all(r["score"] == 1.0 for r in results)
+
+
+def test_toxicity_loop_reports_progress(fake_metric, monkeypatch):
+    """The toxicity loop has the same row-append shape as the exact_match
+    and judge loops, but used to skip their report_rows call entirely, so a
+    toxicity benchmark showed no live progress. The unconditional post-loop
+    write must land with the right rows_done/rows_total/scored/passed/
+    score_sum."""
+    report_calls = []
+
+    def fake_report_rows(rows_done, rows_total, scored, passed, score_sum):
+        report_calls.append({
+            "rows_done": rows_done,
+            "rows_total": rows_total,
+            "scored": scored,
+            "passed": passed,
+            "score_sum": score_sum,
+        })
+
+    monkeypatch.setattr(
+        "surogate_eval.benchmarks.backends.custom_eval_backend.runners.report_rows",
+        fake_report_rows,
+    )
+
+    results = run_rows(fake_metric, score=0.1)
+
+    assert report_calls, "report_rows was never called"
+    final_call = report_calls[-1]
+    assert final_call["rows_done"] == len(results) == 2
+    assert final_call["rows_total"] == len(ROWS) == 2
+    assert final_call["scored"] == 2
+    assert final_call["passed"] == 2
+    assert final_call["score_sum"] == 2.0

@@ -482,8 +482,62 @@ class EvalScopeBackend:
                 # don't follow the exact ANSWER: format.
                 self._patch_mcq_extract_answer(evalscope_dataset)
 
-                # Run the task
-                results = run_task(task_cfg=task_config)
+                # Run the task. run_task() blocks for the whole benchmark, so
+                # a background watcher counts the reviews file evalscope
+                # appends to as it scores and reports row progress; it must
+                # be stopped before this method returns, or a late write
+                # could stamp this benchmark's counts onto the next one's.
+                from ._evalscope_progress import ReviewWatcher
+
+                # Setup and start are guarded on their own: a bad limit, a
+                # work_dir that isn't there yet, or the OS refusing to start
+                # a new thread must not fail a benchmark that is otherwise
+                # fine. Progress reporting is a nice-to-have layered on top
+                # of the run, never something the run depends on.
+                watcher = None
+                try:
+                    watcher = ReviewWatcher(
+                        # A closure, not a value computed here: run_task
+                        # mutates task_config.work_dir in place
+                        # (setup_work_directory appends a timestamp) after
+                        # this call, so the watcher must read work_dir fresh
+                        # on every tick or it watches a directory that never
+                        # receives anything.
+                        reviews_dir=lambda: Path(task_config.work_dir) / 'reviews' / task_config.model_id,
+                        dataset=evalscope_dataset,
+                        # The name eval.py's progress context tracks (`name`
+                        # in _run_single_benchmark), not evalscope_dataset --
+                        # they differ for benchmarks like 'aime' -> 'aime24'.
+                        # Every write is tagged with this so a stale tick
+                        # from a watcher whose stop() timed out cannot land
+                        # as this benchmark's counts once the context has
+                        # moved on.
+                        benchmark_name=benchmark_name,
+                        # Off for a custom dataset path (see
+                        # _prepare_task_config): no tracker is written, and
+                        # a same-second work_dir collision with the previous
+                        # benchmark would otherwise have us read its file.
+                        read_tracker=bool(
+                            getattr(task_config, 'enable_progress_tracker', True)
+                        ),
+                    )
+                    watcher.start()
+                except Exception:
+                    logger.warning(
+                        "Could not start row-progress watcher; continuing "
+                        "without row progress for this benchmark",
+                        exc_info=True,
+                    )
+                    watcher = None
+
+                try:
+                    results = run_task(task_cfg=task_config)
+                finally:
+                    # Only stop a watcher that actually started: stop() on
+                    # one whose start() never ran (or never happened) joins
+                    # a thread that was never launched.
+                    if watcher is not None:
+                        watcher.stop()
 
                 # EvalScope saves results to work_dir/reports/{model_id}/{dataset}.json
                 import json
@@ -554,13 +608,16 @@ class EvalScopeBackend:
                 logger.debug(f"Predictions directory not found: {reviews_dir}")
                 return detailed_results
 
-        # Use underscore glob to avoid matching prefixes (e.g. mmmu vs mmmu_pro)
-        matches = list(reviews_dir.glob(f'{dataset_name}_*.jsonl'))
-        if not matches:
-            # Fallback: exact match without subset suffix
-            exact = reviews_dir / f'{dataset_name}.jsonl'
-            if exact.exists():
-                matches = [exact]
+        # Underscore glob first, but that alone still matches a longer
+        # sibling dataset (e.g. mmmu_pro_val.jsonl when dataset_name is
+        # 'mmmu': fnmatch's `*` does not stop at the next underscore).
+        # resolve_review_paths cross-checks against the sibling-dataset list
+        # to tell a subset name from a sibling dataset, and is shared with
+        # the live ReviewCounter so the two cannot resolve a dataset's
+        # reviews to different files.
+        from ._evalscope_progress import resolve_review_paths
+
+        matches = resolve_review_paths(reviews_dir, dataset_name)
         for review_file in matches:
             logger.debug(f"Loading reviews from: {review_file}")
             # Two nested handlers, doing different jobs. The inner one keeps a
@@ -1010,6 +1067,15 @@ class EvalScopeBackend:
         task_cfg_dict = {
             'datasets': [dataset_name],
             'work_dir': tempfile.gettempdir(),
+            # Makes evalscope run its own ProgressTracker, which writes a
+            # real processed_count/total_count to <work_dir>/progress.json
+            # (a different file from our eval_results/progress.json) as the
+            # run proceeds. ReviewWatcher (_evalscope_progress.py) reads it
+            # for row counts instead of guessing the total from
+            # config['limit'], which was 0 -- "unknown" -- for every
+            # benchmark run without an explicit limit. Off by default in
+            # evalscope.
+            'enable_progress_tracker': True,
         }
 
         # Enable sandbox for code benchmarks (unless explicitly disabled
@@ -1069,6 +1135,26 @@ class EvalScopeBackend:
 
             task_cfg_dict['dataset_args'][dataset_name]['dataset_id'] = dataset_path
             task_cfg_dict['dataset_args'][dataset_name]['default_subset'] = 'default'
+
+            # The tracker's total would be a confident lie for this run.
+            # evalscope's compute_eval_total_count reads per-subset
+            # sample_count out of the *bundled* _meta files and consults
+            # dataset_args['subset_list'] but never dataset_args
+            # ['dataset_id'], so it reports the size of the upstream dataset
+            # rather than the one actually being evaluated. Smaller custom
+            # dataset: the bar stalls partway and never completes. Larger:
+            # rows_done sails past rows_total. Off, so
+            # read_evalscope_tracker finds no file and the watcher publishes
+            # rows_total=0 -- the established "unknown" sentinel both repos
+            # already fall back on (live-progress.ts treats <= 0 as
+            # unknown). rows_done still comes from the reviews line count,
+            # so progress is not lost, only the total nobody can know here.
+            task_cfg_dict['enable_progress_tracker'] = False
+            logger.info(
+                "Custom dataset path set for %s; progress total unavailable "
+                "(evalscope's estimate would describe the upstream dataset)",
+                dataset_name,
+            )
 
             # If local dataset has no train split, use test for few-shot examples
             if available_splits is not None and 'train' not in available_splits:

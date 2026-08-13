@@ -488,7 +488,7 @@ class EvalScopeBackend:
                 # appends to as it scores and reports row progress; it must
                 # be stopped before this method returns, or a late write
                 # could stamp this benchmark's counts onto the next one's.
-                from ._evalscope_progress import ReviewWatcher
+                from ._evalscope_progress import ReviewWatcher, fallback_rows_total
 
                 # Setup and start are guarded on their own: a bad limit, a
                 # work_dir that isn't there yet, or the OS refusing to start
@@ -528,17 +528,9 @@ class EvalScopeBackend:
                         # sitting on the "unknown" sentinel for the whole
                         # benchmark.
                         #
-                        # Withheld when the tracker is untrusted, which is
-                        # the custom-dataset case: `limit` is an upper bound
-                        # applied to a dataset whose size we do not know, and
-                        # evalscope runs min(dataset, limit). A custom
-                        # dataset smaller than the limit would stall the bar
-                        # partway forever -- the very failure
-                        # `_prepare_task_config` turns the tracker off to
-                        # avoid. One decision, made here where both facts
-                        # are in scope, rather than two flags the watcher
-                        # would have to reconcile.
-                        limit=config.get('limit') if tracker_trusted else None,
+                        limit=fallback_rows_total(
+                            config.get('limit'), tracker_trusted=tracker_trusted,
+                        ),
                         # The live pass count must use the same rule the
                         # final report will, or the tile disagrees with the
                         # per-sample verdicts underneath it.

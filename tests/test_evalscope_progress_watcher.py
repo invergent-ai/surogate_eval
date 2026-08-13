@@ -6,7 +6,11 @@ from pathlib import Path
 import pytest
 
 from surogate_eval import runners
-from surogate_eval.benchmarks.backends._evalscope_progress import ReviewCounter, ReviewWatcher
+from surogate_eval.benchmarks.backends._evalscope_progress import (
+    ReviewCounter,
+    ReviewWatcher,
+    fallback_rows_total,
+)
 from surogate_eval.benchmarks.backends.evalscope_backend import EvalScopeBackend
 
 
@@ -946,3 +950,27 @@ def test_without_a_threshold_the_live_count_keeps_the_old_rule(tmp_path, report_
     watcher.stop()
 
     assert report_rows_calls[-1][0][3] == 2, "0.2 passes without a threshold; 0.0 does not"
+
+
+def test_the_fallback_total_is_withheld_for_an_untrusted_tracker():
+    """The caller's decision, not the watcher's.
+
+    A missing tracker means two opposite things. No bundled `_meta`
+    (mt_bench): the dataset is the bundled one, so a configured limit is a
+    real bound worth publishing. A custom `dataset_path`:
+    `_prepare_task_config` turned the tracker off precisely to avoid a
+    confident lie about a dataset of unknown size, and the limit is only an
+    upper bound -- evalscope runs min(dataset, limit), so a custom dataset
+    smaller than its limit would stall the bar forever, reintroducing the
+    failure turning the tracker off avoids.
+    """
+    assert fallback_rows_total(10, tracker_trusted=True) == 10
+    assert fallback_rows_total(10, tracker_trusted=False) is None
+
+
+def test_the_fallback_total_rejects_a_fraction_and_nonsense():
+    # evalscope reads a float limit as a fraction of the dataset.
+    assert fallback_rows_total(0.1, tracker_trusted=True) is None
+    assert fallback_rows_total(0, tracker_trusted=True) is None
+    assert fallback_rows_total(-5, tracker_trusted=True) is None
+    assert fallback_rows_total(None, tracker_trusted=True) is None

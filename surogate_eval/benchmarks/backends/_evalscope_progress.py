@@ -289,6 +289,33 @@ def read_evalscope_tracker(reviews_dir: Path) -> Optional[Tuple[int, int]]:
         return None
 
 
+def fallback_rows_total(
+    limit: Optional[object], *, tracker_trusted: bool,
+) -> Optional[int]:
+    """The row total to fall back on when evalscope writes no tracker.
+
+    Two reasons no tracker exists, and they want opposite answers, which is
+    why this decision lives here rather than inside the watcher:
+
+    * evalscope has no bundled ``_meta`` for the benchmark (mt_bench, at
+      every limit). The dataset is the bundled one, so a configured limit is
+      a real bound and publishing it beats sitting on "unknown" forever.
+    * ``_prepare_task_config`` turned the tracker off because a custom
+      ``dataset_path`` is set. It does that precisely to avoid a confident
+      lie about a dataset whose size we do not know, and the limit is only
+      an upper bound -- evalscope runs ``min(dataset, limit)``, so a custom
+      dataset smaller than its limit would stall the bar partway forever.
+
+    ``int`` only: evalscope reads a *float* limit as a fraction of the
+    dataset (``int(sample_count * limit)``), so 0.1 means a tenth of the
+    rows. Resolving that needs the dataset size, the one thing missing
+    whenever this fallback applies.
+    """
+    if not tracker_trusted:
+        return None
+    return limit if (isinstance(limit, int) and limit > 0) else None
+
+
 class ReviewWatcher:
     """Publish row progress for a running evalscope benchmark.
 
@@ -337,13 +364,8 @@ class ReviewWatcher:
         # for. A configured `limit` is a real, if approximate, bound: it is
         # per-subset, so a multi-subset benchmark can exceed it, which is
         # precisely the overshoot the consumer already renders as "N+".
-        # int only, deliberately. evalscope reads a *float* limit as a
-        # fraction of the dataset (`resource_utils.compute_eval_total_count`:
-        # `effective = int(sample_count * limit)` when it is a float), so
-        # 0.1 means "a tenth of the rows", not "one row". Resolving that
-        # needs the dataset size, which is the one thing missing whenever
-        # this fallback applies -- so a fractional limit stays unknown
-        # rather than being published as a row count it is not.
+        # Already resolved by `fallback_rows_total`, which owns the two
+        # reasons a tracker can be missing and what each one means.
         self._limit = limit if (isinstance(limit, int) and limit > 0) else None
         # Incremental, not a full re-parse each tick: re-reading a 14k-row
         # benchmark's reviews file every couple of seconds, in this

@@ -767,3 +767,66 @@ def test_a_tracker_disabled_watcher_ignores_a_tracker_file_it_finds(tmp_path, re
     rows_done, rows_total = report_rows_calls[-1][0][0], report_rows_calls[-1][0][1]
     assert rows_total == 0, "a stale tracker must not become this benchmark's total"
     assert rows_done == 2, "the reviews line count still drives the bar"
+
+
+def test_a_configured_limit_is_the_total_when_evalscope_writes_no_tracker(tmp_path, report_rows_calls):
+    """mt_bench's shape, and the reason the live tiles did nothing for it.
+
+    `compute_eval_total_count` sums per-subset `sample_count` from the
+    bundled `_meta` files and returns None for any benchmark shipped without
+    them. Verified against evalscope 1.7.0: gsm8k yields 10 at limit=10 and
+    1319 unlimited, mt_bench yields None at *every* limit. No total means no
+    tracker file, so `rows_total` stayed 0 -- the "unknown" sentinel -- for
+    the benchmark's entire life, and the consumer fell back to its old
+    benchmark-level bar for exactly the judge-scored benchmarks this feature
+    is most useful for. Observed live on 2026-08-13: a 10-row mt_bench run
+    reported rows_done 3, 6, 9, 10 with rows_total 0 throughout, and the
+    detail page showed the *previous* benchmark's finished score instead.
+
+    The configured limit is a real bound, so it is published rather than
+    nothing. It is per-subset, so a multi-subset benchmark can exceed it --
+    which is the overshoot the consumer already renders as "N+".
+    """
+    reviews_dir = tmp_path / "work" / "reviews" / "m"
+    _write_lines(reviews_dir / "mt_bench_default.jsonl", [_review(0.7), _review(0.6)])
+    # Deliberately no tracker file: this is what evalscope leaves behind.
+    assert not (reviews_dir.parent.parent / "progress.json").exists()
+
+    watcher = ReviewWatcher(
+        reviews_dir=lambda: reviews_dir,
+        dataset="mt_bench",
+        benchmark_name="mt_bench",
+        interval=0.05,
+        limit=10,
+    )
+    watcher.start()
+    _wait_until(lambda: report_rows_calls)
+    watcher.stop()
+
+    assert report_rows_calls
+    rows_done, rows_total = report_rows_calls[-1][0][0], report_rows_calls[-1][0][1]
+    assert rows_total == 10, "a configured limit must serve as the total when no tracker exists"
+    assert rows_done == 2
+
+
+def test_the_tracker_still_wins_over_the_configured_limit(tmp_path, report_rows_calls):
+    """The limit is a fallback, never an override. evalscope's own count is
+    the real fact -- it already accounts for subsets and repeats -- so a
+    benchmark that does write a tracker must be unaffected by this.
+    """
+    reviews_dir = tmp_path / "work" / "reviews" / "m"
+    _write_lines(reviews_dir / "gsm8k_main.jsonl", [_review(1.0)])
+    _write_evalscope_tracker(reviews_dir, processed_count=1, total_count=1319)
+
+    watcher = ReviewWatcher(
+        reviews_dir=lambda: reviews_dir,
+        dataset="gsm8k",
+        benchmark_name="gsm8k",
+        interval=0.05,
+        limit=10,
+    )
+    watcher.start()
+    _wait_until(lambda: report_rows_calls)
+    watcher.stop()
+
+    assert report_rows_calls[-1][0][1] == 1319, "the tracker's real total must win"

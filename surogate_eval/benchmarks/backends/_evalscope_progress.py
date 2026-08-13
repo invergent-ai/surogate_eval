@@ -294,6 +294,7 @@ class ReviewWatcher:
         benchmark_name: str,
         interval: float = 2.0,
         read_tracker: bool = True,
+        limit: Optional[int] = None,
     ) -> None:
         # A callable, not a path: evalscope's TaskConfig.work_dir gets a
         # timestamp appended *in place* by setup_work_directory once
@@ -315,6 +316,17 @@ class ReviewWatcher:
         # "the previous benchmark's total", published under this
         # benchmark's own tag.
         self._read_tracker = read_tracker
+        # Fallback total for when evalscope cannot compute one.
+        # `compute_eval_total_count` sums per-subset `sample_count` from the
+        # bundled `_meta` files and returns None for any benchmark that ships
+        # without them -- mt_bench is one, at every limit -- so no tracker
+        # file is written and `rows_total` would stay 0 ("unknown") for the
+        # benchmark's whole life. That makes the live tiles fall back for
+        # exactly the judge-scored benchmarks this feature is most useful
+        # for. A configured `limit` is a real, if approximate, bound: it is
+        # per-subset, so a multi-subset benchmark can exceed it, which is
+        # precisely the overshoot the consumer already renders as "N+".
+        self._limit = limit if (isinstance(limit, int) and limit > 0) else None
         # Incremental, not a full re-parse each tick: re-reading a 14k-row
         # benchmark's reviews file every couple of seconds, in this
         # GIL-holding background thread, is expensive enough to be what
@@ -373,8 +385,12 @@ class ReviewWatcher:
         tracker = read_evalscope_tracker(reviews_dir) if self._read_tracker else None
         if tracker is not None:
             rows_done, rows_total = tracker
+        elif self._limit is not None:
+            # The tracker's real count is always preferred; this only fills
+            # the gap where evalscope declines to produce one.
+            rows_total = self._limit
         else:
-            rows_total = 0  # unknown: no fact available yet, no guess left to fall back to
+            rows_total = 0  # unknown: no tracker, and no configured limit to fall back on
         # `rows_total` alone is worth publishing: the tracker knows the real
         # total from its first write, before any row has been scored, so a
         # benchmark with a slow first sample (cold model, a judge round-trip

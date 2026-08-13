@@ -520,6 +520,12 @@ class EvalScopeBackend:
                         read_tracker=bool(
                             getattr(task_config, 'enable_progress_tracker', True)
                         ),
+                        # Used only when evalscope writes no tracker at all
+                        # (mt_bench and any other benchmark with no bundled
+                        # `_meta`), so the bar has a denominator instead of
+                        # sitting on the "unknown" sentinel for the whole
+                        # benchmark.
+                        limit=config.get('limit'),
                     )
                     watcher.start()
                 except Exception:

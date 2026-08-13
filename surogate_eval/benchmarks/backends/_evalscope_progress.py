@@ -396,7 +396,7 @@ class ReviewWatcher:
         except Exception:
             logger.debug("progress tick failed", exc_info=True)
 
-    def _tick_unlocked(self) -> None:
+    def _tick_unlocked(self, final: bool = False) -> None:
         """The body of one tick. Split out so ``stop()`` can run a final tick
         under a *bounded* lock acquire rather than the unbounded ``with``
         above -- see ``stop()``.
@@ -428,7 +428,20 @@ class ReviewWatcher:
         elif self._limit is not None:
             # The tracker's real count is always preferred; this only fills
             # the gap where evalscope declines to produce one.
-            rows_total = self._limit
+            #
+            # `limit` is an upper bound, not a count: evalscope runs
+            # `min(dataset, limit)`, and this fallback exists precisely
+            # because the dataset size is unknown here, so it cannot clamp.
+            # mt_bench is 80 questions, so a limit of 100 would leave the
+            # bar at 80 / 100 for the rest of the run -- the same stall the
+            # custom-dataset case is guarded against.
+            #
+            # `final` is the one moment the true total IS knowable: stop()
+            # runs after run_task has returned, so every row this benchmark
+            # will ever produce has been written. Publishing rows_done as
+            # the total there lets an over-large limit self-correct to a
+            # completed bar instead of stalling.
+            rows_total = rows_done if final else self._limit
         else:
             rows_total = 0  # unknown: no tracker, and no configured limit to fall back on
         # `rows_total` alone is worth publishing: the tracker knows the real
@@ -479,7 +492,7 @@ class ReviewWatcher:
         # block anyway.
         if self._tick_lock.acquire(timeout=5):
             try:
-                self._tick_unlocked()
+                self._tick_unlocked(final=True)
             except Exception:
                 logger.debug("final progress tick failed", exc_info=True)
             finally:

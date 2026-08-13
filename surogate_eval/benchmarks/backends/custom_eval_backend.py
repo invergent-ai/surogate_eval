@@ -825,6 +825,20 @@ class CustomEvalBackend:
 
                 metric.measure(test_case, _show_indicator=False)
 
+                # A judge that returned no score measured nothing, which is
+                # not the same as scoring zero. Recording it as `scored`
+                # would put a None into the average two blocks down
+                # (`sum(r['score'] for r in results if r['status'] !=
+                # 'errored')`), which raises outside any try and takes the
+                # whole benchmark down after every row has been paid for.
+                #
+                # The old `metric.score >= 0.5` achieved this by accident:
+                # None raised a TypeError inside the try and the row landed
+                # as errored. `row_passed` deliberately accepts None -- it
+                # must, on the watcher path, where an unreadable line
+                # genuinely has no score -- so the distinction has to be
+                # made here instead of falling out of an exception.
+                scored_ok = metric.score is not None
                 results.append({
                     'original_idx': original_idx,
                     'eval_type': 'judge',
@@ -832,17 +846,21 @@ class CustomEvalBackend:
                     'expected': expected,
                     'output': normalized_output,  # Store normalized
                     'raw_output': raw_output,  # Store raw for reference
-                    'status': 'scored',
+                    'status': 'scored' if scored_ok else 'errored',
                     'score': metric.score,
-                    'success': row_passed(
+                    'success': scored_ok and row_passed(
                         metric.score, pass_threshold,
                         legacy_minimum=LEGACY_JUDGE_MIN, legacy_inclusive=True,
                     ),
-                    'reason': getattr(metric, 'reason', None),
+                    'reason': (
+                        getattr(metric, 'reason', None) if scored_ok
+                        else 'judge returned no score'
+                    ),
                     'criteria': row_criteria,
                 })
 
-                logger.debug(f"Row {original_idx} judge score: {metric.score:.3f}")
+                if scored_ok:
+                    logger.debug(f"Row {original_idx} judge score: {metric.score:.3f}")
 
             except Exception as e:
                 # A judge that breaks is a failure to measure, not a target

@@ -808,9 +808,16 @@ def test_a_configured_limit_is_the_total_when_evalscope_writes_no_tracker(tmp_pa
     watcher.stop()
 
     assert report_rows_calls
-    rows_done, rows_total = report_rows_calls[-1][0][0], report_rows_calls[-1][0][1]
-    assert rows_total == 10, "a configured limit must serve as the total when no tracker exists"
-    assert rows_done == 2
+    # Mid-run the limit is the only bound available, so it is published.
+    first_done, first_total = report_rows_calls[0][0][0], report_rows_calls[0][0][1]
+    assert first_total == 10, "a configured limit must serve as the total when no tracker exists"
+    assert first_done == 2
+    # The final tick knows better: run_task has returned, so every row this
+    # benchmark will produce has been written and the count IS the total.
+    # Without this an over-large limit leaves the bar stalled forever --
+    # mt_bench is 80 questions, so limit=100 would sit at 80 / 100.
+    last_done, last_total = report_rows_calls[-1][0][0], report_rows_calls[-1][0][1]
+    assert (last_done, last_total) == (2, 2)
 
 
 def test_the_tracker_still_wins_over_the_configured_limit(tmp_path, report_rows_calls):
@@ -974,3 +981,39 @@ def test_the_fallback_total_rejects_a_fraction_and_nonsense():
     assert fallback_rows_total(0, tracker_trusted=True) is None
     assert fallback_rows_total(-5, tracker_trusted=True) is None
     assert fallback_rows_total(None, tracker_trusted=True) is None
+
+
+def test_an_over_large_limit_does_not_leave_the_bar_stalled(tmp_path, report_rows_calls):
+    """`limit` is an upper bound, not a count.
+
+    evalscope runs `min(dataset, limit)`, and this fallback exists precisely
+    because the dataset size is unknown here, so it cannot clamp. mt_bench
+    is 80 questions: a limit of 100 would publish 80 / 100 and sit there for
+    the rest of the run -- the same "stall the bar partway forever" failure
+    the custom-dataset case is guarded against. The justification for that
+    asymmetry ("the dataset is the bundled one, so the limit is a real
+    bound") does not hold; a limit is an upper bound either way.
+
+    stop() runs after run_task has returned, so at that point every row has
+    been written and the count is the total.
+    """
+    reviews_dir = tmp_path / "work" / "reviews" / "m"
+    # Three rows on disk against a limit of 100: the dataset ran out first.
+    _write_lines(
+        reviews_dir / "mt_bench_default.jsonl",
+        [_review(0.9), _review(0.8), _review(0.7)],
+    )
+
+    watcher = ReviewWatcher(
+        reviews_dir=lambda: reviews_dir,
+        dataset="mt_bench",
+        benchmark_name="mt_bench",
+        interval=0.05,
+        limit=100,
+    )
+    watcher.start()
+    _wait_until(lambda: report_rows_calls)
+    watcher.stop()
+
+    done, total = report_rows_calls[-1][0][0], report_rows_calls[-1][0][1]
+    assert (done, total) == (3, 3), "a finished benchmark must not read 3 / 100"

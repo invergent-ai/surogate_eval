@@ -9,6 +9,7 @@ from pathlib import Path
 from typing import Dict, Any, List, Optional
 
 from surogate_eval.benchmarks.matching import Matcher, build_matcher, clean_formatting
+from surogate_eval.benchmarks.pass_rule import LEGACY_JUDGE_MIN, row_passed
 from surogate_eval.targets import BaseTarget
 from surogate_eval.utils.logger import get_logger
 from surogate_eval.utils.text import blank_as_none
@@ -688,6 +689,11 @@ class CustomEvalBackend:
         if not rows:
             return []
 
+        # A fraction of the metric's scale (0-1), matching the scale these
+        # per-row scores use. Absent, the judge path keeps the 0.5 it has
+        # always applied -- see pass_rule.
+        pass_threshold = config.get('pass_threshold')
+
         if not DEEPEVAL_AVAILABLE:
             raise ImportError("deepeval is required for judge evaluation")
 
@@ -828,7 +834,10 @@ class CustomEvalBackend:
                     'raw_output': raw_output,  # Store raw for reference
                     'status': 'scored',
                     'score': metric.score,
-                    'success': metric.score >= 0.5,
+                    'success': row_passed(
+                        metric.score, pass_threshold,
+                        legacy_minimum=LEGACY_JUDGE_MIN,
+                    ),
                     'reason': getattr(metric, 'reason', None),
                     'criteria': row_criteria,
                 })

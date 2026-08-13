@@ -62,6 +62,7 @@ try:
 except Exception:
     pass
 
+from surogate_eval.benchmarks.pass_rule import row_passed
 from surogate_eval.errors import BenchmarkSchemaError
 from surogate_eval.targets import BaseTarget
 from surogate_eval.utils.logger import get_logger
@@ -560,7 +561,10 @@ class EvalScopeBackend:
                     results = {}
 
                 # Load detailed predictions
-                detailed_results = self._load_predictions(work_dir, model_id, evalscope_dataset)
+                detailed_results = self._load_predictions(
+                    work_dir, model_id, evalscope_dataset,
+                    pass_threshold=config.get('pass_threshold'),
+                )
 
                 # Parse results
                 parsed_results = self._parse_results(results, benchmark_name, detailed_results)
@@ -597,7 +601,8 @@ class EvalScopeBackend:
             self,
             work_dir: str,
             model_id: str,
-            dataset_name: str
+            dataset_name: str,
+            pass_threshold: Optional[float] = None,
     ) -> List[Dict[str, Any]]:
         """Load detailed predictions from EvalScope output."""
         import json
@@ -645,7 +650,9 @@ class EvalScopeBackend:
                             continue
                         try:
                             detailed_results.append(
-                                self._review_row_to_record(json.loads(line))
+                                self._review_row_to_record(
+                                    json.loads(line), pass_threshold,
+                                )
                             )
                         except Exception as e:
                             logger.error(
@@ -734,7 +741,11 @@ class EvalScopeBackend:
             return None
 
 
-    def _review_row_to_record(self, sample: Dict[str, Any]) -> Dict[str, Any]:
+    def _review_row_to_record(
+            self,
+            sample: Dict[str, Any],
+            pass_threshold: Optional[float] = None,
+    ) -> Dict[str, Any]:
         """Build one detailed-result record from one evalscope review row.
 
         Split out of the review-file loop so that a row which cannot be
@@ -823,7 +834,7 @@ class EvalScopeBackend:
             'raw_output': prediction,
             'score': score,
             'score_details': score_details,
-            'success': score is not None and score > 0,
+            'success': row_passed(score, pass_threshold),
             'status': 'errored' if score is None else 'scored',
             'reason': score_reason,
             'subset': sample_meta.get('subject', ''),

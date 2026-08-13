@@ -395,9 +395,13 @@ class ToolDecathlonBenchmark(BaseBenchmark):
         for key, stats in task_results.items():
             # Threshold-relative, unlike `avg_score` beside it: this is the
             # fraction of rows that cleared `pass_threshold`, so it shifts
-            # when the threshold does. Nothing in ops reads `task_results`
-            # today; if that changes, compare it only against runs scored
-            # under the same threshold (recorded in `metadata` below).
+            # when the threshold does. This is rendered -- both report
+            # templates put it in a Task Results Summary table with a badge
+            # thresholded at 0.8 and 0.5 -- so raising `pass_threshold` can
+            # flip a row from a tick to a cross with nothing on the page
+            # saying the rule moved. `metadata.pass_threshold` below is what
+            # makes that readable; compare these figures only across runs
+            # scored under the same threshold.
             stats["accuracy"] = stats["passed"] / stats["n_samples"] if stats["n_samples"] else 0.0
             stats["avg_score"] = stats["score_sum"] / stats["n_samples"] if stats["n_samples"] else 0.0
 

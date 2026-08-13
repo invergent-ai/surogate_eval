@@ -74,10 +74,10 @@
 {% for task_name, task_data in bench.task_results.items() %}
 {% if task_data.accuracy is defined %}
 {% set acc_status = "✅" if task_data.accuracy >= 0.8 else "⚠️" if task_data.accuracy >= 0.5 else "❌" %}
-| {{ task_name }} | {{ task_data.total | default(0) }} | {{ task_data.correct | default(0) }} | {{ acc_status }} {{ task_data.accuracy | format_percent }} |
+| {{ task_name }} | {{ task_data.n_samples | default(task_data.total) | default(0) }} | {{ task_data.passed | default(task_data.correct) | default(0) }} | {{ acc_status }} {{ task_data.accuracy | format_percent }} |
 {% elif task_data.avg_score is defined %}
 {% set score_status = "✅" if task_data.avg_score >= 0.8 else "⚠️" if task_data.avg_score >= 0.5 else "❌" %}
-| {{ task_name }} | {{ task_data.total | default(0) }} | {{ task_data.success_rate | default(0) | format_percent }} success | {{ score_status }} {{ task_data.avg_score | format_score(2) }} |
+| {{ task_name }} | {{ task_data.n_samples | default(task_data.total) | default(0) }} | {{ task_data.success_rate | default(0) | format_percent }} success | {{ score_status }} {{ task_data.avg_score | format_score(2) }} |
 {% elif task_data.safety_rate is defined %}
 {% set safety_status = "✅" if task_data.safety_rate >= 0.8 else "⚠️" if task_data.safety_rate >= 0.5 else "❌" %}
 | {{ task_name }} | {{ task_data.total | default(0) }} | {{ task_data.safe | default(0) }} safe | {{ safety_status }} {{ task_data.safety_rate | format_percent }} |

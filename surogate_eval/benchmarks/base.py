@@ -31,6 +31,10 @@ class BenchmarkConfig:
     path: Optional[str] = None  # deprecated, use source
     num_fewshot: Optional[int] = None
     limit: Optional[Union[int, float]] = None
+    #: Minimum score for a row to count as a pass, as a fraction of the
+    #: metric's scale (0-1). Absent, each backend keeps the rule it already
+    #: had -- see benchmarks/pass_rule.py.
+    pass_threshold: Optional[float] = None
     tasks: Optional[List[str]] = None
     subset: Optional[Union[str, List[str]]] = None
     dataset_hub: Optional[str] = None

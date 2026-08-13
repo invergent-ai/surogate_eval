@@ -6,7 +6,11 @@ from pathlib import Path
 import pytest
 
 from surogate_eval import runners
-from surogate_eval.benchmarks.backends._evalscope_progress import ReviewCounter, ReviewWatcher
+from surogate_eval.benchmarks.backends._evalscope_progress import (
+    ReviewCounter,
+    ReviewWatcher,
+    fallback_rows_total,
+)
 from surogate_eval.benchmarks.backends.evalscope_backend import EvalScopeBackend
 
 
@@ -767,3 +771,249 @@ def test_a_tracker_disabled_watcher_ignores_a_tracker_file_it_finds(tmp_path, re
     rows_done, rows_total = report_rows_calls[-1][0][0], report_rows_calls[-1][0][1]
     assert rows_total == 0, "a stale tracker must not become this benchmark's total"
     assert rows_done == 2, "the reviews line count still drives the bar"
+
+
+def test_a_configured_limit_is_the_total_when_evalscope_writes_no_tracker(tmp_path, report_rows_calls):
+    """mt_bench's shape, and the reason the live tiles did nothing for it.
+
+    `compute_eval_total_count` sums per-subset `sample_count` from the
+    bundled `_meta` files and returns None for any benchmark shipped without
+    them. Verified against evalscope 1.7.0: gsm8k yields 10 at limit=10 and
+    1319 unlimited, mt_bench yields None at *every* limit. No total means no
+    tracker file, so `rows_total` stayed 0 -- the "unknown" sentinel -- for
+    the benchmark's entire life, and the consumer fell back to its old
+    benchmark-level bar for exactly the judge-scored benchmarks this feature
+    is most useful for. Observed live on 2026-08-13: a 10-row mt_bench run
+    reported rows_done 3, 6, 9, 10 with rows_total 0 throughout, and the
+    detail page showed the *previous* benchmark's finished score instead.
+
+    The configured limit is a real bound, so it is published rather than
+    nothing. It is per-subset, so a multi-subset benchmark can exceed it --
+    which is the overshoot the consumer already renders as "N+".
+    """
+    reviews_dir = tmp_path / "work" / "reviews" / "m"
+    _write_lines(reviews_dir / "mt_bench_default.jsonl", [_review(0.7), _review(0.6)])
+    # Deliberately no tracker file: this is what evalscope leaves behind.
+    assert not (reviews_dir.parent.parent / "progress.json").exists()
+
+    watcher = ReviewWatcher(
+        reviews_dir=lambda: reviews_dir,
+        dataset="mt_bench",
+        benchmark_name="mt_bench",
+        interval=0.05,
+        limit=10,
+    )
+    watcher.start()
+    _wait_until(lambda: report_rows_calls)
+    watcher.stop()
+
+    assert report_rows_calls
+    # Mid-run the limit is the only bound available, so it is published.
+    first_done, first_total = report_rows_calls[0][0][0], report_rows_calls[0][0][1]
+    assert first_total == 10, "a configured limit must serve as the total when no tracker exists"
+    assert first_done == 2
+    # The final tick knows better: run_task has returned, so every row this
+    # benchmark will produce has been written and the count IS the total.
+    # Without this an over-large limit leaves the bar stalled forever --
+    # mt_bench is 80 questions, so limit=100 would sit at 80 / 100.
+    last_done, last_total = report_rows_calls[-1][0][0], report_rows_calls[-1][0][1]
+    assert (last_done, last_total) == (2, 2)
+
+
+def test_the_tracker_still_wins_over_the_configured_limit(tmp_path, report_rows_calls):
+    """The limit is a fallback, never an override. evalscope's own count is
+    the real fact -- it already accounts for subsets and repeats -- so a
+    benchmark that does write a tracker must be unaffected by this.
+    """
+    reviews_dir = tmp_path / "work" / "reviews" / "m"
+    _write_lines(reviews_dir / "gsm8k_main.jsonl", [_review(1.0)])
+    _write_evalscope_tracker(reviews_dir, processed_count=1, total_count=1319)
+
+    watcher = ReviewWatcher(
+        reviews_dir=lambda: reviews_dir,
+        dataset="gsm8k",
+        benchmark_name="gsm8k",
+        interval=0.05,
+        limit=10,
+    )
+    watcher.start()
+    _wait_until(lambda: report_rows_calls)
+    watcher.stop()
+
+    assert report_rows_calls[-1][0][1] == 1319, "the tracker's real total must win"
+
+
+def test_a_custom_dataset_run_gets_no_limit_fallback(tmp_path, report_rows_calls):
+    """The limit must not fill in for a dataset whose size is unknown.
+
+    `_prepare_task_config` turns evalscope's tracker off for a custom
+    `dataset_path` precisely because its total describes the wrong dataset,
+    choosing the "unknown" sentinel over a confident lie. But `limit` is an
+    upper bound, and evalscope runs `min(dataset, limit)` -- so a custom
+    dataset smaller than the limit would stall the bar partway forever,
+    which is the same failure turning the tracker off avoids. The caller
+    withholds the limit in that case, since it is the only place that knows
+    *why* the tracker is untrusted.
+    """
+    reviews_dir = tmp_path / "work" / "reviews" / "m"
+    _write_lines(reviews_dir / "gsm8k_main.jsonl", [_review(1.0), _review(0.0)])
+
+    watcher = ReviewWatcher(
+        reviews_dir=lambda: reviews_dir,
+        dataset="gsm8k",
+        benchmark_name="gsm8k",
+        interval=0.05,
+        read_tracker=False,   # custom dataset
+        limit=None,           # ...so the caller withholds it
+    )
+    watcher.start()
+    _wait_until(lambda: report_rows_calls)
+    watcher.stop()
+
+    assert report_rows_calls
+    rows_done, rows_total = report_rows_calls[-1][0][0], report_rows_calls[-1][0][1]
+    assert rows_total == 0, "unknown must stay unknown for a custom dataset"
+    assert rows_done == 2, "the bar still moves on the real row count"
+
+
+def test_a_fractional_limit_is_not_published_as_a_row_count(tmp_path, report_rows_calls):
+    """evalscope reads a float limit as a *fraction* of the dataset
+    (`effective = int(sample_count * limit)`), so 0.1 means a tenth of the
+    rows, not one row. Resolving it needs the dataset size -- the one thing
+    missing whenever this fallback applies.
+    """
+    reviews_dir = tmp_path / "work" / "reviews" / "m"
+    _write_lines(reviews_dir / "gsm8k_main.jsonl", [_review(1.0)])
+
+    watcher = ReviewWatcher(
+        reviews_dir=lambda: reviews_dir,
+        dataset="gsm8k",
+        benchmark_name="gsm8k",
+        interval=0.05,
+        limit=0.1,
+    )
+    watcher.start()
+    _wait_until(lambda: report_rows_calls)
+    watcher.stop()
+
+    assert report_rows_calls[-1][0][1] == 0, "a fraction is not a row count"
+
+
+def test_the_live_pass_count_uses_the_configured_threshold(tmp_path, report_rows_calls):
+    """The live count and the final report must agree on what a pass is.
+
+    `_count_line` kept its own `score > 0` when the two backend rules were
+    unified behind `pass_rule.row_passed`. With a threshold configured, the
+    live tile would have shown every row passing and then dropped to the
+    real figure the moment the run completed -- and ops renders this exact
+    count as the pass rate, beside per-sample verdicts decided by the other
+    rule.
+    """
+    reviews_dir = tmp_path / "work" / "reviews" / "m"
+    # Three rows: 0.9 clears a 0.8 bar, 0.6 and 0.2 do not. All three are
+    # above zero, so the old rule would have passed every one.
+    _write_lines(
+        reviews_dir / "mt_bench_default.jsonl",
+        [_review(0.9), _review(0.6), _review(0.2)],
+    )
+
+    watcher = ReviewWatcher(
+        reviews_dir=lambda: reviews_dir,
+        dataset="mt_bench",
+        benchmark_name="mt_bench",
+        interval=0.05,
+        limit=3,
+        pass_threshold=0.8,
+    )
+    watcher.start()
+    _wait_until(lambda: report_rows_calls)
+    watcher.stop()
+
+    args = report_rows_calls[-1][0]
+    rows_done, _rows_total, scored, passed = args[0], args[1], args[2], args[3]
+    assert (rows_done, scored) == (3, 3)
+    assert passed == 1, "only the row clearing the threshold counts as a pass"
+
+
+def test_without_a_threshold_the_live_count_keeps_the_old_rule(tmp_path, report_rows_calls):
+    """Absent a threshold, any non-zero score passes -- the rule the
+    evalscope path has always used, unchanged.
+    """
+    reviews_dir = tmp_path / "work" / "reviews" / "m"
+    _write_lines(
+        reviews_dir / "gsm8k_main.jsonl",
+        [_review(1.0), _review(0.2), _review(0.0)],
+    )
+
+    watcher = ReviewWatcher(
+        reviews_dir=lambda: reviews_dir,
+        dataset="gsm8k",
+        benchmark_name="gsm8k",
+        interval=0.05,
+        limit=3,
+    )
+    watcher.start()
+    _wait_until(lambda: report_rows_calls)
+    watcher.stop()
+
+    assert report_rows_calls[-1][0][3] == 2, "0.2 passes without a threshold; 0.0 does not"
+
+
+def test_the_fallback_total_is_withheld_for_an_untrusted_tracker():
+    """The caller's decision, not the watcher's.
+
+    A missing tracker means two opposite things. No bundled `_meta`
+    (mt_bench): the dataset is the bundled one, so a configured limit is a
+    real bound worth publishing. A custom `dataset_path`:
+    `_prepare_task_config` turned the tracker off precisely to avoid a
+    confident lie about a dataset of unknown size, and the limit is only an
+    upper bound -- evalscope runs min(dataset, limit), so a custom dataset
+    smaller than its limit would stall the bar forever, reintroducing the
+    failure turning the tracker off avoids.
+    """
+    assert fallback_rows_total(10, tracker_trusted=True) == 10
+    assert fallback_rows_total(10, tracker_trusted=False) is None
+
+
+def test_the_fallback_total_rejects_a_fraction_and_nonsense():
+    # evalscope reads a float limit as a fraction of the dataset.
+    assert fallback_rows_total(0.1, tracker_trusted=True) is None
+    assert fallback_rows_total(0, tracker_trusted=True) is None
+    assert fallback_rows_total(-5, tracker_trusted=True) is None
+    assert fallback_rows_total(None, tracker_trusted=True) is None
+
+
+def test_an_over_large_limit_does_not_leave_the_bar_stalled(tmp_path, report_rows_calls):
+    """`limit` is an upper bound, not a count.
+
+    evalscope runs `min(dataset, limit)`, and this fallback exists precisely
+    because the dataset size is unknown here, so it cannot clamp. mt_bench
+    is 80 questions: a limit of 100 would publish 80 / 100 and sit there for
+    the rest of the run -- the same "stall the bar partway forever" failure
+    the custom-dataset case is guarded against. The justification for that
+    asymmetry ("the dataset is the bundled one, so the limit is a real
+    bound") does not hold; a limit is an upper bound either way.
+
+    stop() runs after run_task has returned, so at that point every row has
+    been written and the count is the total.
+    """
+    reviews_dir = tmp_path / "work" / "reviews" / "m"
+    # Three rows on disk against a limit of 100: the dataset ran out first.
+    _write_lines(
+        reviews_dir / "mt_bench_default.jsonl",
+        [_review(0.9), _review(0.8), _review(0.7)],
+    )
+
+    watcher = ReviewWatcher(
+        reviews_dir=lambda: reviews_dir,
+        dataset="mt_bench",
+        benchmark_name="mt_bench",
+        interval=0.05,
+        limit=100,
+    )
+    watcher.start()
+    _wait_until(lambda: report_rows_calls)
+    watcher.stop()
+
+    done, total = report_rows_calls[-1][0][0], report_rows_calls[-1][0][1]
+    assert (done, total) == (3, 3), "a finished benchmark must not read 3 / 100"

@@ -415,3 +415,33 @@ def test_a_blank_criteria_cell_falls_back_to_the_benchmark_default(fake_geval):
 
     assert [r["status"] for r in results] == ["scored", "scored"]
     assert _criteria_seen() == ["Reward a professional tone."] * len(rows)
+
+
+def test_judge_returning_no_score_is_errored_not_scored(fake_geval):
+    """A judge that produced no score measured nothing.
+
+    Recording it as `scored` with `score: None` puts a None into the
+    average this backend computes two blocks later
+    (`sum(r['score'] for r in results if r['status'] != 'errored')`), which
+    raises outside any try and takes down the whole benchmark after every
+    row has already been paid for.
+
+    The old rule got this right by accident: `metric.score >= 0.5` raised a
+    TypeError on None *inside* the try, so the row landed as errored.
+    `row_passed` deliberately accepts None -- it must, on the evalscope
+    watcher path, where an unreadable review line genuinely has no score --
+    so this path has to state the distinction rather than inherit it from
+    an exception.
+
+    Unreachable with the installed deepeval, whose GEval always assigns a
+    float or raises. Covered anyway: the aggregate must be safe whatever a
+    future version does.
+    """
+    results = run_judge_rows(fake_geval, score=None)
+
+    assert results, "the rows must still be recorded"
+    assert all(r["status"] == "errored" for r in results)
+    assert all(r["success"] is False for r in results)
+    # The aggregate the old shape would have crashed on.
+    scored = [r for r in results if r["status"] != "errored"]
+    assert sum(r["score"] for r in scored) == 0

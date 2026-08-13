@@ -62,6 +62,7 @@ try:
 except Exception:
     pass
 
+from surogate_eval.benchmarks.pass_rule import row_passed
 from surogate_eval.errors import BenchmarkSchemaError
 from surogate_eval.targets import BaseTarget
 from surogate_eval.utils.logger import get_logger
@@ -487,7 +488,7 @@ class EvalScopeBackend:
                 # appends to as it scores and reports row progress; it must
                 # be stopped before this method returns, or a late write
                 # could stamp this benchmark's counts onto the next one's.
-                from ._evalscope_progress import ReviewWatcher
+                from ._evalscope_progress import ReviewWatcher, fallback_rows_total
 
                 # Setup and start are guarded on their own: a bad limit, a
                 # work_dir that isn't there yet, or the OS refusing to start
@@ -495,6 +496,9 @@ class EvalScopeBackend:
                 # fine. Progress reporting is a nice-to-have layered on top
                 # of the run, never something the run depends on.
                 watcher = None
+                tracker_trusted = bool(
+                    getattr(task_config, 'enable_progress_tracker', True)
+                )
                 try:
                     watcher = ReviewWatcher(
                         # A closure, not a value computed here: run_task
@@ -517,9 +521,20 @@ class EvalScopeBackend:
                         # _prepare_task_config): no tracker is written, and
                         # a same-second work_dir collision with the previous
                         # benchmark would otherwise have us read its file.
-                        read_tracker=bool(
-                            getattr(task_config, 'enable_progress_tracker', True)
+                        read_tracker=tracker_trusted,
+                        # Used only when evalscope writes no tracker at all
+                        # (mt_bench and any other benchmark with no bundled
+                        # `_meta`), so the bar has a denominator instead of
+                        # sitting on the "unknown" sentinel for the whole
+                        # benchmark.
+                        #
+                        limit=fallback_rows_total(
+                            config.get('limit'), tracker_trusted=tracker_trusted,
                         ),
+                        # The live pass count must use the same rule the
+                        # final report will, or the tile disagrees with the
+                        # per-sample verdicts underneath it.
+                        pass_threshold=config.get('pass_threshold'),
                     )
                     watcher.start()
                 except Exception:
@@ -554,7 +569,10 @@ class EvalScopeBackend:
                     results = {}
 
                 # Load detailed predictions
-                detailed_results = self._load_predictions(work_dir, model_id, evalscope_dataset)
+                detailed_results = self._load_predictions(
+                    work_dir, model_id, evalscope_dataset,
+                    pass_threshold=config.get('pass_threshold'),
+                )
 
                 # Parse results
                 parsed_results = self._parse_results(results, benchmark_name, detailed_results)
@@ -591,7 +609,8 @@ class EvalScopeBackend:
             self,
             work_dir: str,
             model_id: str,
-            dataset_name: str
+            dataset_name: str,
+            pass_threshold: Optional[float] = None,
     ) -> List[Dict[str, Any]]:
         """Load detailed predictions from EvalScope output."""
         import json
@@ -639,7 +658,9 @@ class EvalScopeBackend:
                             continue
                         try:
                             detailed_results.append(
-                                self._review_row_to_record(json.loads(line))
+                                self._review_row_to_record(
+                                    json.loads(line), pass_threshold,
+                                )
                             )
                         except Exception as e:
                             logger.error(
@@ -728,7 +749,11 @@ class EvalScopeBackend:
             return None
 
 
-    def _review_row_to_record(self, sample: Dict[str, Any]) -> Dict[str, Any]:
+    def _review_row_to_record(
+            self,
+            sample: Dict[str, Any],
+            pass_threshold: Optional[float] = None,
+    ) -> Dict[str, Any]:
         """Build one detailed-result record from one evalscope review row.
 
         Split out of the review-file loop so that a row which cannot be
@@ -817,7 +842,7 @@ class EvalScopeBackend:
             'raw_output': prediction,
             'score': score,
             'score_details': score_details,
-            'success': score is not None and score > 0,
+            'success': row_passed(score, pass_threshold),
             'status': 'errored' if score is None else 'scored',
             'reason': score_reason,
             'subset': sample_meta.get('subject', ''),

@@ -23,6 +23,7 @@ from surogate_eval.benchmarks.registry import BenchmarkRegistry
 from surogate_eval.targets import BaseTarget
 from surogate_eval.targets.base import TargetRequest
 from surogate_eval.utils.logger import get_logger
+from surogate_eval.benchmarks.pass_rule import LEGACY_JUDGE_MIN, row_passed
 
 logger = get_logger()
 
@@ -273,7 +274,15 @@ class VitaBenchmark(BaseBenchmark):
                     score = matches / total_orders if total_orders else 0.0
                     reason = f"Keyword match: {matches}/{total_orders} orders"
 
-            success = score >= 0.5
+            # The shared rule, not a private copy. This adapter builds its
+            # own records and never reaches _review_row_to_record, so the
+            # backend-level unification missed it: ops classifies this one as `accuracy` today, so no threshold
+            # reaches it yet; same shape as tool_decathlon, fixed with it
+            # rather than left as the next trap.
+            success = row_passed(
+                score, self.config.pass_threshold,
+                legacy_minimum=LEGACY_JUDGE_MIN, legacy_inclusive=True,
+            )
             if success:
                 correct += 1
 
@@ -294,7 +303,13 @@ class VitaBenchmark(BaseBenchmark):
 
         # 5. Compute metrics
         total = len(detailed_results)
-        overall_score = correct / total if total else 0.0
+        # Named for what it is: the fraction of rows that cleared the pass
+        # threshold, shown in the summary table below. NOT what this
+        # benchmark reports -- `overall_score=avg_score` at the return is
+        # the mean of the raw scores, which a threshold cannot move. The old
+        # name shadowed that field and read as though the threshold
+        # re-scored the benchmark.
+        pass_rate = correct / total if total else 0.0
         avg_score = (
             sum(r["score"] for r in detailed_results) / total if total else 0.0
         )
@@ -313,6 +328,16 @@ class VitaBenchmark(BaseBenchmark):
         for d, stats in domain_results.items():
             task_results[d] = {
                 "n_samples": stats["total"],
+                # Threshold-relative, unlike `avg_score` beside it: the
+                # fraction of rows that cleared `pass_threshold`, so it
+                # shifts when the threshold does. This is rendered -- both
+                # report templates put it in a Task Results Summary table
+                # with a badge thresholded at 0.8 and 0.5 -- so raising
+                # `pass_threshold` can flip a row from a tick to a cross
+                # with nothing on the page saying the rule moved.
+                # `metadata.pass_threshold` below is what makes that
+                # readable; compare these figures only across runs scored
+                # under the same threshold.
                 "accuracy": stats["correct"] / stats["total"] if stats["total"] else 0.0,
                 "avg_score": stats["score_sum"] / stats["total"] if stats["total"] else 0.0,
             }
@@ -328,7 +353,7 @@ class VitaBenchmark(BaseBenchmark):
         logger.info("-" * 48)
         logger.info(
             f"{'OVERALL':<16} {total:>8} "
-            f"{overall_score:>9.1%} {avg_score:>10.4f}"
+            f"{pass_rate:>9.1%} {avg_score:>10.4f}"
         )
 
         return BenchmarkResult(
@@ -343,6 +368,11 @@ class VitaBenchmark(BaseBenchmark):
                 "domains": DOMAINS,
                 "has_judge": judge_target is not None,
                 "status": "completed",
+                # Which rule decided the per-row verdicts. Not recorded
+                # anywhere else, so without it an old run's Pass/Fail column
+                # cannot be read back -- 6.5 out of 10 is a pass at 5.0 and a
+                # failure at 8.0, and the stored row says only "failed".
+                "pass_threshold": self.config.pass_threshold,
             },
         )
 

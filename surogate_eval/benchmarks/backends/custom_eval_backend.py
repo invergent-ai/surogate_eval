@@ -9,6 +9,7 @@ from pathlib import Path
 from typing import Dict, Any, List, Optional
 
 from surogate_eval.benchmarks.matching import Matcher, build_matcher, clean_formatting
+from surogate_eval.benchmarks.pass_rule import LEGACY_JUDGE_MIN, row_passed
 from surogate_eval.targets import BaseTarget
 from surogate_eval.utils.logger import get_logger
 from surogate_eval.utils.text import blank_as_none
@@ -688,6 +689,11 @@ class CustomEvalBackend:
         if not rows:
             return []
 
+        # A fraction of the metric's scale (0-1), matching the scale these
+        # per-row scores use. Absent, the judge path keeps the 0.5 it has
+        # always applied -- see pass_rule.
+        pass_threshold = config.get('pass_threshold')
+
         if not DEEPEVAL_AVAILABLE:
             raise ImportError("deepeval is required for judge evaluation")
 
@@ -819,6 +825,20 @@ class CustomEvalBackend:
 
                 metric.measure(test_case, _show_indicator=False)
 
+                # A judge that returned no score measured nothing, which is
+                # not the same as scoring zero. Recording it as `scored`
+                # would put a None into the average two blocks down
+                # (`sum(r['score'] for r in results if r['status'] !=
+                # 'errored')`), which raises outside any try and takes the
+                # whole benchmark down after every row has been paid for.
+                #
+                # The old `metric.score >= 0.5` achieved this by accident:
+                # None raised a TypeError inside the try and the row landed
+                # as errored. `row_passed` deliberately accepts None -- it
+                # must, on the watcher path, where an unreadable line
+                # genuinely has no score -- so the distinction has to be
+                # made here instead of falling out of an exception.
+                scored_ok = metric.score is not None
                 results.append({
                     'original_idx': original_idx,
                     'eval_type': 'judge',
@@ -826,14 +846,21 @@ class CustomEvalBackend:
                     'expected': expected,
                     'output': normalized_output,  # Store normalized
                     'raw_output': raw_output,  # Store raw for reference
-                    'status': 'scored',
+                    'status': 'scored' if scored_ok else 'errored',
                     'score': metric.score,
-                    'success': metric.score >= 0.5,
-                    'reason': getattr(metric, 'reason', None),
+                    'success': scored_ok and row_passed(
+                        metric.score, pass_threshold,
+                        legacy_minimum=LEGACY_JUDGE_MIN, legacy_inclusive=True,
+                    ),
+                    'reason': (
+                        getattr(metric, 'reason', None) if scored_ok
+                        else 'judge returned no score'
+                    ),
                     'criteria': row_criteria,
                 })
 
-                logger.debug(f"Row {original_idx} judge score: {metric.score:.3f}")
+                if scored_ok:
+                    logger.debug(f"Row {original_idx} judge score: {metric.score:.3f}")
 
             except Exception as e:
                 # A judge that breaks is a failure to measure, not a target

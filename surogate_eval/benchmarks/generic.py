@@ -46,6 +46,7 @@ class GenericBenchmark(BaseBenchmark):
             'tasks': self.config.tasks or [self.name],
             'num_fewshot': self.config.num_fewshot,
             'limit': self.config.limit,
+            'pass_threshold': self.config.pass_threshold,
             'subset': self.config.subset,
             'path': self.config.path,
             'dataset_hub': self.config.dataset_hub,

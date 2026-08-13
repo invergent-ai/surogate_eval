@@ -27,6 +27,7 @@ from pathlib import Path
 from typing import Callable, Dict, List, Optional, Tuple
 
 from surogate_eval import runners
+from surogate_eval.benchmarks.pass_rule import row_passed
 from surogate_eval.utils.logger import get_logger
 from .evalscope_backend import EvalScopeBackend, _extract_sample_score
 
@@ -152,7 +153,9 @@ class ReviewCounter:
     never have this problem; tracking an offset is what introduces it.
     """
 
-    def __init__(self) -> None:
+    def __init__(self, pass_threshold: Optional[float] = None) -> None:
+        #: Scoped to one benchmark's watch, like the offsets below.
+        self._pass_threshold = pass_threshold
         self._offsets: Dict[Path, int] = {}
         self._partial: Dict[Path, bytes] = {}
         #: path -> (rows_done, scored, passed, score_sum) for that file
@@ -222,12 +225,14 @@ class ReviewCounter:
         self._offsets[path] = offset + len(chunk)
         totals = self._file_totals.get(path, (0, 0, 0, 0.0))
         for raw_line in lines[:-1]:
-            totals = _count_line(raw_line, totals)
+            totals = _count_line(raw_line, totals, self._pass_threshold)
         self._file_totals[path] = totals
 
 
 def _count_line(
-    raw_line: bytes, totals: Tuple[int, int, int, float],
+    raw_line: bytes,
+    totals: Tuple[int, int, int, float],
+    pass_threshold: Optional[float] = None,
 ) -> Tuple[int, int, int, float]:
     """One line's contribution folded into ``totals`` (rows_done, scored,
     passed, score_sum) and returned. A plain function, not a method: it
@@ -247,7 +252,12 @@ def _count_line(
         return (rows_done, scored, passed, score_sum)
     scored += 1
     score_sum += score
-    if score > 0:
+    # The same rule the final report applies (pass_rule.row_passed), so the
+    # live "passed" count and the per-sample verdicts cannot disagree. This
+    # kept its own `score > 0` when the two backend rules were unified,
+    # which with a threshold set would have shown ~100% live and then the
+    # real figure at completion.
+    if row_passed(score, pass_threshold):
         passed += 1
     return (rows_done, scored, passed, score_sum)
 
@@ -279,6 +289,33 @@ def read_evalscope_tracker(reviews_dir: Path) -> Optional[Tuple[int, int]]:
         return None
 
 
+def fallback_rows_total(
+    limit: Optional[object], *, tracker_trusted: bool,
+) -> Optional[int]:
+    """The row total to fall back on when evalscope writes no tracker.
+
+    Two reasons no tracker exists, and they want opposite answers, which is
+    why this decision lives here rather than inside the watcher:
+
+    * evalscope has no bundled ``_meta`` for the benchmark (mt_bench, at
+      every limit). The dataset is the bundled one, so a configured limit is
+      a real bound and publishing it beats sitting on "unknown" forever.
+    * ``_prepare_task_config`` turned the tracker off because a custom
+      ``dataset_path`` is set. It does that precisely to avoid a confident
+      lie about a dataset whose size we do not know, and the limit is only
+      an upper bound -- evalscope runs ``min(dataset, limit)``, so a custom
+      dataset smaller than its limit would stall the bar partway forever.
+
+    ``int`` only: evalscope reads a *float* limit as a fraction of the
+    dataset (``int(sample_count * limit)``), so 0.1 means a tenth of the
+    rows. Resolving that needs the dataset size, the one thing missing
+    whenever this fallback applies.
+    """
+    if not tracker_trusted:
+        return None
+    return limit if (isinstance(limit, int) and limit > 0) else None
+
+
 class ReviewWatcher:
     """Publish row progress for a running evalscope benchmark.
 
@@ -294,6 +331,8 @@ class ReviewWatcher:
         benchmark_name: str,
         interval: float = 2.0,
         read_tracker: bool = True,
+        limit: Optional[int] = None,
+        pass_threshold: Optional[float] = None,
     ) -> None:
         # A callable, not a path: evalscope's TaskConfig.work_dir gets a
         # timestamp appended *in place* by setup_work_directory once
@@ -315,12 +354,25 @@ class ReviewWatcher:
         # "the previous benchmark's total", published under this
         # benchmark's own tag.
         self._read_tracker = read_tracker
+        # Fallback total for when evalscope cannot compute one.
+        # `compute_eval_total_count` sums per-subset `sample_count` from the
+        # bundled `_meta` files and returns None for any benchmark that ships
+        # without them -- mt_bench is one, at every limit -- so no tracker
+        # file is written and `rows_total` would stay 0 ("unknown") for the
+        # benchmark's whole life. That makes the live tiles fall back for
+        # exactly the judge-scored benchmarks this feature is most useful
+        # for. A configured `limit` is a real, if approximate, bound: it is
+        # per-subset, so a multi-subset benchmark can exceed it, which is
+        # precisely the overshoot the consumer already renders as "N+".
+        # Already resolved by `fallback_rows_total`, which owns the two
+        # reasons a tracker can be missing and what each one means.
+        self._limit = limit if (isinstance(limit, int) and limit > 0) else None
         # Incremental, not a full re-parse each tick: re-reading a 14k-row
         # benchmark's reviews file every couple of seconds, in this
         # GIL-holding background thread, is expensive enough to be what
         # makes a tick outlive stop()'s join. One counter per watcher, so
         # its byte offsets are scoped to this benchmark's files only.
-        self._counter = ReviewCounter()
+        self._counter = ReviewCounter(pass_threshold)
         # Guards a _tick() call: stop() runs one more tick itself (see
         # below), on the caller's thread, which can otherwise overlap with
         # the background thread's own in-flight tick -- both would read and
@@ -344,7 +396,7 @@ class ReviewWatcher:
         except Exception:
             logger.debug("progress tick failed", exc_info=True)
 
-    def _tick_unlocked(self) -> None:
+    def _tick_unlocked(self, final: bool = False) -> None:
         """The body of one tick. Split out so ``stop()`` can run a final tick
         under a *bounded* lock acquire rather than the unbounded ``with``
         above -- see ``stop()``.
@@ -373,8 +425,25 @@ class ReviewWatcher:
         tracker = read_evalscope_tracker(reviews_dir) if self._read_tracker else None
         if tracker is not None:
             rows_done, rows_total = tracker
+        elif self._limit is not None:
+            # The tracker's real count is always preferred; this only fills
+            # the gap where evalscope declines to produce one.
+            #
+            # `limit` is an upper bound, not a count: evalscope runs
+            # `min(dataset, limit)`, and this fallback exists precisely
+            # because the dataset size is unknown here, so it cannot clamp.
+            # mt_bench is 80 questions, so a limit of 100 would leave the
+            # bar at 80 / 100 for the rest of the run -- the same stall the
+            # custom-dataset case is guarded against.
+            #
+            # `final` is the one moment the true total IS knowable: stop()
+            # runs after run_task has returned, so every row this benchmark
+            # will ever produce has been written. Publishing rows_done as
+            # the total there lets an over-large limit self-correct to a
+            # completed bar instead of stalling.
+            rows_total = rows_done if final else self._limit
         else:
-            rows_total = 0  # unknown: no fact available yet, no guess left to fall back to
+            rows_total = 0  # unknown: no tracker, and no configured limit to fall back on
         # `rows_total` alone is worth publishing: the tracker knows the real
         # total from its first write, before any row has been scored, so a
         # benchmark with a slow first sample (cold model, a judge round-trip
@@ -423,7 +492,7 @@ class ReviewWatcher:
         # block anyway.
         if self._tick_lock.acquire(timeout=5):
             try:
-                self._tick_unlocked()
+                self._tick_unlocked(final=True)
             except Exception:
                 logger.debug("final progress tick failed", exc_info=True)
             finally:

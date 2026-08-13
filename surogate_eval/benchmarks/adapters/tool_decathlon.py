@@ -25,6 +25,7 @@ from surogate_eval.benchmarks.registry import BenchmarkRegistry
 from surogate_eval.targets import BaseTarget
 from surogate_eval.targets.base import TargetRequest
 from surogate_eval.utils.logger import get_logger
+from surogate_eval.benchmarks.pass_rule import LEGACY_JUDGE_MIN, row_passed
 
 logger = get_logger()
 
@@ -344,7 +345,14 @@ class ToolDecathlonBenchmark(BaseBenchmark):
                     score = min(1.0, matches / len(ref_tools)) if ref_tools else 0.0
                     reason = f"Tool name overlap: {matches}/{len(ref_tools)}"
 
-            success = score >= 0.5
+            # The shared rule, not a private copy. This adapter builds its
+            # own records and never reaches _review_row_to_record, so the
+            # backend-level unification missed it: ops classifies this benchmark's metric as `judge`, so it offers a
+            # threshold and sends one -- which this rule silently ignored.
+            success = row_passed(
+                score, self.config.pass_threshold,
+                legacy_minimum=LEGACY_JUDGE_MIN, legacy_inclusive=True,
+            )
             if success:
                 correct += 1
 
@@ -364,7 +372,13 @@ class ToolDecathlonBenchmark(BaseBenchmark):
                 logger.info(f"Tool Decathlon progress: {i + 1}/{len(tasks)}")
 
         total = len(detailed_results)
-        overall_score = correct / total if total else 0.0
+        # `avg_score` is what this benchmark reports, and it is the mean of
+        # the raw judge scores -- a pass threshold moves which rows are
+        # labelled passing, never the score. A `correct / total` local used
+        # to sit here, computed and never returned, and it read closely
+        # enough like the reported score that a reviewer concluded the
+        # threshold silently re-scored the benchmark and broke A/B compare.
+        # It did not, but the line was worth deleting rather than explaining.
         avg_score = sum(r["score"] for r in detailed_results) / total if total else 0.0
 
         # Per-MCP-server breakdown
@@ -379,6 +393,15 @@ class ToolDecathlonBenchmark(BaseBenchmark):
                 task_results[key]["passed"] += 1
             task_results[key]["score_sum"] += r["score"]
         for key, stats in task_results.items():
+            # Threshold-relative, unlike `avg_score` beside it: this is the
+            # fraction of rows that cleared `pass_threshold`, so it shifts
+            # when the threshold does. This is rendered -- both report
+            # templates put it in a Task Results Summary table with a badge
+            # thresholded at 0.8 and 0.5 -- so raising `pass_threshold` can
+            # flip a row from a tick to a cross with nothing on the page
+            # saying the rule moved. `metadata.pass_threshold` below is what
+            # makes that readable; compare these figures only across runs
+            # scored under the same threshold.
             stats["accuracy"] = stats["passed"] / stats["n_samples"] if stats["n_samples"] else 0.0
             stats["avg_score"] = stats["score_sum"] / stats["n_samples"] if stats["n_samples"] else 0.0
 
@@ -407,6 +430,11 @@ class ToolDecathlonBenchmark(BaseBenchmark):
                 "dataset": DATASET_ID,
                 "has_judge": judge_target is not None,
                 "status": "completed",
+                # Which rule decided the per-row verdicts. Not recorded
+                # anywhere else, so without it an old run's Pass/Fail column
+                # cannot be read back -- 6.5 out of 10 is a pass at 5.0 and a
+                # failure at 8.0, and the stored row says only "failed".
+                "pass_threshold": self.config.pass_threshold,
             },
         )
 

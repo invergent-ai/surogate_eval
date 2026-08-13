@@ -8,11 +8,7 @@ Observed live on 2026-08-13: an MT-Bench run reported 10 of 10 samples
 passed while its own average was 6.5 out of 10.
 """
 
-from surogate_eval.benchmarks.pass_rule import (
-    LEGACY_EVALSCOPE_MIN,
-    LEGACY_JUDGE_MIN,
-    row_passed,
-)
+from surogate_eval.benchmarks.pass_rule import LEGACY_JUDGE_MIN, row_passed
 
 
 def test_a_configured_threshold_fails_a_row_that_scored_under_it():
@@ -30,8 +26,8 @@ def test_without_a_threshold_evalscope_keeps_its_any_non_zero_rule():
 
 
 def test_without_a_threshold_the_judge_path_keeps_its_half_mark_rule():
-    assert row_passed(0.4, legacy_minimum=LEGACY_JUDGE_MIN) is False
-    assert row_passed(0.5, legacy_minimum=LEGACY_JUDGE_MIN) is True
+    assert row_passed(0.4, legacy_minimum=LEGACY_JUDGE_MIN, legacy_inclusive=True) is False
+    assert row_passed(0.5, legacy_minimum=LEGACY_JUDGE_MIN, legacy_inclusive=True) is True
 
 
 def test_an_unreadable_row_is_never_a_pass():
@@ -39,7 +35,7 @@ def test_an_unreadable_row_is_never_a_pass():
     the distinction the rest of this codebase is careful about."""
     assert row_passed(None) is False
     assert row_passed(None, 0.8) is False
-    assert row_passed(None, legacy_minimum=LEGACY_JUDGE_MIN) is False
+    assert row_passed(None, legacy_minimum=LEGACY_JUDGE_MIN, legacy_inclusive=True) is False
 
 
 def test_a_zero_threshold_is_honoured_rather_than_read_as_unset():
@@ -48,4 +44,13 @@ def test_a_zero_threshold_is_honoured_rather_than_read_as_unset():
     the legacy evalscope rule does not."""
     assert row_passed(0.0, 0.0) is True
     assert row_passed(0.0) is False
-    assert LEGACY_EVALSCOPE_MIN == 0.0
+
+
+def test_the_operator_is_stated_rather_than_inferred_from_the_value():
+    """The rule used to pick > or >= by comparing the caller's number to a
+    sentinel constant, so a caller passing some third value silently got
+    whichever operator its number happened to match. Same number, both
+    operators available, chosen explicitly.
+    """
+    assert row_passed(0.3, legacy_minimum=0.3, legacy_inclusive=True) is True
+    assert row_passed(0.3, legacy_minimum=0.3, legacy_inclusive=False) is False

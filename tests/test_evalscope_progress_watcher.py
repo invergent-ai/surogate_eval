@@ -830,3 +830,59 @@ def test_the_tracker_still_wins_over_the_configured_limit(tmp_path, report_rows_
     watcher.stop()
 
     assert report_rows_calls[-1][0][1] == 1319, "the tracker's real total must win"
+
+
+def test_a_custom_dataset_run_gets_no_limit_fallback(tmp_path, report_rows_calls):
+    """The limit must not fill in for a dataset whose size is unknown.
+
+    `_prepare_task_config` turns evalscope's tracker off for a custom
+    `dataset_path` precisely because its total describes the wrong dataset,
+    choosing the "unknown" sentinel over a confident lie. But `limit` is an
+    upper bound, and evalscope runs `min(dataset, limit)` -- so a custom
+    dataset smaller than the limit would stall the bar partway forever,
+    which is the same failure turning the tracker off avoids. The caller
+    withholds the limit in that case, since it is the only place that knows
+    *why* the tracker is untrusted.
+    """
+    reviews_dir = tmp_path / "work" / "reviews" / "m"
+    _write_lines(reviews_dir / "gsm8k_main.jsonl", [_review(1.0), _review(0.0)])
+
+    watcher = ReviewWatcher(
+        reviews_dir=lambda: reviews_dir,
+        dataset="gsm8k",
+        benchmark_name="gsm8k",
+        interval=0.05,
+        read_tracker=False,   # custom dataset
+        limit=None,           # ...so the caller withholds it
+    )
+    watcher.start()
+    _wait_until(lambda: report_rows_calls)
+    watcher.stop()
+
+    assert report_rows_calls
+    rows_done, rows_total = report_rows_calls[-1][0][0], report_rows_calls[-1][0][1]
+    assert rows_total == 0, "unknown must stay unknown for a custom dataset"
+    assert rows_done == 2, "the bar still moves on the real row count"
+
+
+def test_a_fractional_limit_is_not_published_as_a_row_count(tmp_path, report_rows_calls):
+    """evalscope reads a float limit as a *fraction* of the dataset
+    (`effective = int(sample_count * limit)`), so 0.1 means a tenth of the
+    rows, not one row. Resolving it needs the dataset size -- the one thing
+    missing whenever this fallback applies.
+    """
+    reviews_dir = tmp_path / "work" / "reviews" / "m"
+    _write_lines(reviews_dir / "gsm8k_main.jsonl", [_review(1.0)])
+
+    watcher = ReviewWatcher(
+        reviews_dir=lambda: reviews_dir,
+        dataset="gsm8k",
+        benchmark_name="gsm8k",
+        interval=0.05,
+        limit=0.1,
+    )
+    watcher.start()
+    _wait_until(lambda: report_rows_calls)
+    watcher.stop()
+
+    assert report_rows_calls[-1][0][1] == 0, "a fraction is not a row count"

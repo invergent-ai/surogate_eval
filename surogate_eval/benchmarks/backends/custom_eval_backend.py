@@ -836,7 +836,7 @@ class CustomEvalBackend:
                     'score': metric.score,
                     'success': row_passed(
                         metric.score, pass_threshold,
-                        legacy_minimum=LEGACY_JUDGE_MIN,
+                        legacy_minimum=LEGACY_JUDGE_MIN, legacy_inclusive=True,
                     ),
                     'reason': getattr(metric, 'reason', None),
                     'criteria': row_criteria,

@@ -326,6 +326,13 @@ class ReviewWatcher:
         # for. A configured `limit` is a real, if approximate, bound: it is
         # per-subset, so a multi-subset benchmark can exceed it, which is
         # precisely the overshoot the consumer already renders as "N+".
+        # int only, deliberately. evalscope reads a *float* limit as a
+        # fraction of the dataset (`resource_utils.compute_eval_total_count`:
+        # `effective = int(sample_count * limit)` when it is a float), so
+        # 0.1 means "a tenth of the rows", not "one row". Resolving that
+        # needs the dataset size, which is the one thing missing whenever
+        # this fallback applies -- so a fractional limit stays unknown
+        # rather than being published as a row count it is not.
         self._limit = limit if (isinstance(limit, int) and limit > 0) else None
         # Incremental, not a full re-parse each tick: re-reading a 14k-row
         # benchmark's reviews file every couple of seconds, in this

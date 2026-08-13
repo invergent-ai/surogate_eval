@@ -10,6 +10,7 @@ from ..datasets import MultiTurnTestCase, TestCase
 from ..errors import JudgeParseError, JudgeUnavailableError
 from ..targets import TargetResponse
 from ..utils.logger import get_logger
+from surogate_eval.benchmarks.pass_rule import LEGACY_JUDGE_MIN, row_passed
 
 logger = get_logger()
 
@@ -144,7 +145,10 @@ Provide your evaluation in JSON format:
                 metric_name=self.name,
                 metric_type=self.metric_type,
                 score=coherence_score,
-                success=coherence_score >= 0.5,
+                success=row_passed(
+                    coherence_score,
+                    legacy_minimum=LEGACY_JUDGE_MIN, legacy_inclusive=True,
+                ),
                 reason=f"Coherence: {coherence_score:.2f} - {reason[:100]}",
                 metadata={
                     'coherence_raw_score': coherence_raw,
@@ -392,7 +396,10 @@ Provide your evaluation in JSON format:
                 metric_name=self.name,
                 metric_type=self.metric_type,
                 score=quality_score,
-                success=quality_score >= 0.5,
+                success=row_passed(
+                    quality_score,
+                    legacy_minimum=LEGACY_JUDGE_MIN, legacy_inclusive=True,
+                ),
                 reason=f"Turn quality: {quality_score:.2f} - {reason[:100]}",
                 metadata={
                     'quality_raw_score': quality_raw,

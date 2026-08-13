@@ -496,6 +496,9 @@ class EvalScopeBackend:
                 # fine. Progress reporting is a nice-to-have layered on top
                 # of the run, never something the run depends on.
                 watcher = None
+                tracker_trusted = bool(
+                    getattr(task_config, 'enable_progress_tracker', True)
+                )
                 try:
                     watcher = ReviewWatcher(
                         # A closure, not a value computed here: run_task
@@ -518,15 +521,24 @@ class EvalScopeBackend:
                         # _prepare_task_config): no tracker is written, and
                         # a same-second work_dir collision with the previous
                         # benchmark would otherwise have us read its file.
-                        read_tracker=bool(
-                            getattr(task_config, 'enable_progress_tracker', True)
-                        ),
+                        read_tracker=tracker_trusted,
                         # Used only when evalscope writes no tracker at all
                         # (mt_bench and any other benchmark with no bundled
                         # `_meta`), so the bar has a denominator instead of
                         # sitting on the "unknown" sentinel for the whole
                         # benchmark.
-                        limit=config.get('limit'),
+                        #
+                        # Withheld when the tracker is untrusted, which is
+                        # the custom-dataset case: `limit` is an upper bound
+                        # applied to a dataset whose size we do not know, and
+                        # evalscope runs min(dataset, limit). A custom
+                        # dataset smaller than the limit would stall the bar
+                        # partway forever -- the very failure
+                        # `_prepare_task_config` turns the tracker off to
+                        # avoid. One decision, made here where both facts
+                        # are in scope, rather than two flags the watcher
+                        # would have to reconcile.
+                        limit=config.get('limit') if tracker_trusted else None,
                     )
                     watcher.start()
                 except Exception:

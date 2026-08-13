@@ -15,34 +15,37 @@ is comparable across a ``score/10`` benchmark and a ``score/5`` one.
 
 from typing import Optional
 
-#: Applied when no threshold is configured, per backend, so an existing
-#: config keeps behaving exactly as it did. Neither is a good rule -- they
-#: are what each path already used, kept only so that turning this on is an
-#: explicit choice rather than a silent re-scoring of everyone's history.
-LEGACY_EVALSCOPE_MIN = 0.0    # strictly greater than: any non-zero score passed
-LEGACY_JUDGE_MIN = 0.5        # at least: custom_eval's judge path
+#: Applied when no threshold is configured, so an existing config keeps
+#: behaving exactly as it did. Not a good rule -- it is what the judge path
+#: already used, kept only so that turning the threshold on is an explicit
+#: choice rather than a silent re-scoring of everyone's history.
+LEGACY_JUDGE_MIN = 0.5
 
 
 def row_passed(
     score: Optional[float],
     pass_threshold: Optional[float] = None,
     *,
-    legacy_minimum: float = LEGACY_EVALSCOPE_MIN,
+    legacy_minimum: float = 0.0,
+    legacy_inclusive: bool = False,
 ) -> bool:
     """Whether one row's *score* counts as a pass.
 
     ``None`` is never a pass: a row we could not read is unmeasured, which
     is a different claim from a row that scored badly.
 
-    With a *pass_threshold*, the row passes when it reaches it. Without one,
-    the caller's *legacy_minimum* applies, which is strictly-greater-than
-    for the evalscope path and at-least for the judge path -- the two rules
-    those paths already had.
+    With a *pass_threshold*, the row passes when it reaches it -- always
+    inclusive, because a threshold reads as "at least this good".
+
+    Without one, the caller's own historical rule applies, stated as a value
+    plus whether it is inclusive: the evalscope path passed anything
+    strictly above 0, the judge path anything at or above 0.5. Both are
+    spelled out at the call site rather than inferred, so a caller passing
+    some third value gets the operator it asked for instead of whichever one
+    its number happened to match.
     """
     if score is None:
         return False
     if pass_threshold is not None:
         return score >= pass_threshold
-    if legacy_minimum == LEGACY_EVALSCOPE_MIN:
-        return score > legacy_minimum
-    return score >= legacy_minimum
+    return score >= legacy_minimum if legacy_inclusive else score > legacy_minimum

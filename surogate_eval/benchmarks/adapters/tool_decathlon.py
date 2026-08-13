@@ -372,7 +372,13 @@ class ToolDecathlonBenchmark(BaseBenchmark):
                 logger.info(f"Tool Decathlon progress: {i + 1}/{len(tasks)}")
 
         total = len(detailed_results)
-        overall_score = correct / total if total else 0.0
+        # `avg_score` is what this benchmark reports, and it is the mean of
+        # the raw judge scores -- a pass threshold moves which rows are
+        # labelled passing, never the score. A `correct / total` local used
+        # to sit here, computed and never returned, and it read closely
+        # enough like the reported score that a reviewer concluded the
+        # threshold silently re-scored the benchmark and broke A/B compare.
+        # It did not, but the line was worth deleting rather than explaining.
         avg_score = sum(r["score"] for r in detailed_results) / total if total else 0.0
 
         # Per-MCP-server breakdown
@@ -387,6 +393,11 @@ class ToolDecathlonBenchmark(BaseBenchmark):
                 task_results[key]["passed"] += 1
             task_results[key]["score_sum"] += r["score"]
         for key, stats in task_results.items():
+            # Threshold-relative, unlike `avg_score` beside it: this is the
+            # fraction of rows that cleared `pass_threshold`, so it shifts
+            # when the threshold does. Nothing in ops reads `task_results`
+            # today; if that changes, compare it only against runs scored
+            # under the same threshold (recorded in `metadata` below).
             stats["accuracy"] = stats["passed"] / stats["n_samples"] if stats["n_samples"] else 0.0
             stats["avg_score"] = stats["score_sum"] / stats["n_samples"] if stats["n_samples"] else 0.0
 
@@ -415,6 +426,11 @@ class ToolDecathlonBenchmark(BaseBenchmark):
                 "dataset": DATASET_ID,
                 "has_judge": judge_target is not None,
                 "status": "completed",
+                # Which rule decided the per-row verdicts. Not recorded
+                # anywhere else, so without it an old run's Pass/Fail column
+                # cannot be read back -- 6.5 out of 10 is a pass at 5.0 and a
+                # failure at 8.0, and the stored row says only "failed".
+                "pass_threshold": self.config.pass_threshold,
             },
         )
 

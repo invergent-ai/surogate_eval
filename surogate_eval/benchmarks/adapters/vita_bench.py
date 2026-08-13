@@ -303,7 +303,13 @@ class VitaBenchmark(BaseBenchmark):
 
         # 5. Compute metrics
         total = len(detailed_results)
-        overall_score = correct / total if total else 0.0
+        # Named for what it is: the fraction of rows that cleared the pass
+        # threshold, shown in the summary table below. NOT what this
+        # benchmark reports -- `overall_score=avg_score` at the return is
+        # the mean of the raw scores, which a threshold cannot move. The old
+        # name shadowed that field and read as though the threshold
+        # re-scored the benchmark.
+        pass_rate = correct / total if total else 0.0
         avg_score = (
             sum(r["score"] for r in detailed_results) / total if total else 0.0
         )
@@ -322,6 +328,12 @@ class VitaBenchmark(BaseBenchmark):
         for d, stats in domain_results.items():
             task_results[d] = {
                 "n_samples": stats["total"],
+                # Threshold-relative, unlike `avg_score` beside it: the
+                # fraction of rows that cleared `pass_threshold`, so it
+                # shifts when the threshold does. Nothing in ops reads
+                # `task_results` today; if that changes, compare it only
+                # against runs scored under the same threshold (recorded in
+                # `metadata` below).
                 "accuracy": stats["correct"] / stats["total"] if stats["total"] else 0.0,
                 "avg_score": stats["score_sum"] / stats["total"] if stats["total"] else 0.0,
             }
@@ -337,7 +349,7 @@ class VitaBenchmark(BaseBenchmark):
         logger.info("-" * 48)
         logger.info(
             f"{'OVERALL':<16} {total:>8} "
-            f"{overall_score:>9.1%} {avg_score:>10.4f}"
+            f"{pass_rate:>9.1%} {avg_score:>10.4f}"
         )
 
         return BenchmarkResult(
@@ -352,6 +364,11 @@ class VitaBenchmark(BaseBenchmark):
                 "domains": DOMAINS,
                 "has_judge": judge_target is not None,
                 "status": "completed",
+                # Which rule decided the per-row verdicts. Not recorded
+                # anywhere else, so without it an old run's Pass/Fail column
+                # cannot be read back -- 6.5 out of 10 is a pass at 5.0 and a
+                # failure at 8.0, and the stored row says only "failed".
+                "pass_threshold": self.config.pass_threshold,
             },
         )
 

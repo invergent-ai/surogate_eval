@@ -54,3 +54,45 @@ def test_the_operator_is_stated_rather_than_inferred_from_the_value():
     """
     assert row_passed(0.3, legacy_minimum=0.3, legacy_inclusive=True) is True
     assert row_passed(0.3, legacy_minimum=0.3, legacy_inclusive=False) is False
+
+
+def test_the_adapters_record_which_rule_scored_the_run():
+    """Provenance, because nothing else stores it.
+
+    A stored row says only "failed". Whether that was a failure depends on
+    the threshold it was judged against -- 6.5 out of 10 passes at 5.0 and
+    fails at 8.0 -- and without the rule in the payload an old run's
+    Pass/Fail column cannot be read back, nor two runs compared knowing
+    whether the rule moved between them.
+
+    Asserted on the source rather than by running the adapters, which need
+    a dataset and a live judge. Both build one metadata dict at one return.
+    """
+    import pathlib
+
+    root = pathlib.Path(__file__).resolve().parent.parent / "surogate_eval"
+    for name in ("tool_decathlon", "vita_bench"):
+        src = (root / "benchmarks" / "adapters" / f"{name}.py").read_text()
+        assert '"pass_threshold": self.config.pass_threshold,' in src, (
+            f"{name} must record the threshold its verdicts were decided under"
+        )
+
+
+def test_the_adapters_report_a_score_the_threshold_cannot_move():
+    """`overall_score` is the mean of the raw scores, not the pass fraction.
+
+    This is what makes the threshold safe to change: A/B compare reads
+    `overall_score`, so two runs of one model at different thresholds stay
+    comparable. A `correct / total` local used to sit beside it in both
+    files, computed and (in tool_decathlon) never used, close enough to the
+    reported field to read as though the threshold re-scored the benchmark.
+    """
+    import pathlib
+
+    root = pathlib.Path(__file__).resolve().parent.parent / "surogate_eval"
+    for name in ("tool_decathlon", "vita_bench"):
+        src = (root / "benchmarks" / "adapters" / f"{name}.py").read_text()
+        assert "overall_score=avg_score," in src, f"{name} must report the mean score"
+        assert "overall_score = correct / total" not in src, (
+            f"{name} has a pass-fraction local shadowing the reported score"
+        )

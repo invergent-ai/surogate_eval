@@ -522,6 +522,7 @@ def _run_single_benchmark(
             path=bench_config.get("path"),
             num_fewshot=bench_config.get("num_fewshot"),
             limit=bench_config.get("limit"),
+            pass_threshold=bench_config.get("pass_threshold"),
             tasks=bench_config.get("tasks"),
             subset=bench_config.get("subset"),
             use_cache=bench_config.get("use_cache", True),

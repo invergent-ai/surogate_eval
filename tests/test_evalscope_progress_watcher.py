@@ -886,3 +886,63 @@ def test_a_fractional_limit_is_not_published_as_a_row_count(tmp_path, report_row
     watcher.stop()
 
     assert report_rows_calls[-1][0][1] == 0, "a fraction is not a row count"
+
+
+def test_the_live_pass_count_uses_the_configured_threshold(tmp_path, report_rows_calls):
+    """The live count and the final report must agree on what a pass is.
+
+    `_count_line` kept its own `score > 0` when the two backend rules were
+    unified behind `pass_rule.row_passed`. With a threshold configured, the
+    live tile would have shown every row passing and then dropped to the
+    real figure the moment the run completed -- and ops renders this exact
+    count as the pass rate, beside per-sample verdicts decided by the other
+    rule.
+    """
+    reviews_dir = tmp_path / "work" / "reviews" / "m"
+    # Three rows: 0.9 clears a 0.8 bar, 0.6 and 0.2 do not. All three are
+    # above zero, so the old rule would have passed every one.
+    _write_lines(
+        reviews_dir / "mt_bench_default.jsonl",
+        [_review(0.9), _review(0.6), _review(0.2)],
+    )
+
+    watcher = ReviewWatcher(
+        reviews_dir=lambda: reviews_dir,
+        dataset="mt_bench",
+        benchmark_name="mt_bench",
+        interval=0.05,
+        limit=3,
+        pass_threshold=0.8,
+    )
+    watcher.start()
+    _wait_until(lambda: report_rows_calls)
+    watcher.stop()
+
+    args = report_rows_calls[-1][0]
+    rows_done, _rows_total, scored, passed = args[0], args[1], args[2], args[3]
+    assert (rows_done, scored) == (3, 3)
+    assert passed == 1, "only the row clearing the threshold counts as a pass"
+
+
+def test_without_a_threshold_the_live_count_keeps_the_old_rule(tmp_path, report_rows_calls):
+    """Absent a threshold, any non-zero score passes -- the rule the
+    evalscope path has always used, unchanged.
+    """
+    reviews_dir = tmp_path / "work" / "reviews" / "m"
+    _write_lines(
+        reviews_dir / "gsm8k_main.jsonl",
+        [_review(1.0), _review(0.2), _review(0.0)],
+    )
+
+    watcher = ReviewWatcher(
+        reviews_dir=lambda: reviews_dir,
+        dataset="gsm8k",
+        benchmark_name="gsm8k",
+        interval=0.05,
+        limit=3,
+    )
+    watcher.start()
+    _wait_until(lambda: report_rows_calls)
+    watcher.stop()
+
+    assert report_rows_calls[-1][0][3] == 2, "0.2 passes without a threshold; 0.0 does not"

@@ -25,6 +25,7 @@ from surogate_eval.benchmarks.registry import BenchmarkRegistry
 from surogate_eval.targets import BaseTarget
 from surogate_eval.targets.base import TargetRequest
 from surogate_eval.utils.logger import get_logger
+from surogate_eval.benchmarks.pass_rule import LEGACY_JUDGE_MIN, row_passed
 
 logger = get_logger()
 
@@ -344,7 +345,14 @@ class ToolDecathlonBenchmark(BaseBenchmark):
                     score = min(1.0, matches / len(ref_tools)) if ref_tools else 0.0
                     reason = f"Tool name overlap: {matches}/{len(ref_tools)}"
 
-            success = score >= 0.5
+            # The shared rule, not a private copy. This adapter builds its
+            # own records and never reaches _review_row_to_record, so the
+            # backend-level unification missed it: ops classifies this benchmark's metric as `judge`, so it offers a
+            # threshold and sends one -- which this rule silently ignored.
+            success = row_passed(
+                score, self.config.pass_threshold,
+                legacy_minimum=LEGACY_JUDGE_MIN, legacy_inclusive=True,
+            )
             if success:
                 correct += 1
 

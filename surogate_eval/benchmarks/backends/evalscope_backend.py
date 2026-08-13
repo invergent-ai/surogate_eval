@@ -539,6 +539,10 @@ class EvalScopeBackend:
                         # are in scope, rather than two flags the watcher
                         # would have to reconcile.
                         limit=config.get('limit') if tracker_trusted else None,
+                        # The live pass count must use the same rule the
+                        # final report will, or the tile disagrees with the
+                        # per-sample verdicts underneath it.
+                        pass_threshold=config.get('pass_threshold'),
                     )
                     watcher.start()
                 except Exception:

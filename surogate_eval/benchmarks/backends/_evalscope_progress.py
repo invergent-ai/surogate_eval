@@ -27,6 +27,7 @@ from pathlib import Path
 from typing import Callable, Dict, List, Optional, Tuple
 
 from surogate_eval import runners
+from surogate_eval.benchmarks.pass_rule import row_passed
 from surogate_eval.utils.logger import get_logger
 from .evalscope_backend import EvalScopeBackend, _extract_sample_score
 
@@ -152,7 +153,9 @@ class ReviewCounter:
     never have this problem; tracking an offset is what introduces it.
     """
 
-    def __init__(self) -> None:
+    def __init__(self, pass_threshold: Optional[float] = None) -> None:
+        #: Scoped to one benchmark's watch, like the offsets below.
+        self._pass_threshold = pass_threshold
         self._offsets: Dict[Path, int] = {}
         self._partial: Dict[Path, bytes] = {}
         #: path -> (rows_done, scored, passed, score_sum) for that file
@@ -222,12 +225,14 @@ class ReviewCounter:
         self._offsets[path] = offset + len(chunk)
         totals = self._file_totals.get(path, (0, 0, 0, 0.0))
         for raw_line in lines[:-1]:
-            totals = _count_line(raw_line, totals)
+            totals = _count_line(raw_line, totals, self._pass_threshold)
         self._file_totals[path] = totals
 
 
 def _count_line(
-    raw_line: bytes, totals: Tuple[int, int, int, float],
+    raw_line: bytes,
+    totals: Tuple[int, int, int, float],
+    pass_threshold: Optional[float] = None,
 ) -> Tuple[int, int, int, float]:
     """One line's contribution folded into ``totals`` (rows_done, scored,
     passed, score_sum) and returned. A plain function, not a method: it
@@ -247,7 +252,12 @@ def _count_line(
         return (rows_done, scored, passed, score_sum)
     scored += 1
     score_sum += score
-    if score > 0:
+    # The same rule the final report applies (pass_rule.row_passed), so the
+    # live "passed" count and the per-sample verdicts cannot disagree. This
+    # kept its own `score > 0` when the two backend rules were unified,
+    # which with a threshold set would have shown ~100% live and then the
+    # real figure at completion.
+    if row_passed(score, pass_threshold):
         passed += 1
     return (rows_done, scored, passed, score_sum)
 
@@ -295,6 +305,7 @@ class ReviewWatcher:
         interval: float = 2.0,
         read_tracker: bool = True,
         limit: Optional[int] = None,
+        pass_threshold: Optional[float] = None,
     ) -> None:
         # A callable, not a path: evalscope's TaskConfig.work_dir gets a
         # timestamp appended *in place* by setup_work_directory once
@@ -339,7 +350,7 @@ class ReviewWatcher:
         # GIL-holding background thread, is expensive enough to be what
         # makes a tick outlive stop()'s join. One counter per watcher, so
         # its byte offsets are scoped to this benchmark's files only.
-        self._counter = ReviewCounter()
+        self._counter = ReviewCounter(pass_threshold)
         # Guards a _tick() call: stop() runs one more tick itself (see
         # below), on the caller's thread, which can otherwise overlap with
         # the background thread's own in-flight tick -- both would read and

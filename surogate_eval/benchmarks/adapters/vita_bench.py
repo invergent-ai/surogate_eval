@@ -23,6 +23,7 @@ from surogate_eval.benchmarks.registry import BenchmarkRegistry
 from surogate_eval.targets import BaseTarget
 from surogate_eval.targets.base import TargetRequest
 from surogate_eval.utils.logger import get_logger
+from surogate_eval.benchmarks.pass_rule import LEGACY_JUDGE_MIN, row_passed
 
 logger = get_logger()
 
@@ -273,7 +274,15 @@ class VitaBenchmark(BaseBenchmark):
                     score = matches / total_orders if total_orders else 0.0
                     reason = f"Keyword match: {matches}/{total_orders} orders"
 
-            success = score >= 0.5
+            # The shared rule, not a private copy. This adapter builds its
+            # own records and never reaches _review_row_to_record, so the
+            # backend-level unification missed it: ops classifies this one as `accuracy` today, so no threshold
+            # reaches it yet; same shape as tool_decathlon, fixed with it
+            # rather than left as the next trap.
+            success = row_passed(
+                score, self.config.pass_threshold,
+                legacy_minimum=LEGACY_JUDGE_MIN, legacy_inclusive=True,
+            )
             if success:
                 correct += 1
 

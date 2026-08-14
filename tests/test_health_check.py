@@ -252,3 +252,34 @@ def test_a_second_path_can_still_answer():
     target = make_target("sk-real", SecondPathAnswers())
     assert target.health_check() is True
     assert len(target.client.calls) == 2
+
+
+# --- The budget itself is tunable ------------------------------------------
+#
+# E-RUN-18. The split above is the right shape and the number in it was one
+# measurement wide (Modal at 65s cold), so a slower cold start was reported
+# as a target that does not exist. A budget that can only be corrected by
+# rebuilding and republishing a 5 GB image is a budget nobody corrects.
+
+
+def test_the_budget_can_be_raised_from_the_environment(monkeypatch):
+    monkeypatch.setenv("EVAL_COLD_START_READ_TIMEOUT", "600")
+    assert model._seconds_from_env("EVAL_COLD_START_READ_TIMEOUT", 300) == 600
+
+
+@pytest.mark.parametrize("raw", ["", "   ", "soon", "90s", "0", "-5"])
+def test_an_unusable_budget_falls_back_to_the_default(monkeypatch, raw):
+    """A typo in a pod env var must not decide how long a probe waits, and
+    must not take the run down at import time either. Zero and negative are
+    unusable rather than merely odd: httpx reads them as "give up at once",
+    which would fail every target instead of the one that is slow."""
+    monkeypatch.setenv("EVAL_COLD_START_READ_TIMEOUT", raw)
+    assert model._seconds_from_env("EVAL_COLD_START_READ_TIMEOUT", 300) == 300
+
+
+def test_the_default_budget_outlasts_the_one_that_was_too_short():
+    """90s was hit live by a model that was merely cold. The default has to
+    leave room for a container that is slower than the one it was measured
+    on, and it costs nothing to do so: only a host that completes a handshake
+    and then says nothing ever spends this budget."""
+    assert model.COLD_START_READ_TIMEOUT > 90

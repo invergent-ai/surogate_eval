@@ -8,10 +8,11 @@ import threading
 from pathlib import Path
 from typing import Any, Callable, Dict, List, Optional
 
+from surogate_eval.config.eval_config import referenced_target
 from surogate_eval.errors import ConfigError
 from surogate_eval.targets import BaseTarget
+from surogate_eval.utils.dist import is_master
 from surogate_eval.utils.logger import get_logger
-from surogate_eval.utils.rank import is_rank_zero
 from surogate_eval.utils.text import blank_as_none
 
 logger = get_logger()
@@ -335,7 +336,7 @@ def _write_bench_result(result: Dict[str, Any]) -> None:
     from enum import Enum as _Enum
     from pathlib import Path as _Path
 
-    if not is_rank_zero():
+    if not is_master():
         return
 
     name = result.get("benchmark_name") or result.get("name", "unknown")
@@ -379,7 +380,7 @@ def _flush_progress() -> None:
     document; it does nothing about N processes each publishing their own
     progress, which is a bar that jumps backwards rather than a broken parse.
     """
-    if not is_rank_zero():
+    if not is_master():
         return
     try:
         out = Path("eval_results")
@@ -702,7 +703,7 @@ def _judge_target(
     means the two disagree. That is a reason to be loud, not a reason to
     assume it cannot happen.
     """
-    name = blank_as_none(block.get('target')) if isinstance(block, dict) else None
+    name = referenced_target(block)
     if not name:
         raise ConfigError(
             f"{role} must name a target, got {block!r}. Without one the "
@@ -713,7 +714,7 @@ def _judge_target(
     if judge is None:
         raise ConfigError(f"{role} names target '{name}', which is not configured.")
 
-    if judge is target or judge.name == target.name:
+    if judge.name == target.name:
         raise ConfigError(
             f"{role} names '{name}', the target being evaluated. A target "
             f"cannot judge its own answers -- name a different target, or a "

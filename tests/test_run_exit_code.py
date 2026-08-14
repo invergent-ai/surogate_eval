@@ -158,7 +158,7 @@ def benchmark_target_block(name, dataset):
 """
 
 
-def security_target_block(name, section, judge="judge"):
+def security_target_block(name, section):
     """A red-team-only or guardrails-only target, and the judge it names.
 
     The judge target is part of the fixture rather than something each test
@@ -166,6 +166,7 @@ def security_target_block(name, section, judge="judge"):
     is scanning (E-RUN-7), so a scan without one is not a valid config and
     would be testing a shape that can no longer exist.
     """
+    judge = "judge"
     judges = f"""\
       evaluation_model:
         target: {judge}

@@ -61,28 +61,39 @@ def _names_a_model(block: Any) -> bool:
     form field produces, and neither can be asked to judge anything.
     """
     if isinstance(block, dict):
-        return bool(blank_as_none(block.get('target')))
+        return bool(referenced_target(block))
     if isinstance(block, str):
         return bool(blank_as_none(block))
     return False
 
 
-def _referenced_target(block: Any) -> Optional[str]:
+def referenced_target(block: Any) -> Optional[str]:
     """The target a support-model block names, if it names one.
 
     A reference to another entry in ``targets:`` is ``{target: <name>}``.
     The same keys also take a plain model string (``simulator_model:
     gpt-3.5-turbo``), which names a provider model and refers to no target.
+
+    The one definition of that shape, for the loader and the runner both:
+    ``runners._judge_target`` resolves what this validates, and the design
+    of both depends on the two agreeing about what counts as a reference.
+    Blank is absent rather than a name nobody has, which is what an empty
+    form field produces.
     """
     if isinstance(block, dict):
-        return block.get('target')
+        return blank_as_none(block.get('target'))
     return None
 
 
-def _iter_support_references(target: 'TargetConfig') -> Iterator[Tuple[str, str, str]]:
-    """Every target this one names, as ``(where, key, name)``.
+def _iter_support_references(
+    target: 'TargetConfig',
+) -> Iterator[Tuple[str, Optional[str], str, str]]:
+    """Every target this one names, as ``(where, section, key, name)``.
 
-    ``where`` locates the reference for an error message.
+    ``where`` locates the reference for an error message. ``section`` is the
+    security section it came from, or ``None`` for a metric or benchmark; it
+    is what lets a caller tell the references ``_validate_security_judges``
+    already rules on from the ones only this traversal sees.
 
     A disabled section still counts. Naming a target as your judge is what
     makes that target a support target - it is declared to serve someone
@@ -96,24 +107,24 @@ def _iter_support_references(target: 'TargetConfig') -> Iterator[Tuple[str, str,
         where = f"Target '{target.name}', Evaluation '{eval_name}'"
         for metric in evaluation.get('metrics') or []:
             for key in SUPPORT_MODEL_KEYS:
-                name = _referenced_target(metric.get(key))
+                name = referenced_target(metric.get(key))
                 if name:
-                    yield where, key, name
+                    yield where, None, key, name
 
         for benchmark in evaluation.get('benchmarks') or []:
             bench_where = f"Target '{target.name}', Benchmark '{benchmark.get('name')}'"
             for key in SUPPORT_MODEL_KEYS:
-                name = _referenced_target(benchmark.get(key))
+                name = referenced_target(benchmark.get(key))
                 if name:
-                    yield bench_where, key, name
+                    yield bench_where, None, key, name
 
-    for section_name in ('red_teaming', 'guardrails'):
+    for section_name in REQUIRED_SECURITY_JUDGES:
         section = getattr(target, section_name) or {}
         where = f"Target '{target.name}', {section_name}"
         for key in SUPPORT_MODEL_KEYS:
-            name = _referenced_target(section.get(key))
+            name = referenced_target(section.get(key))
             if name:
-                yield where, key, name
+                yield where, section_name, key, name
 
 
 @dataclass
@@ -582,19 +593,24 @@ class EvalConfig:
         because a score produced that way answers a different question than
         the one the user thinks they asked. Where nobody chose it -- the
         security sections, which ops fills in automatically -- it is an error
-        instead, see ``_validate_security_judges``.
+        instead, raised by ``_validate_security_judges`` and skipped here so
+        one defect produces one message.
         """
         errors = []
         warnings = []
         target_names = {t.name for t in self.targets}
 
         for target in self.targets:
-            for where, key, name in _iter_support_references(target):
+            for where, section, key, name in _iter_support_references(target):
                 if name not in target_names:
                     errors.append(
                         f"{where}: {key} target '{name}' not found in configured targets"
                     )
-                elif key in JUDGE_MODEL_KEYS and name == target.name:
+                elif (
+                    key in JUDGE_MODEL_KEYS
+                    and name == target.name
+                    and key not in REQUIRED_SECURITY_JUDGES.get(section, ())
+                ):
                     warnings.append(
                         f"{where}: {key} names '{name}', the target being "
                         f"evaluated, so this target grades its own answers"
@@ -625,7 +641,7 @@ class EvalConfig:
                         f"required when the section is enabled, because "
                         f"without it the target grades itself"
                     )
-                elif isinstance(block, dict) and block.get('target') == target.name:
+                elif referenced_target(block) == target.name:
                     errors.append(
                         f"Target '{target.name}', {section_name}: {key} names "
                         f"'{target.name}', the target being scanned. A model "
@@ -652,7 +668,7 @@ class EvalConfig:
         return {
             name
             for target in self.targets
-            for _, _, name in _iter_support_references(target)
+            for *_, name in _iter_support_references(target)
             if name != target.name
         }
 

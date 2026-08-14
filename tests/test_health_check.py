@@ -270,9 +270,8 @@ def test_the_budget_can_be_raised_from_the_environment(monkeypatch):
 @pytest.mark.parametrize("raw", ["", "   ", "soon", "90s", "0", "-5"])
 def test_an_unusable_budget_falls_back_to_the_default(monkeypatch, raw):
     """A typo in a pod env var must not decide how long a probe waits, and
-    must not take the run down at import time either. Zero and negative are
-    unusable rather than merely odd: httpx reads them as "give up at once",
-    which would fail every target instead of the one that is slow."""
+    must not take the run down at import time either. `_seconds_from_env`
+    says why zero and negative are in this list."""
     monkeypatch.setenv("EVAL_COLD_START_READ_TIMEOUT", raw)
     assert model._seconds_from_env("EVAL_COLD_START_READ_TIMEOUT", 300) == 300
 

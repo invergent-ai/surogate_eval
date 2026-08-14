@@ -18,16 +18,6 @@ logger = get_logger()
 #: affordable, and raising the two together would undo the asymmetry.
 CONNECT_TIMEOUT = 10
 
-#: Read budget when the environment says nothing. Sized for a serverless
-#: target booting from zero: the platform's front door completes the
-#: handshake at once and holds the request while the container starts, so a
-#: cold start is slow to *answer*, not slow to connect. Measured against a
-#: Modal endpoint at 65s cold and 1.07s warm; the budget is several times
-#: that because the measurement is one container on one platform, and being
-#: wrong in this direction reports a working model as a missing one.
-DEFAULT_COLD_START_READ_TIMEOUT = 300
-
-
 def _seconds_from_env(name: str, default: int) -> int:
     """A positive whole number of seconds from ``name``, or *default*.
 
@@ -44,21 +34,36 @@ def _seconds_from_env(name: str, default: int) -> int:
     try:
         value = int(raw.strip())
     except ValueError:
-        logger.warning(f"{name}={raw!r} is not a whole number of seconds; using {default}")
-        return default
+        value = 0
     if value <= 0:
-        logger.warning(f"{name}={raw!r} is not a usable timeout; using {default}")
+        logger.warning(
+            f"{name}={raw!r} is not a positive whole number of seconds; using {default}"
+        )
         return default
     return value
 
 
-#: Seconds a health-check probe may then wait for the response. Overridable
-#: per deployment, because the right number depends on the model being
-#: probed and on the platform serving it, and the alternative to an env var
-#: is republishing a 5 GB image every time the guess is wrong.
-COLD_START_READ_TIMEOUT = _seconds_from_env(
-    "EVAL_COLD_START_READ_TIMEOUT", DEFAULT_COLD_START_READ_TIMEOUT
-)
+#: Seconds a health-check probe may wait for the response. Sized for a
+#: serverless target booting from zero: the platform's front door completes
+#: the handshake at once and holds the request while the container starts, so
+#: a cold start is slow to *answer*, not slow to connect. Measured against a
+#: Modal endpoint at 65s cold and 1.07s warm; the default is several times
+#: that because the measurement is one container on one platform, and being
+#: wrong in this direction reports a working model as a missing one.
+#:
+#: What it costs when it is wrong the other way: only a host that completes a
+#: handshake and then says nothing ever spends this, and it spends it once,
+#: on the first path. But ``eval.py`` probes targets serially with no
+#: deadline, so a config whose endpoints are all wedged pays it per target --
+#: 310s each, against 100s before, and this change also makes a judge target
+#: mandatory for a security scan. Making phase 1 concurrent is the fix for
+#: that, and it is a separate change; see E-RUN-18 in the findings doc.
+#:
+#: Process-global, while the property it describes is per-target. The right
+#: home is eventually a per-target key in the rendered config, which is how
+#: ops sets every other target field; until then this is the operator's
+#: escape hatch, not the product's knob.
+COLD_START_READ_TIMEOUT = _seconds_from_env("EVAL_COLD_START_READ_TIMEOUT", 300)
 
 
 class APIModelTarget(BaseTarget):

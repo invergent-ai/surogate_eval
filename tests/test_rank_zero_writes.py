@@ -18,8 +18,6 @@ today, so it is tested first.
 """
 
 import json
-import os
-from pathlib import Path
 from types import SimpleNamespace
 
 import pytest
@@ -30,8 +28,14 @@ from surogate_eval.eval import SurogateEval
 
 @pytest.fixture
 def results_dir(tmp_path, monkeypatch):
-    """The writers all resolve `eval_results` relative to the cwd."""
+    """The writers all resolve `eval_results` relative to the cwd.
+
+    `_PROGRESS` is module state, so it is reset too: without that,
+    `_flush_progress` serializes whatever counters an earlier test left
+    behind and this file's assertions would depend on test order.
+    """
     monkeypatch.chdir(tmp_path)
+    monkeypatch.setattr(runners, "_PROGRESS", dict(runners._PROGRESS))
     return tmp_path / "eval_results"
 
 
@@ -56,33 +60,17 @@ def _save_consolidated(results):
 # --- The single-process case still writes everything -----------------------
 
 
-def test_bench_result_is_written_when_there_is_no_rank(results_dir):
+@pytest.mark.parametrize("rank", [None, "0"])
+def test_the_writing_rank_writes_every_artifact(results_dir, monkeypatch, rank):
+    """`None` is the single-process case, the only one that runs today."""
+    if rank is not None:
+        monkeypatch.setenv("RANK", rank)
+
     runners._write_bench_result({"benchmark_name": "gsm8k", "score": 1.0})
+    runners._flush_progress()
+    _save_consolidated({"targets": {}})
 
     assert json.loads((results_dir / "bench_gsm8k.json").read_text())["score"] == 1.0
-
-
-def test_progress_is_written_when_there_is_no_rank(results_dir):
-    runners._flush_progress()
-
-    assert (results_dir / "progress.json").exists()
-
-
-def test_consolidated_results_are_written_when_there_is_no_rank(results_dir):
-    _save_consolidated({"targets": {}})
-
-    assert list(results_dir.glob("eval_*.json"))
-
-
-def test_rank_zero_writes(results_dir, monkeypatch):
-    monkeypatch.setenv("RANK", "0")
-    monkeypatch.setenv("LOCAL_RANK", "0")
-
-    runners._write_bench_result({"benchmark_name": "gsm8k", "score": 1.0})
-    runners._flush_progress()
-    _save_consolidated({"targets": {}})
-
-    assert (results_dir / "bench_gsm8k.json").exists()
     assert (results_dir / "progress.json").exists()
     assert list(results_dir.glob("eval_*.json"))
 

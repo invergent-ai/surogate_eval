@@ -33,12 +33,6 @@ from surogate_eval.config.eval_config import EvalConfig
 from surogate_eval.config.loader import load_config
 from surogate_eval.errors import ConfigError
 
-#: `EvalConfig.__post_init__` reports validation failures as `ValueError`,
-#: while `load_config`'s own env-var check raises `ConfigError`. That split is
-#: pre-existing and is not this change's to settle, so the load-time cases
-#: below assert on the type the validator actually raises.
-CONFIG_REJECTED = ValueError
-
 TARGET = """\
   - name: {name}
     type: llm
@@ -70,14 +64,20 @@ def load(tmp_path, text):
 
 
 def test_a_red_team_scan_may_not_name_its_own_target_as_evaluator(tmp_path):
-    """The shape ops emits when Studio configured no judge."""
+    """The shape ops emits when Studio configured no judge.
+
+    `ValueError`, not `ConfigError`: `EvalConfig.__post_init__` reports every
+    validation failure that way, while `load_config`'s own env-var check
+    raises `ConfigError`. That split is pre-existing and not this change's to
+    settle.
+    """
     text = config_text(security="""\
     red_teaming:
       enabled: true
       evaluation_model:
         target: t1
 """)
-    with pytest.raises(CONFIG_REJECTED) as exc:
+    with pytest.raises(ValueError) as exc:
         load(tmp_path, text)
 
     message = str(exc.value)
@@ -94,7 +94,7 @@ def test_guardrails_may_not_name_its_own_target_as_refusal_judge(tmp_path):
       refusal_judge_model:
         target: t1
 """, extra_target=True)
-    with pytest.raises(CONFIG_REJECTED) as exc:
+    with pytest.raises(ValueError) as exc:
         load(tmp_path, text)
 
     assert "refusal_judge_model" in str(exc.value)
@@ -140,7 +140,7 @@ def test_an_enabled_red_team_scan_needs_an_evaluator(tmp_path):
       enabled: true
       vulnerabilities: [toxicity]
 """)
-    with pytest.raises(CONFIG_REJECTED) as exc:
+    with pytest.raises(ValueError) as exc:
         load(tmp_path, text)
 
     assert "evaluation_model" in str(exc.value)
@@ -152,7 +152,7 @@ def test_enabled_guardrails_need_a_refusal_judge(tmp_path):
       enabled: true
       evaluation_model: gpt-4o-mini
 """)
-    with pytest.raises(CONFIG_REJECTED) as exc:
+    with pytest.raises(ValueError) as exc:
         load(tmp_path, text)
 
     assert "refusal_judge_model" in str(exc.value)
@@ -267,7 +267,7 @@ def test_guardrails_with_no_refusal_judge_fails_instead_of_self_judging():
     assert "refusal_judge_model" in result["error"]
 
 
-def test_a_named_judge_that_does_not_resolve_fails(monkeypatch):
+def test_a_named_judge_that_does_not_resolve_fails():
     """Config validation rejects a dangling name before this, so reaching
     here means the two disagree. Fail rather than substitute."""
     result = run_red_team({"evaluation_model": {"target": "missing"}})

@@ -10,6 +10,7 @@ from typing import Any, Callable, Dict, List, Optional
 
 from surogate_eval.targets import BaseTarget
 from surogate_eval.utils.logger import get_logger
+from surogate_eval.utils.rank import is_rank_zero
 
 logger = get_logger()
 
@@ -322,10 +323,18 @@ def run_benchmarks(
 
 
 def _write_bench_result(result: Dict[str, Any]) -> None:
-    """Write an individual benchmark result to eval_results/bench_{name}.json."""
+    """Write an individual benchmark result to eval_results/bench_{name}.json.
+
+    Rank 0 only: under a distributed relaunch every process evaluates the
+    same benchmark and would write this same path, so the file ops reads
+    would be whichever copy landed last (E-RUN-6).
+    """
     import json as _json
     from enum import Enum as _Enum
     from pathlib import Path as _Path
+
+    if not is_rank_zero():
+        return
 
     name = result.get("benchmark_name") or result.get("name", "unknown")
     try:
@@ -363,7 +372,13 @@ def _flush_progress() -> None:
     Temp file plus rename, because ops polls this path every 5s and a
     truncating in-place write can be read half-finished and parsed as invalid
     JSON. Best-effort: a failure here must never fail the run.
+
+    Rank 0 only (E-RUN-6). The atomic rename protects a reader from a partial
+    document; it does nothing about N processes each publishing their own
+    progress, which is a bar that jumps backwards rather than a broken parse.
     """
+    if not is_rank_zero():
+        return
     try:
         out = Path("eval_results")
         out.mkdir(exist_ok=True)

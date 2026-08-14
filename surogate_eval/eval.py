@@ -24,6 +24,7 @@ from surogate_eval.runners import (
 from surogate_eval.targets import BaseTarget, TargetFactory
 from surogate_eval.utils.command import SurogateCommand
 from surogate_eval.utils.logger import get_logger
+from surogate_eval.utils.rank import is_rank_zero
 
 logger = get_logger()
 
@@ -350,7 +351,14 @@ class SurogateEval(SurogateCommand):
         return None
 
     def _save_consolidated_results(self):
-        """Save consolidated results to a single file."""
+        """Save consolidated results to a single file.
+
+        Rank 0 only, which also covers the summary report written from here
+        (E-RUN-6). Under a distributed relaunch every process holds its own
+        copy of the same consolidated results and would write both files.
+        """
+        if not is_rank_zero():
+            return
         try:
             import json
             from datetime import datetime

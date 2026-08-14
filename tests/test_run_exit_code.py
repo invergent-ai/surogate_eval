@@ -158,8 +158,23 @@ def benchmark_target_block(name, dataset):
 """
 
 
-def security_target_block(name, section):
-    """A red-team-only or guardrails-only target, the shape of examples/sec.yaml."""
+def security_target_block(name, section, judge="judge"):
+    """A red-team-only or guardrails-only target, and the judge it names.
+
+    The judge target is part of the fixture rather than something each test
+    remembers to add: a security section may not be graded by the target it
+    is scanning (E-RUN-7), so a scan without one is not a valid config and
+    would be testing a shape that can no longer exist.
+    """
+    judges = f"""\
+      evaluation_model:
+        target: {judge}
+"""
+    if section == "guardrails":
+        judges += f"""\
+      refusal_judge_model:
+        target: {judge}
+"""
     return f"""\
   - name: {name}
     type: llm
@@ -175,6 +190,20 @@ def security_target_block(name, section):
       attacks:
         - prompt_injection
       attacks_per_vulnerability: 1
+{judges}""" + judge_target_block(judge)
+
+
+def judge_target_block(name):
+    """A target that exists to be named by someone else. It measures nothing
+    of its own, which `support_target_names()` already exempts from the
+    "evaluated nothing" rule."""
+    return f"""\
+  - name: {name}
+    type: llm
+    provider: openai
+    model: gpt-4
+    api_key: sk-test
+    evaluations: []
 """
 
 
@@ -198,9 +227,11 @@ def red_team_target_block_with_translator(name, translator_name):
       attacks:
         - prompt_injection
       attacks_per_vulnerability: 1
+      evaluation_model:
+        target: judge
       translator:
         target: {translator_name}
-"""
+""" + judge_target_block("judge")
 
 
 def build_config(tmp_path, blocks):

@@ -518,8 +518,8 @@ targets:
 | `attacks_per_vulnerability` | int | 3 | Attacks per vulnerability type |
 | `max_concurrent` | int | 10 | Max concurrent attacks |
 | `run_async` | bool | true | Run attacks asynchronously |
-| `simulator_model` | string | gpt-4o-mini | Model for generating attacks |
-| `evaluation_model` | string | gpt-4o-mini | Model for evaluating results |
+| `simulator_model` | string | the target under test | Model for generating attacks. Falls back to the target with a warning: writing your own attacks is a weaker scan, not a wrong result |
+| `evaluation_model` | string or `{target: ...}` | **required** | Model that decides whether an attack succeeded. May not be the target being scanned, and has no default: it used to fall back to the target, which is a model grading whether it was itself jailbroken |
 | `purpose` | string | null | Description of target model |
 | `ignore_errors` | bool | true | Keep a failed attack from aborting the scan |
 

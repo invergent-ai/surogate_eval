@@ -8,9 +8,11 @@ import threading
 from pathlib import Path
 from typing import Any, Callable, Dict, List, Optional
 
+from surogate_eval.errors import ConfigError
 from surogate_eval.targets import BaseTarget
 from surogate_eval.utils.logger import get_logger
 from surogate_eval.utils.rank import is_rank_zero
+from surogate_eval.utils.text import blank_as_none
 
 logger = get_logger()
 
@@ -683,6 +685,72 @@ def run_stress_testing(
         return _stress_failure(str(e))
 
 
+def _judge_target(
+    role: str,
+    block: Any,
+    target: BaseTarget,
+    find_target_fn: Callable[[str], Optional[BaseTarget]],
+) -> BaseTarget:
+    """The target named for a judging role, or a ConfigError.
+
+    Nothing is substituted. Every substitution this replaces ended in the
+    same place -- the model under test grading its own answers (E-RUN-7) --
+    and a scan that graded itself is worse than one that did not run, because
+    only one of the two says so.
+
+    Config validation rejects both shapes this raises on, so reaching here
+    means the two disagree. That is a reason to be loud, not a reason to
+    assume it cannot happen.
+    """
+    name = blank_as_none(block.get('target')) if isinstance(block, dict) else None
+    if not name:
+        raise ConfigError(
+            f"{role} must name a target, got {block!r}. Without one the "
+            f"target under test would grade its own answers."
+        )
+
+    judge = find_target_fn(name)
+    if judge is None:
+        raise ConfigError(f"{role} names target '{name}', which is not configured.")
+
+    if judge is target or judge.name == target.name:
+        raise ConfigError(
+            f"{role} names '{name}', the target being evaluated. A target "
+            f"cannot judge its own answers -- name a different target, or a "
+            f"provider model."
+        )
+
+    return judge
+
+
+def _judge_model(
+    role: str,
+    block: Any,
+    target: BaseTarget,
+    find_target_fn: Callable[[str], Optional[BaseTarget]],
+):
+    """A judge DeepTeam can call: a wrapper around a target, or a model name.
+
+    A plain string names a provider model rather than a target, so it cannot
+    be the target under test. It can still be unusable, and the case that
+    made this worth checking is a config that names an OpenAI judge on a pod
+    with no OpenAI key: the old code answered that by handing the grading to
+    the target, which is the one substitution the user would least expect
+    from naming a judge explicitly.
+    """
+    from surogate_eval.models import DeepEvalTargetWrapper
+
+    if isinstance(block, str) and blank_as_none(block):
+        if not os.environ.get("OPENAI_API_KEY"):
+            raise ConfigError(
+                f"{role}='{block}' names a provider model but OPENAI_API_KEY "
+                f"is not set. Export it, or name a target to judge with."
+            )
+        return block
+
+    return DeepEvalTargetWrapper(_judge_target(role, block, target, find_target_fn))
+
+
 async def run_red_teaming_async(
     target: BaseTarget,
     red_team_config: Dict[str, Any],
@@ -720,23 +788,23 @@ async def run_red_teaming_async(
             logger.warning(f"No OPENAI_API_KEY for simulator_model='{simulator_model}', using eval target instead")
             simulator_model = DeepEvalTargetWrapper(target)
         elif simulator_model is None:
+            # Allowed, unlike the evaluator below: writing your own attacks
+            # is a weaker scan, not a fabricated verdict. Said out loud
+            # because it is a real limitation of the results.
+            logger.warning(
+                f"No simulator_model configured; target '{target.name}' will "
+                f"generate the attacks it is being tested with"
+            )
             simulator_model = DeepEvalTargetWrapper(target)
 
-        # Resolve evaluation_model
-        evaluation_model = red_team_config.get("evaluation_model", None)
-        if isinstance(evaluation_model, dict) and evaluation_model.get("target"):
-            eval_target = find_target_fn(evaluation_model["target"])
-            if eval_target:
-                evaluation_model = DeepEvalTargetWrapper(eval_target)
-                logger.info(f"Using target '{evaluation_model.get_model_name()}' as evaluation model")
-            else:
-                logger.warning(f"Evaluation target '{evaluation_model['target']}' not found, falling back to eval target")
-                evaluation_model = DeepEvalTargetWrapper(target)
-        elif isinstance(evaluation_model, str) and not os.environ.get("OPENAI_API_KEY"):
-            logger.warning(f"No OPENAI_API_KEY for evaluation_model='{evaluation_model}', using eval target instead")
-            evaluation_model = DeepEvalTargetWrapper(target)
-        elif evaluation_model is None:
-            evaluation_model = DeepEvalTargetWrapper(target)
+        # Resolve evaluation_model. This one decides whether an attack
+        # succeeded, so it may not be the target under test (E-RUN-7).
+        evaluation_model = _judge_model(
+            "red_teaming.evaluation_model",
+            red_team_config.get("evaluation_model"),
+            target,
+            find_target_fn,
+        )
 
         config = RedTeamConfig(
             vulnerabilities=red_team_config.get("vulnerabilities", []),
@@ -810,16 +878,22 @@ async def run_guardrails_testing_async(
                 logger.warning(f"Simulator target '{simulator_model['target']}' not found, using default")
                 simulator_model = "gpt-3.5-turbo"
 
-        # Resolve evaluation_model
-        evaluation_model = guardrails_config.get("evaluation_model", "gpt-4o-mini")
-        if isinstance(evaluation_model, dict) and evaluation_model.get("target"):
-            eval_target = find_target_fn(evaluation_model["target"])
-            if eval_target:
-                evaluation_model = DeepEvalTargetWrapper(eval_target)
-                logger.info(f"Using target '{evaluation_model.get_model_name()}' as evaluation model")
-            else:
-                logger.warning(f"Evaluation target '{evaluation_model['target']}' not found, using default")
-                evaluation_model = "gpt-4o-mini"
+        # Both judging roles must be someone other than the target under
+        # test (E-RUN-7), and both are resolved before anything is built so
+        # the section fails on its config rather than part way through a scan.
+        evaluation_model = _judge_model(
+            "guardrails.evaluation_model",
+            guardrails_config.get("evaluation_model"),
+            target,
+            find_target_fn,
+        )
+        judge_target = _judge_target(
+            "guardrails.refusal_judge_model",
+            guardrails_config.get("refusal_judge_model"),
+            target,
+            find_target_fn,
+        )
+        logger.info(f"Using target '{judge_target.name}' as refusal judge")
 
         config = GuardrailsConfig(
             vulnerabilities=guardrails_config.get("vulnerabilities", []),
@@ -827,26 +901,13 @@ async def run_guardrails_testing_async(
             attacks=guardrails_config.get("attacks", []),
             attacks_per_vulnerability=guardrails_config.get("attacks_per_vulnerability", 3),
             safe_prompts_dataset=guardrails_config.get("safe_prompts_dataset"),
-            refusal_judge_model_target=guardrails_config.get("refusal_judge_model", {}).get("target"),
+            refusal_judge_model_target=judge_target.name,
             max_concurrent=guardrails_config.get("max_concurrent", 10),
             simulator_model=simulator_model,
             evaluation_model=evaluation_model,
             purpose=guardrails_config.get("purpose"),
             ignore_errors=guardrails_config.get("ignore_errors", True),
         )
-
-        # Get judge target for refusal detection — fall back to the
-        # eval target itself so guardrails never fails for lack of a judge.
-        judge_target = None
-        if config.refusal_judge_model_target:
-            judge_target = find_target_fn(config.refusal_judge_model_target)
-            if not judge_target:
-                logger.warning(f"Judge target '{config.refusal_judge_model_target}' not found, using eval target")
-            else:
-                logger.info(f"Using target '{judge_target.name}' as refusal judge")
-        if not judge_target:
-            judge_target = target
-            logger.info(f"Using eval target '{target.name}' as refusal judge")
 
         evaluator = GuardrailsEvaluator(target, config, judge_target)
         result = await evaluator.evaluate()

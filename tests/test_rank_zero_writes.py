@@ -112,3 +112,13 @@ def test_a_non_zero_rank_cannot_overwrite_rank_zeros_file(results_dir, monkeypat
     runners._write_bench_result({"benchmark_name": "gsm8k", "score": 0.0})
 
     assert json.loads((results_dir / "bench_gsm8k.json").read_text())["score"] == 1.0
+
+
+def test_an_unparseable_rank_cannot_fail_the_run(results_dir, monkeypatch):
+    """`is_master()` parses `RANK`, and these writers are documented never to
+    fail the run. A garbage value from the environment must therefore lose
+    the artifact, not the run."""
+    monkeypatch.setenv("RANK", "")
+
+    runners._flush_progress()
+    runners._write_bench_result({"benchmark_name": "gsm8k", "score": 1.0})

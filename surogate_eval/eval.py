@@ -357,9 +357,13 @@ class SurogateEval(SurogateCommand):
         (E-RUN-6). Under a distributed relaunch every process holds its own
         copy of the same consolidated results and would write both files.
         """
-        if not is_master():
-            return
         try:
+            # Inside the handler, not above it: `is_master()` parses `RANK`,
+            # and this method already swallows its own failures rather than
+            # losing the run at the last step.
+            if not is_master():
+                return
+
             import json
             from datetime import datetime
             from enum import Enum

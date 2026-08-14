@@ -336,11 +336,13 @@ def _write_bench_result(result: Dict[str, Any]) -> None:
     from enum import Enum as _Enum
     from pathlib import Path as _Path
 
-    if not is_master():
-        return
-
     name = result.get("benchmark_name") or result.get("name", "unknown")
     try:
+        # Inside the handler, not above it: `is_master()` parses `RANK`, and
+        # this function is documented never to fail the run.
+        if not is_master():
+            return
+
         out = _Path("eval_results")
         out.mkdir(exist_ok=True)
         path = out / f"bench_{name}.json"
@@ -380,9 +382,12 @@ def _flush_progress() -> None:
     document; it does nothing about N processes each publishing their own
     progress, which is a bar that jumps backwards rather than a broken parse.
     """
-    if not is_master():
-        return
     try:
+        # Inside the best-effort handler, not above it: `is_master()` parses
+        # `RANK`, and a failure here must never fail the run.
+        if not is_master():
+            return
+
         out = Path("eval_results")
         out.mkdir(exist_ok=True)
         fd, tmp = tempfile.mkstemp(dir=str(out), suffix=".tmp")

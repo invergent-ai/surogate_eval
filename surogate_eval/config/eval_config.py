@@ -52,6 +52,16 @@ REQUIRED_SECURITY_JUDGES = {
     'guardrails': ('evaluation_model', 'refusal_judge_model'),
 }
 
+#: Judging roles that only accept ``{target: <name>}``, never a provider
+#: model string. The refusal judge is called directly as a target
+#: (``GuardrailsEvaluator`` takes the object, not a model name), so a string
+#: there has no way to become anything callable. It used to be ignored and
+#: the target took the role; validating the shape here keeps the loader
+#: agreeing with ``runners._judge_target``, which is what actually resolves
+#: it -- otherwise a config passes validation and the scan fails mid-run,
+#: which is the case this check exists to prevent.
+TARGET_ONLY_JUDGE_KEYS = frozenset({'refusal_judge_model'})
+
 
 def _names_a_model(block: Any) -> bool:
     """Whether a support-model block actually names something.
@@ -647,6 +657,13 @@ class EvalConfig:
                         f"'{target.name}', the target being scanned. A model "
                         f"cannot report on whether it was itself jailbroken "
                         f"-- name a different target, or a provider model"
+                    )
+                elif key in TARGET_ONLY_JUDGE_KEYS and not referenced_target(block):
+                    errors.append(
+                        f"Target '{target.name}', {section_name}: {key} must "
+                        f"name a target ({{target: <name>}}), not a model "
+                        f"string -- it is called directly rather than through "
+                        f"a provider"
                     )
 
         return errors

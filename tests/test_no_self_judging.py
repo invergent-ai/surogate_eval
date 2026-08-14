@@ -300,3 +300,39 @@ def test_a_resolved_judge_is_the_one_that_gets_used(monkeypatch):
 
     assert result == {"status": "completed"}
     assert handed_over["evaluation_model"].get_model_name() == "judge"
+
+
+def test_a_refusal_judge_must_name_a_target_not_a_model_string(tmp_path):
+    """The loader has to agree with what the runner can actually resolve.
+
+    `GuardrailsEvaluator` is handed the judge *object* and calls it directly,
+    so a provider-model string there can never become anything callable --
+    it used to be ignored, and the target took the role. Accepting the string
+    at load and failing in `_judge_target` mid-scan is precisely the
+    fail-after-provisioning case this check exists to prevent.
+    """
+    text = config_text(security="""\
+    guardrails:
+      enabled: true
+      evaluation_model: gpt-4o-mini
+      refusal_judge_model: gpt-4o-mini
+""")
+    with pytest.raises(ValueError) as exc:
+        load(tmp_path, text)
+
+    assert "refusal_judge_model" in str(exc.value)
+    assert "must name a target" in str(exc.value)
+
+
+def test_a_judge_scored_benchmark_row_will_not_grade_itself():
+    """The custom-eval path, which ops reaches through a custom benchmark
+    whose `evalType` is `judge`: nothing requires a `judge_model` there, and
+    the backend used to hand the role to the model under test."""
+    from surogate_eval.benchmarks.backends.custom_eval_backend import CustomEvalBackend
+
+    rows = [{"instruction": "q", "answer": "a", "_original_idx": 0}]
+
+    with pytest.raises(ConfigError) as exc:
+        CustomEvalBackend()._evaluate_judge_rows(rows, FakeTarget("t1"), {}, {})
+
+    assert "judge_model" in str(exc.value)

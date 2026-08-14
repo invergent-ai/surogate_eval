@@ -7,6 +7,20 @@
 ARG PYTHON_VERSION=3.12
 ARG VERSION=0.0.0
 
+# Extras installed into the venv, and the only difference between the two
+# images this file builds. The default is the CPU image every ordinary eval
+# runs on. The GPU variant is built with `--extra security --extra judge`,
+# which adds vLLM so a judge model can be served inside the eval pod.
+#
+# Two images rather than one, because this layer is a ~8GB copy and the pull
+# sits on the critical path of every run: a colocated judge is the exception,
+# and making every CPU eval pull a serving stack it never loads has already
+# cost us runs killed while waiting for an instance.
+# Fails the build if a stage uses it without redeclaring `ARG EXTRAS`: an
+# unset value expands to nothing, and `uv sync` with no extras succeeds while
+# quietly producing an image missing the packages every eval needs.
+ARG EXTRAS="--extra security"
+
 # ── deps: install dependencies only (rarely changes) ──────────────
 FROM python:${PYTHON_VERSION}-slim-bookworm AS deps
 
@@ -23,19 +37,22 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
 
 WORKDIR /app
 
+ARG EXTRAS
+
 # Only copy lock files — this layer is cached as long as deps don't change
 COPY pyproject.toml uv.lock README.md ./
 RUN --mount=type=cache,target=/root/.cache/uv \
-    uv sync --frozen --no-dev --no-install-project --extra security
+    uv sync --frozen --no-dev --no-install-project ${EXTRAS:?must be set}
 
 # ── builder: install project code on top of cached deps ───────────
 FROM deps AS builder
 
 ARG VERSION
+ARG EXTRAS
 
 COPY surogate_eval ./surogate_eval
 RUN --mount=type=cache,target=/root/.cache/uv \
-    uv sync --frozen --no-dev --extra security
+    uv sync --frozen --no-dev ${EXTRAS:?must be set}
 
 # Install quarantined packages (after sync so they don't get overwritten)
 RUN --mount=type=cache,target=/root/.cache/uv \

@@ -58,6 +58,25 @@ jobs:
           cache-from: type=gha
           cache-to: type=gha,mode=max
 
+      # Same image plus vLLM, for evaluations whose judge runs inside the pod.
+      # Separate tags rather than one image: this variant is much larger, and
+      # every ordinary CPU eval would otherwise pull a serving stack it never
+      # loads. Its own cache scope, so the two builds do not evict each other.
+      - name: Build and push (GPU judge variant)
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          push: true
+          tags: |
+            ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}:${{ steps.version.outputs.version }}-gpu
+            ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}:latest-gpu
+          labels: ${{ steps.meta.outputs.labels }}
+          build-args: |
+            VERSION=${{ steps.version.outputs.version }}
+            EXTRAS=--extra security --extra judge
+          cache-from: type=gha,scope=gpu
+          cache-to: type=gha,mode=max,scope=gpu
+
   release:
     needs: build-and-push
     runs-on: ubuntu-latest

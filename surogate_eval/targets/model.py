@@ -1,6 +1,7 @@
 # surogate/eval/targets/model.py
 import asyncio
 import json
+import os
 import time
 
 import httpx
@@ -13,15 +14,56 @@ logger = get_logger()
 
 #: Seconds a health-check probe may spend establishing a connection. A host
 #: that is unroutable, refusing, or gone fails here, so this bounds the cost
-#: of a dead endpoint.
+#: of a dead endpoint. Not tunable: it is what keeps the read budget below
+#: affordable, and raising the two together would undo the asymmetry.
 CONNECT_TIMEOUT = 10
 
-#: Seconds a health-check probe may then wait for the response. Sized for a
+def _seconds_from_env(name: str, default: int) -> int:
+    """A positive whole number of seconds from ``name``, or *default*.
+
+    Unusable values fall back rather than raise. This is read at import, so
+    raising would turn a typo in a pod env var into a runner that cannot
+    start, with a traceback naming httpx rather than the variable. Zero and
+    negative are unusable and not merely odd: httpx reads them as "give up
+    immediately", which fails every target instead of waiting for the slow
+    one.
+    """
+    raw = os.environ.get(name)
+    if raw is None or not raw.strip():
+        return default
+    try:
+        value = int(raw.strip())
+    except ValueError:
+        value = 0
+    if value <= 0:
+        logger.warning(
+            f"{name}={raw!r} is not a positive whole number of seconds; using {default}"
+        )
+        return default
+    return value
+
+
+#: Seconds a health-check probe may wait for the response. Sized for a
 #: serverless target booting from zero: the platform's front door completes
 #: the handshake at once and holds the request while the container starts, so
 #: a cold start is slow to *answer*, not slow to connect. Measured against a
-#: Modal endpoint at 65s cold and 1.07s warm.
-COLD_START_READ_TIMEOUT = 90
+#: Modal endpoint at 65s cold and 1.07s warm; the default is several times
+#: that because the measurement is one container on one platform, and being
+#: wrong in this direction reports a working model as a missing one.
+#:
+#: What it costs when it is wrong the other way: only a host that completes a
+#: handshake and then says nothing ever spends this, and it spends it once,
+#: on the first path. But ``eval.py`` probes targets serially with no
+#: deadline, so a config whose endpoints are all wedged pays it per target --
+#: 310s each, against 100s before, and this change also makes a judge target
+#: mandatory for a security scan. Making phase 1 concurrent is the fix for
+#: that, and it is a separate change; see E-RUN-18 in the findings doc.
+#:
+#: Process-global, while the property it describes is per-target. The right
+#: home is eventually a per-target key in the rendered config, which is how
+#: ops sets every other target field; until then this is the operator's
+#: escape hatch, not the product's knob.
+COLD_START_READ_TIMEOUT = _seconds_from_env("EVAL_COLD_START_READ_TIMEOUT", 300)
 
 
 class APIModelTarget(BaseTarget):
@@ -313,7 +355,10 @@ class APIModelTarget(BaseTarget):
                 f"Could not verify {self.name} at {self.base_url}: nothing "
                 f"answered on {', '.join(paths)} "
                 f"({COLD_START_READ_TIMEOUT}s on {paths[0]}, then "
-                f"{CONNECT_TIMEOUT}s each); treating as unhealthy"
+                f"{CONNECT_TIMEOUT}s each); treating as unhealthy. A model "
+                f"that is merely cold reads exactly like one that is gone: "
+                f"if it needs longer than {COLD_START_READ_TIMEOUT}s to "
+                f"answer its first request, raise EVAL_COLD_START_READ_TIMEOUT."
             )
             return False
 

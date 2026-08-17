@@ -131,6 +131,7 @@ targets:
     red_teaming:
       enabled: true
       vulnerabilities: [bias]
+      evaluation_model: gpt-4o-mini
       purpose: "Support bot for ${persona}."
 """
     config = load_config(EvalConfig, write(tmp_path, text))

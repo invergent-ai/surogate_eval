@@ -4,6 +4,7 @@ from pathlib import Path
 
 from surogate_eval.utils.dict import DictDefault
 from surogate_eval.utils.logger import get_logger
+from surogate_eval.utils.text import blank_as_none
 
 logger = get_logger()
 
@@ -20,23 +21,89 @@ SUPPORT_MODEL_KEYS = (
     'translator',
 )
 
+#: The subset of the above that decides a verdict rather than helping produce
+#: one. A target filling one of these for itself is grading its own answers.
+#:
+#: ``simulator_model`` and ``translator`` are deliberately absent. Generating
+#: your own adversarial prompts, or translating them, makes for a weaker scan
+#: rather than a fabricated result, and requiring a second model for it would
+#: take red teaming away from every single-target config.
+JUDGE_MODEL_KEYS = (
+    'judge_model',
+    'refusal_judge_model',
+    'evaluation_model',
+)
 
-def _referenced_target(block: Any) -> Optional[str]:
+#: Judging roles a security section must fill, with someone other than the
+#: target, before it is allowed to run. Omitting the judge and naming the
+#: target as the judge are the same defect written two ways: both end with a
+#: model reporting on whether it was itself jailbroken, and a jailbroken
+#: model is exactly the one whose report on itself is worthless.
+#:
+#: This is an error where a self-named ``judge_model`` on a metric is only a
+#: warning, and the difference is who chose it. Nobody writes these by hand:
+#: ops fills them in automatically with the target's own name whenever no
+#: judge was configured in Studio, so the config states a decision the user
+#: never made. A ``judge_model`` naming its own target is a deliberate, if
+#: weak, choice -- ``examples/config.yaml`` ships it -- and stays the user's
+#: to make.
+REQUIRED_SECURITY_JUDGES = {
+    'red_teaming': ('evaluation_model',),
+    'guardrails': ('evaluation_model', 'refusal_judge_model'),
+}
+
+#: Judging roles that only accept ``{target: <name>}``, never a provider
+#: model string. The refusal judge is called directly as a target
+#: (``GuardrailsEvaluator`` takes the object, not a model name), so a string
+#: there has no way to become anything callable. It used to be ignored and
+#: the target took the role; validating the shape here keeps the loader
+#: agreeing with ``runners._judge_target``, which is what actually resolves
+#: it -- otherwise a config passes validation and the scan fails mid-run,
+#: which is the case this check exists to prevent.
+TARGET_ONLY_JUDGE_KEYS = frozenset({'refusal_judge_model'})
+
+
+def _names_a_model(block: Any) -> bool:
+    """Whether a support-model block actually names something.
+
+    ``{target: <name>}`` names a target; a plain string names a provider
+    model. Blank in either shape is the same as absent: it is what an empty
+    form field produces, and neither can be asked to judge anything.
+    """
+    if isinstance(block, dict):
+        return bool(referenced_target(block))
+    if isinstance(block, str):
+        return bool(blank_as_none(block))
+    return False
+
+
+def referenced_target(block: Any) -> Optional[str]:
     """The target a support-model block names, if it names one.
 
     A reference to another entry in ``targets:`` is ``{target: <name>}``.
     The same keys also take a plain model string (``simulator_model:
     gpt-3.5-turbo``), which names a provider model and refers to no target.
+
+    The one definition of that shape, for the loader and the runner both:
+    ``runners._judge_target`` resolves what this validates, and the design
+    of both depends on the two agreeing about what counts as a reference.
+    Blank is absent rather than a name nobody has, which is what an empty
+    form field produces.
     """
     if isinstance(block, dict):
-        return block.get('target')
+        return blank_as_none(block.get('target'))
     return None
 
 
-def _iter_support_references(target: 'TargetConfig') -> Iterator[Tuple[str, str, str]]:
-    """Every target this one names, as ``(where, key, name)``.
+def _iter_support_references(
+    target: 'TargetConfig',
+) -> Iterator[Tuple[str, Optional[str], str, str]]:
+    """Every target this one names, as ``(where, section, key, name)``.
 
-    ``where`` locates the reference for an error message.
+    ``where`` locates the reference for an error message. ``section`` is the
+    security section it came from, or ``None`` for a metric or benchmark; it
+    is what lets a caller tell the references ``_validate_security_judges``
+    already rules on from the ones only this traversal sees.
 
     A disabled section still counts. Naming a target as your judge is what
     makes that target a support target - it is declared to serve someone
@@ -50,24 +117,24 @@ def _iter_support_references(target: 'TargetConfig') -> Iterator[Tuple[str, str,
         where = f"Target '{target.name}', Evaluation '{eval_name}'"
         for metric in evaluation.get('metrics') or []:
             for key in SUPPORT_MODEL_KEYS:
-                name = _referenced_target(metric.get(key))
+                name = referenced_target(metric.get(key))
                 if name:
-                    yield where, key, name
+                    yield where, None, key, name
 
         for benchmark in evaluation.get('benchmarks') or []:
             bench_where = f"Target '{target.name}', Benchmark '{benchmark.get('name')}'"
             for key in SUPPORT_MODEL_KEYS:
-                name = _referenced_target(benchmark.get(key))
+                name = referenced_target(benchmark.get(key))
                 if name:
-                    yield bench_where, key, name
+                    yield bench_where, None, key, name
 
-    for section_name in ('red_teaming', 'guardrails'):
+    for section_name in REQUIRED_SECURITY_JUDGES:
         section = getattr(target, section_name) or {}
         where = f"Target '{target.name}', {section_name}"
         for key in SUPPORT_MODEL_KEYS:
-            name = _referenced_target(section.get(key))
+            name = referenced_target(section.get(key))
             if name:
-                yield where, key, name
+                yield where, section_name, key, name
 
 
 @dataclass
@@ -366,8 +433,9 @@ class EvalConfig:
                 warnings.extend(target_warnings)
 
             # Validate target references (judge models)
-            ref_errors = self._validate_target_references()
+            ref_errors, ref_warnings = self._validate_target_references()
             errors.extend(ref_errors)
+            warnings.extend(ref_warnings)
 
             # Validate file paths
             path_warnings = self._validate_file_paths()
@@ -436,6 +504,9 @@ class EvalConfig:
         if target.infrastructure:
             infra_warnings = self._validate_infrastructure(target.infrastructure, target.name)
             warnings.extend(infra_warnings)
+
+        # Validate the security sections' judges
+        errors.extend(self._validate_security_judges(target))
 
         # Validate red teaming
         if target.red_teaming and target.red_teaming.get('enabled'):
@@ -524,16 +595,75 @@ class EvalConfig:
 
         return warnings
 
-    def _validate_target_references(self) -> list[str]:
-        """Validate that support model references point to existing targets."""
+    def _validate_target_references(self) -> tuple[list[str], list[str]]:
+        """Validate that support model references point to existing targets.
+
+        Returns (errors, warnings). The warning is a target that names itself
+        for a judging role: legal, deliberate, and worth saying out loud,
+        because a score produced that way answers a different question than
+        the one the user thinks they asked. Where nobody chose it -- the
+        security sections, which ops fills in automatically -- it is an error
+        instead, raised by ``_validate_security_judges`` and skipped here so
+        one defect produces one message.
+        """
         errors = []
+        warnings = []
         target_names = {t.name for t in self.targets}
 
         for target in self.targets:
-            for where, key, name in _iter_support_references(target):
+            for where, section, key, name in _iter_support_references(target):
                 if name not in target_names:
                     errors.append(
                         f"{where}: {key} target '{name}' not found in configured targets"
+                    )
+                elif (
+                    key in JUDGE_MODEL_KEYS
+                    and name == target.name
+                    and key not in REQUIRED_SECURITY_JUDGES.get(section, ())
+                ):
+                    warnings.append(
+                        f"{where}: {key} names '{name}', the target being "
+                        f"evaluated, so this target grades its own answers"
+                    )
+
+        return errors, warnings
+
+    def _validate_security_judges(self, target: TargetConfig) -> list[str]:
+        """An enabled scan must say who grades it, and not name itself.
+
+        The two failures are one defect. A red-team or guardrails section
+        with no judge does not skip judging: it hands the role to the target
+        under test, which is what naming the target does explicitly. Both are
+        rejected so that neither can produce a safety verdict a model wrote
+        about itself.
+        """
+        errors = []
+
+        for section_name, required in REQUIRED_SECURITY_JUDGES.items():
+            section = getattr(target, section_name) or {}
+            if not section.get('enabled'):
+                continue
+            for key in required:
+                block = section.get(key)
+                if not _names_a_model(block):
+                    errors.append(
+                        f"Target '{target.name}', {section_name}: {key} is "
+                        f"required when the section is enabled, because "
+                        f"without it the target grades itself"
+                    )
+                elif referenced_target(block) == target.name:
+                    errors.append(
+                        f"Target '{target.name}', {section_name}: {key} names "
+                        f"'{target.name}', the target being scanned. A model "
+                        f"cannot report on whether it was itself jailbroken "
+                        f"-- name a different target, or a provider model"
+                    )
+                elif key in TARGET_ONLY_JUDGE_KEYS and not referenced_target(block):
+                    errors.append(
+                        f"Target '{target.name}', {section_name}: {key} must "
+                        f"name a target ({{target: <name>}}), not a model "
+                        f"string -- it is called directly rather than through "
+                        f"a provider"
                     )
 
         return errors
@@ -555,7 +685,7 @@ class EvalConfig:
         return {
             name
             for target in self.targets
-            for _, _, name in _iter_support_references(target)
+            for *_, name in _iter_support_references(target)
             if name != target.name
         }
 

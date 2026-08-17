@@ -15,6 +15,7 @@ from surogate_eval.outcome import (
 )
 from surogate_eval.runners import (
     _write_progress,
+    writes_artifacts,
     run_benchmarks,
     run_evaluation,
     run_guardrails_testing_async,
@@ -350,8 +351,20 @@ class SurogateEval(SurogateCommand):
         return None
 
     def _save_consolidated_results(self):
-        """Save consolidated results to a single file."""
+        """Save consolidated results to a single file.
+
+        Rank 0 only, which also covers the summary report written from here
+        (E-RUN-6). Under a distributed relaunch every process holds its own
+        copy of the same consolidated results and would write both files.
+        """
         try:
+            # `writes_artifacts`, not `is_master`: this file IS the run's
+            # output, and it is written after the outcome is computed, so an
+            # unreadable RANK swallowed here would leave a run that exits 0
+            # with no results at all.
+            if not writes_artifacts():
+                return
+
             import json
             from datetime import datetime
             from enum import Enum

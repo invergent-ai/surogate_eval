@@ -702,11 +702,21 @@ guardrails:
   attacks: List[str]                   # Required
   attacks_per_vulnerability: int       # Default: 3
   safe_prompts_dataset: str            # Highly recommended
-  refusal_judge_model:                 # Optional
+  refusal_judge_model:                 # Required, and must be another target
     target: str
   max_concurrent: int                  # Default: 10
   simulator_model: str                 # Default: gpt-3.5-turbo
-  evaluation_model: str                # Default: gpt-4o-mini
+  evaluation_model: str                # Required (model name, or {target: ...})
   purpose: str                         # Optional
   ignore_errors: bool                  # Default: true
 ```
+
+Both judging roles are required, and neither may name the target being
+scanned. They used to fall back to it, which produced a safety verdict the
+model wrote about itself: a jailbroken model reporting on whether it was
+jailbroken. Config validation rejects an enabled section that omits either
+one, or that names its own target.
+
+`simulator_model` is deliberately not covered by that rule. Generating your
+own adversarial prompts makes for a weaker scan, not a fabricated result, so
+it still falls back to the target with a warning.

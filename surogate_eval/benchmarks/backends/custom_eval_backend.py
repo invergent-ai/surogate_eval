@@ -10,6 +10,7 @@ from typing import Dict, Any, List, Optional
 
 from surogate_eval.benchmarks.matching import Matcher, build_matcher, clean_formatting
 from surogate_eval.benchmarks.pass_rule import LEGACY_JUDGE_MIN, row_passed
+from surogate_eval.errors import ConfigError
 from surogate_eval.targets import BaseTarget
 from surogate_eval.utils.logger import get_logger
 from surogate_eval.utils.text import blank_as_none
@@ -700,13 +701,19 @@ class CustomEvalBackend:
         logger.info(f"Evaluating {len(rows)} judge rows with G-Eval")
 
         from surogate_eval.models.deepeval_wrapper import DeepEvalTargetWrapper
-        if judge_target:
-            judge_model = DeepEvalTargetWrapper(judge_target)
-            logger.info(f"Using judge target: {judge_target.name}")
-        else:
-            # Fall back to the eval target itself as judge
-            judge_model = DeepEvalTargetWrapper(target)
-            logger.info(f"No judge configured, using target as judge: {target.name}")
+        if not judge_target:
+            # No fallback to `target` here (E-RUN-7). Every row on this path
+            # is scored by asking a model whether an answer is right; letting
+            # the model under test answer that produces a benchmark score it
+            # awarded itself, which is worse than no score because it looks
+            # like one. Raised rather than skipped so the benchmark fails.
+            raise ConfigError(
+                "This benchmark is judge-scored and no judge_model is "
+                "configured, so the model under test would grade its own "
+                "answers. Name a judge for the benchmark."
+            )
+        judge_model = DeepEvalTargetWrapper(judge_target)
+        logger.info(f"Using judge target: {judge_target.name}")
 
         # ``blank_as_none`` and ``or``, not ``get``'s default: a criteria that
         # is empty OR only whitespace is as fatal to GEval as an absent one,
@@ -1108,6 +1115,21 @@ class CustomEvalBackend:
 
         # Get judge target if configured
         judge_target = config.get('backend_params', {}).get('judge_target')
+
+        # Decided here rather than inside the judge loop, because both facts
+        # are already known and the exact-match loop below is paid inference
+        # against the target. A hybrid benchmark with 5,000 exact-match rows
+        # and 20 judge rows would otherwise buy 5,000 completions and then
+        # fail on a config problem that was knowable before the first one.
+        # Same shape as the guardrails path, which resolves both judging
+        # roles before building anything so the section fails on its config
+        # rather than part way through a scan.
+        if judge_rows and not judge_target:
+            raise ConfigError(
+                "This benchmark is judge-scored and no judge_model is "
+                "configured, so the model under test would grade its own "
+                "answers. Name a judge for the benchmark."
+            )
 
         # Calculate total rows for progress reporting across both loops
         total_rows = len(exact_match_rows) + len(judge_rows)

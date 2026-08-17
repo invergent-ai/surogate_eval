@@ -126,6 +126,14 @@ def test_exact_match_loop_reports_progress(report_calls):
     assert final_call["score_sum"] == sum(r["score"] for r in scored_results) == 2.0
 
 
+class JudgeForProgress:
+    """A judge distinct from the target under test. G-Eval is faked in these
+    tests, so it is never called -- it only has to exist and have a name."""
+
+    name = "judge"
+    config = {}
+
+
 class UnreachableTarget:
     """Every request comes back carrying an error -- the target-is-down
     case a user is most likely watching when live progress is what tells
@@ -172,7 +180,10 @@ def test_judge_loop_with_every_row_erroring_still_reports_mid_loop(report_calls)
     ]
 
     backend = CustomEvalBackend()
-    results = backend._evaluate_judge_rows(rows, UnreachableTarget(), {}, {})
+    # A judge that is not the target under test: required since E-RUN-7.
+    judge = UnreachableTarget()
+    judge.name = "judge"
+    results = backend._evaluate_judge_rows(rows, UnreachableTarget(), {}, {}, judge)
 
     assert [r["status"] for r in results] == ["errored"] * 3
     assert len(report_calls) >= 2, "must report during the loop, not just once after it ends"
@@ -229,7 +240,13 @@ def test_mixed_benchmark_progress_is_cumulative(monkeypatch, report_calls):
 
     backend.evaluate(
         FakeTargetForProgress(), "mixed_bench",
-        {"source": "unused", "eval_type": "hybrid"},
+        {
+            "source": "unused",
+            "eval_type": "hybrid",
+            # A judge-scored row needs a judge that is not the target under
+            # test (E-RUN-7); this is where the runner puts the resolved one.
+            "backend_params": {"judge_target": JudgeForProgress()},
+        },
     )
 
     # Verify we have at least one report per loop (from unconditional writes)

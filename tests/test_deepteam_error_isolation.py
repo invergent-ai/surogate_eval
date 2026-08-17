@@ -234,6 +234,12 @@ class FakeTarget:
         return self.send_request(request)
 
 
+class JudgeTarget(FakeTarget):
+    """A second target, so the scan is not graded by what it is scanning."""
+
+    name = "judge"
+
+
 def test_red_team_runner_asks_deepteam_to_isolate_errors(monkeypatch):
     from surogate_eval.runners import run_red_teaming_async
 
@@ -242,8 +248,13 @@ def test_red_team_runner_asks_deepteam_to_isolate_errors(monkeypatch):
     asyncio.run(
         run_red_teaming_async(
             FakeTarget(),
-            {"vulnerabilities": ["pii_leakage"], "attacks": ["prompt_injection"]},
-            lambda name: None,
+            {
+                "vulnerabilities": ["pii_leakage"],
+                "attacks": ["prompt_injection"],
+                # Required, and required to be someone else (E-RUN-7).
+                "evaluation_model": {"target": "judge"},
+            },
+            lambda name: JudgeTarget() if name == "judge" else None,
         )
     )
 
@@ -258,8 +269,13 @@ def test_guardrails_asks_deepteam_to_isolate_errors(monkeypatch):
     asyncio.run(
         run_guardrails_testing_async(
             FakeTarget(),
-            {"vulnerabilities": ["pii_leakage"], "attacks": ["prompt_injection"]},
-            lambda name: None,
+            {
+                "vulnerabilities": ["pii_leakage"],
+                "attacks": ["prompt_injection"],
+                "evaluation_model": {"target": "judge"},
+                "refusal_judge_model": {"target": "judge"},
+            },
+            lambda name: JudgeTarget() if name == "judge" else None,
         )
     )
 

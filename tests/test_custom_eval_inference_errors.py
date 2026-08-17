@@ -32,6 +32,17 @@ class FakeTarget:
         return TargetResponse(content="something", raw_response={}, error=None)
 
 
+class JudgeTarget(FakeTarget):
+    """A judge that is not the target under test.
+
+    Required now rather than optional: a judge-scored row with no judge used
+    to be graded by the model whose answer it is (E-RUN-7). Every judge test
+    passes one because a run without one no longer reaches G-Eval.
+    """
+
+    name = "judge"
+
+
 class UnreachableTarget:
     """A target whose request came back carrying an error."""
 
@@ -226,7 +237,7 @@ def run_judge_rows(fake_geval, target=None, config=None, **kwargs):
     fake_geval(**kwargs)
     backend = CustomEvalBackend()
     return backend._evaluate_judge_rows(
-        ROWS, target or FakeTarget(), config or {}, {}, None,
+        ROWS, target or FakeTarget(), config or {}, {}, JudgeTarget(),
     )
 
 
@@ -286,7 +297,13 @@ def test_judge_errors_are_reported_in_the_summary_counts(monkeypatch, tmp_path):
 
     backend = CustomEvalBackend()
     result = backend.evaluate(
-        FakeTarget(), "judge_bench", {"source": str(dataset_path), "eval_type": "judge"}
+        FakeTarget(), "judge_bench",
+        {
+            "source": str(dataset_path),
+            "eval_type": "judge",
+            # Where `runners._run_single_benchmark` puts the resolved judge.
+            "backend_params": {"judge_target": JudgeTarget()},
+        },
     )
 
     judge = result["task_results"]["judge"]
@@ -347,7 +364,11 @@ def test_mixed_evaluate_reports_errors_in_scored_n_errored_n(monkeypatch, tmp_pa
     result = backend.evaluate(
         MixedTarget(),
         "mixed_bench",
-        {"source": str(dataset_path), "eval_type": "hybrid"},
+        {
+            "source": str(dataset_path),
+            "eval_type": "hybrid",
+            "backend_params": {"judge_target": JudgeTarget()},
+        },
     )
 
     em = result["task_results"]["exact_match"]
@@ -410,7 +431,7 @@ def test_a_blank_criteria_cell_falls_back_to_the_benchmark_default(fake_geval):
     rows = [dict(ROWS[0], judge_criteria="  "), dict(ROWS[1], judge_criteria="")]
 
     results = CustomEvalBackend()._evaluate_judge_rows(
-        rows, FakeTarget(), {"judge_criteria": "Reward a professional tone."}, {}, None,
+        rows, FakeTarget(), {"judge_criteria": "Reward a professional tone."}, {}, JudgeTarget(),
     )
 
     assert [r["status"] for r in results] == ["scored", "scored"]

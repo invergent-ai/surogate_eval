@@ -114,11 +114,23 @@ def test_a_non_zero_rank_cannot_overwrite_rank_zeros_file(results_dir, monkeypat
     assert json.loads((results_dir / "bench_gsm8k.json").read_text())["score"] == 1.0
 
 
-def test_an_unparseable_rank_cannot_fail_the_run(results_dir, monkeypatch):
-    """`is_master()` parses `RANK`, and these writers are documented never to
-    fail the run. A garbage value from the environment must therefore lose
-    the artifact, not the run."""
-    monkeypatch.setenv("RANK", "")
+def test_an_unparseable_rank_still_writes_every_artifact(results_dir, monkeypatch):
+    """`is_master()` parses `RANK` with a bare `int()`, which raises on a
+    value that is exported but not a number.
+
+    Swallowing that inside each writer's own handler looked harmless and was
+    not: `_save_consolidated_results` writes the run's *output*, after the
+    outcome is computed, so a broken RANK produced a run that exits 0 with no
+    results file at all -- the artifact ops reads. An unreadable rank writes
+    instead of skipping, because two processes writing one file is
+    recoverable and no process writing it is not.
+    """
+    monkeypatch.setenv("RANK", "not-a-rank")
 
     runners._flush_progress()
     runners._write_bench_result({"benchmark_name": "gsm8k", "score": 1.0})
+    _save_consolidated({"targets": {}})
+
+    assert (results_dir / "progress.json").exists()
+    assert (results_dir / "bench_gsm8k.json").exists()
+    assert list(results_dir.glob("eval_*.json")), "the run's own results were lost"

@@ -1116,6 +1116,21 @@ class CustomEvalBackend:
         # Get judge target if configured
         judge_target = config.get('backend_params', {}).get('judge_target')
 
+        # Decided here rather than inside the judge loop, because both facts
+        # are already known and the exact-match loop below is paid inference
+        # against the target. A hybrid benchmark with 5,000 exact-match rows
+        # and 20 judge rows would otherwise buy 5,000 completions and then
+        # fail on a config problem that was knowable before the first one.
+        # Same shape as the guardrails path, which resolves both judging
+        # roles before building anything so the section fails on its config
+        # rather than part way through a scan.
+        if judge_rows and not judge_target:
+            raise ConfigError(
+                "This benchmark is judge-scored and no judge_model is "
+                "configured, so the model under test would grade its own "
+                "answers. Name a judge for the benchmark."
+            )
+
         # Calculate total rows for progress reporting across both loops
         total_rows = len(exact_match_rows) + len(judge_rows)
 

@@ -15,6 +15,7 @@ from surogate_eval.outcome import (
 )
 from surogate_eval.runners import (
     _write_progress,
+    writes_artifacts,
     run_benchmarks,
     run_evaluation,
     run_guardrails_testing_async,
@@ -23,7 +24,6 @@ from surogate_eval.runners import (
 )
 from surogate_eval.targets import BaseTarget, TargetFactory
 from surogate_eval.utils.command import SurogateCommand
-from surogate_eval.utils.dist import is_master
 from surogate_eval.utils.logger import get_logger
 
 logger = get_logger()
@@ -358,10 +358,11 @@ class SurogateEval(SurogateCommand):
         copy of the same consolidated results and would write both files.
         """
         try:
-            # Inside the handler, not above it: `is_master()` parses `RANK`,
-            # and this method already swallows its own failures rather than
-            # losing the run at the last step.
-            if not is_master():
+            # `writes_artifacts`, not `is_master`: this file IS the run's
+            # output, and it is written after the outcome is computed, so an
+            # unreadable RANK swallowed here would leave a run that exits 0
+            # with no results at all.
+            if not writes_artifacts():
                 return
 
             import json

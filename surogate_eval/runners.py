@@ -325,6 +325,31 @@ def run_benchmarks(
     return results
 
 
+def writes_artifacts() -> bool:
+    """Whether this process owns the run's result files (E-RUN-6).
+
+    ``is_master()`` parses ``RANK`` with a bare ``int()``, which raises on a
+    value that is exported but not a number. Swallowing that raise inside a
+    writer's own handler loses the artifact silently -- and for the
+    consolidated results, the artifact *is* the run's output, written after
+    the outcome is computed, so the run would still exit 0 with nothing to
+    show for it.
+
+    An unreadable rank therefore answers True. Under a broken environment,
+    two processes writing the same file is a worse-formatted result; no
+    process writing it is no result at all, and only one of those is
+    recoverable by looking at the file.
+    """
+    try:
+        return is_master()
+    except ValueError:
+        logger.warning(
+            f"RANK={os.environ.get('RANK')!r} is not a rank; "
+            f"writing results from this process rather than skipping them"
+        )
+        return True
+
+
 def _write_bench_result(result: Dict[str, Any]) -> None:
     """Write an individual benchmark result to eval_results/bench_{name}.json.
 
@@ -338,9 +363,10 @@ def _write_bench_result(result: Dict[str, Any]) -> None:
 
     name = result.get("benchmark_name") or result.get("name", "unknown")
     try:
-        # Inside the handler, not above it: `is_master()` parses `RANK`, and
-        # this function is documented never to fail the run.
-        if not is_master():
+        # `writes_artifacts`, not `is_master`, so a malformed RANK writes
+        # rather than silently skipping. Still inside the handler: this
+        # function is documented never to fail the run.
+        if not writes_artifacts():
             return
 
         out = _Path("eval_results")
@@ -383,9 +409,10 @@ def _flush_progress() -> None:
     progress, which is a bar that jumps backwards rather than a broken parse.
     """
     try:
-        # Inside the best-effort handler, not above it: `is_master()` parses
-        # `RANK`, and a failure here must never fail the run.
-        if not is_master():
+        # `writes_artifacts`, not `is_master`, so a malformed RANK writes
+        # rather than silently skipping. Still inside the best-effort
+        # handler: a failure here must never fail the run.
+        if not writes_artifacts():
             return
 
         out = Path("eval_results")

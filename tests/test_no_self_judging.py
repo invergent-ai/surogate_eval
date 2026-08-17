@@ -336,3 +336,40 @@ def test_a_judge_scored_benchmark_row_will_not_grade_itself():
         CustomEvalBackend()._evaluate_judge_rows(rows, FakeTarget("t1"), {}, {})
 
     assert "judge_model" in str(exc.value)
+
+
+def test_a_hybrid_benchmark_refuses_before_paying_for_its_exact_match_rows():
+    """The judge check has to happen before the exact-match loop, not inside
+    the judge loop that runs after it.
+
+    Both facts it needs -- that there are judge rows, and that no judge is
+    configured -- are known before either loop starts, and the exact-match
+    loop is paid inference against the target. A hybrid benchmark with 5,000
+    exact-match rows and 20 judge rows would otherwise buy 5,000 completions
+    and then fail on a config problem knowable up front.
+    """
+    from surogate_eval.benchmarks.backends.custom_eval_backend import CustomEvalBackend
+
+    class CountingTarget(FakeTarget):
+        calls = 0
+
+        def send_request(self, request):
+            CountingTarget.calls += 1
+            from surogate_eval.targets.base import TargetResponse
+            return TargetResponse(content="something", raw_response={}, error=None)
+
+    from datasets import Dataset
+
+    dataset = Dataset.from_list([
+        {"instruction": "q1", "answer": "a1", "eval_type": "exact_match"},
+        {"instruction": "q2", "answer": "a2", "eval_type": "judge"},
+    ])
+
+    backend = CustomEvalBackend()
+    backend._load_dataset = lambda *a, **kw: dataset
+    target = CountingTarget("t1")
+
+    with pytest.raises(ConfigError):
+        backend.evaluate(target, "hybrid_bench", {"source": "unused", "eval_type": "hybrid"})
+
+    assert CountingTarget.calls == 0, "the target was queried before the config was refused"

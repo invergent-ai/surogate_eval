@@ -40,8 +40,10 @@ One module, `surogate_eval/utils/redact.py`:
   (`api_key`, `apiKey`, `authorization`, `*_token`, `secret`, `password`) replaced by `***`.
   Inside strings the same rule applies to `key=value`, `key: value` and the repr / JSON forms
   (`'api_key': '...'`, `"api_key": "..."`), an Authorization value is masked whole whatever
-  its scheme (Bearer, Basic, Token, ...), and a bare `Bearer ...` is masked. Used at every
-  runner log site above that prints a structure.
+  its scheme (Bearer, Basic, Token, ...), and a bare `Bearer <credential>` (8 or more
+  characters with a digit) is masked. A key only starts where a word does, so the scan is linear
+  in the text's length. Used at every runner log site above that prints a structure, and by
+  `error_text` for exception text stored in results.
   A `*_token` field is a credential (`access_token`, `hf_token`, `auth_token`, a bare `token`)
   unless the word before it makes it a vocabulary token or a count (`eos_token`, `pad_token`,
   `max_token`); `token_budget`, `pad_token_id`, `max_tokens` and `tokenizer` are not secrets.
@@ -51,15 +53,20 @@ One module, `surogate_eval/utils/redact.py`:
   installed, for every environment variable whose name is a secret field name (`OPENAI_API_KEY`, `HF_TOKEN`,
   `GITHUB_TOKEN`, the LakeFS `*_SECRET_ACCESS_KEY`, ...), so a key that only lives in the pod's
   environment is masked too.
-- `install_log_masking()`, called first by the runner's entry points (`cli/main.py`
-  `cli_main`, the `cli/eval.py` child's `__main__` block) and never as an import side effect, so
-  ops or a notebook importing the package keeps its own hooks. It does three things:
+- `install_log_masking()`, called first by the runner's entry points and never as a side
+  effect of importing a library module, so ops or a notebook importing the package keeps its
+  own hooks. The entry points are `cli_main` in `cli/main.py` and the eval process's entry
+  script `cli/eval.py`, which calls it at module level rather than under `__main__`: a
+  multiprocessing spawn child (evalscope runs code benchmarks in them) imports that script as
+  `__mp_main__` and skips the `__main__` block. It does three things:
   - Masks every line when a handler writes it, not when the record is made. It swaps each new
     record's class (keeping whatever record factory was already set) for one whose
     `getMessage` and `exc_text` return masked text. Every formatter reads a record through
     those two, so this covers every handler, including ones a library attaches later to a
     logger that does not propagate (evalscope's), which a filter on the runner's own handlers
-    would miss; and a record no handler writes is never formatted or scanned.
+    would miss; and a record no handler writes is never formatted or scanned. A record is
+    masked once however many handlers write it; the masked message is cached on the record
+    and recomputed only if a filter replaces the message.
   - Installs `sys.excepthook` and `threading.excepthook`, which report an uncaught exception
     through the masked logger (a thread's as `Exception in thread <name>`).
   - Remembers the provider keys in the environment.
@@ -70,11 +77,17 @@ One module, `surogate_eval/utils/redact.py`:
   (8 or more characters with a digit), and `key=value`, `key: value`, repr, JSON or URL query
   forms whose key is, or ends in, an explicit credential name (`api_key`, `apikey`, `api-key`,
   `x-api-key`, `access_token`, `auth_token`, `refresh_token`, `api_token`, `hf_token`,
-  `bearer_token`, `client_secret`, `secret_key`, `password`). Generic `*_token`, a bare `token`
-  and a bare `secret` are left alone, so `time_to_first_token: 0.123s` and "What is a token:"
-  survive. `password: value` with an unquoted key and a colon is left alone too: that is how
-  prompt prose reads ("Please enter your password: hunter2"), and a config or header writes it
-  as `password=...` or with a quoted key; a password the runner knows is still masked by value.
+  `github_token`, `notion_token`, `bearer_token`, `client_secret`, `secret_key`,
+  `secret_access_key`, `private_key`, `password`, `passwd`). Ending in covers the suffix forms
+  (`*_API_TOKEN`, `*_SECRET_KEY`, `*_ACCESS_TOKEN`, `AWS_SECRET_ACCESS_KEY`). Generic `*_token`,
+  a bare `token` and a bare `secret` are left alone, so `time_to_first_token: 0.123s` and
+  "What is a token:" survive. A bare lowercase `password: value` (unquoted key, colon) is left
+  alone too: that is how prompt prose reads ("Please enter your password: hunter2"). A config
+  or header writes it as `password=...`, with a quoted key, with a prefix (`db_password`) or in
+  capitals (`DB_PASSWORD`, `PASSWORD`), and all of those are masked; a password the runner knows
+  is still masked by value. A key only starts where a word does, so masking a line is linear in
+  its length (a 200k-character base64 run takes milliseconds, where every start position used
+  to rescan the rest of the word).
   A name directly after an ANSI colour code still matches, and a value never takes an ESC or
   `[`, so the colour reset after it survives. The remembered values are compiled into one
   pattern, longest first, rebuilt only when a new value is added. Values shorter than 8
@@ -86,8 +99,9 @@ runner's `ColoredFormatter` appends the record's `exc_text`, which a masked reco
 stored; before, it printed the message only and every traceback logged with `exc_info` vanished
 from the run's logs.
 
-The judge wrapper's parse error cuts the underlying error to 200 characters; it masks first and
-cuts after, so a key straddling the cut cannot survive as a prefix no mask recognises.
+Where text is cut before it is logged or stored, it is masked first and cut after, so a key
+straddling the cut cannot survive as a prefix no mask recognises: the judge wrapper's parse
+error (200 characters) and the MCPMark adapter's stderr head and stdout tail (500 each).
 
 Failure records stored in the results ops shows (`eval.py` target failures, `runners.py`
 evaluation, metric batch, benchmark, stress, red team and guardrails failures, the stress tester's

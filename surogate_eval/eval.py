@@ -156,9 +156,9 @@ class SurogateEval(SurogateCommand):
                     self._record_target_result(target_results)
 
             except Exception as e:
-                logger.error(f"Failed to run evaluations for target '{target_name}': {e}")
-                import traceback
-                logger.error(traceback.format_exc())
+                logger.error(
+                    f"Failed to run evaluations for target '{target_name}': {e}", exc_info=True
+                )
                 # Record the crash. Without an entry the target is invisible
                 # both in the results file and to the outcome computation, so
                 # a run with another healthy target still reported success.

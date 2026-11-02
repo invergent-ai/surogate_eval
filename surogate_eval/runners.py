@@ -285,9 +285,7 @@ def run_evaluation(
         }
 
     except Exception as e:
-        logger.error(f"Failed to run evaluation '{eval_name}': {e}")
-        import traceback
-        logger.error(traceback.format_exc())
+        logger.error(f"Failed to run evaluation '{eval_name}': {e}", exc_info=True)
 
         return {
             "name": eval_name,
@@ -712,9 +710,7 @@ def run_stress_testing(
         return result.to_dict()
 
     except Exception as e:
-        logger.error(f"Stress testing failed: {e}")
-        import traceback
-        logger.error(traceback.format_exc())
+        logger.error(f"Stress testing failed: {e}", exc_info=True)
         return _stress_failure(str(e))
 
 

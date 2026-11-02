@@ -68,9 +68,6 @@ except ImportError:
 
 logger = get_logger()
 
-#: Leave OPENAI_API_KEY as the pod has it (the OpenAI branch with no target key).
-_KEEP_ENV = object()
-
 
 def _set_env(name: str, value: Optional[str]) -> None:
     if value is None:
@@ -279,11 +276,12 @@ class LMEvalBackend:
         base_url = target.config.get('base_url', '')
         api_key = target.config.get('api_key', '')
         model_name = target.config.get('model')
-        # What OPENAI_API_KEY holds while lm-eval runs (None: unset). lm-eval
+        # What OPENAI_API_KEY holds while lm-eval runs (None: unset; the
+        # pod's value unless a branch below says otherwise). lm-eval
         # authenticates from that variable only; an api_key in model_args is
         # ignored, and model_args are logged and written into its results,
         # so the key never goes there.
-        lm_eval_key = _KEEP_ENV
+        saved_key = lm_eval_key = os.environ.get('OPENAI_API_KEY')
 
         # Detect if this is OpenAI API
         is_openai = 'api.openai.com' in base_url or (
@@ -366,9 +364,7 @@ class LMEvalBackend:
         # Scoped to the call: a target key left in OPENAI_API_KEY would be
         # sent to OpenAI by a later deepeval/deepteam provider-model judge.
         # Benchmarks run one at a time, so no concurrent run shares it.
-        saved_key = os.environ.get('OPENAI_API_KEY')
-        if lm_eval_key is not _KEEP_ENV:
-            _set_env('OPENAI_API_KEY', lm_eval_key)
+        _set_env('OPENAI_API_KEY', lm_eval_key)
         try:
             results = evaluator.simple_evaluate(**eval_args)
         except Exception as e:
@@ -389,8 +385,7 @@ class LMEvalBackend:
                 }
             }
         finally:
-            if lm_eval_key is not _KEEP_ENV:
-                _set_env('OPENAI_API_KEY', saved_key)
+            _set_env('OPENAI_API_KEY', saved_key)
             self.cleanup()
 
         return self._parse_results(results, benchmark_name, source)

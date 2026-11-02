@@ -51,17 +51,33 @@ One module, `surogate_eval/utils/redact.py`:
   environment variable whose name is a secret field name (`OPENAI_API_KEY`, `HF_TOKEN`,
   `GITHUB_TOKEN`, the LakeFS `*_SECRET_ACCESS_KEY`, ...), so a key that only lives in the pod's
   environment is masked too.
-- A `logging` record factory, installed on import, that replaces every remembered value in a
-  record's message and formatted exception text with `***`. It runs when a record is created,
+- A `logging` record factory, installed on import, that masks each record's message and
+  formatted exception text twice over: by name (the same secret-field patterns `redact` uses on
+  strings, in one precompiled pass, so a key the runner never registered is masked too) and by
+  value (every remembered value becomes `***`). It runs when a record is created,
   so it applies to every logger and handler, including evalscope's and lm-eval's own, which the
   runner cannot otherwise reach. The remembered values are compiled into one pattern,
   longest first, rebuilt only when a new value is added. Values shorter than 8 characters and
   `EMPTY` are not remembered, so ordinary words are never masked.
 
-Tracebacks go through the logger (`logger.error(traceback.format_exc())`), never
-`traceback.print_exc()`, which writes to stderr past the record factory. The runner's own
-formatter prints only the message, so the traceback is put in the message rather than passed
-as `exc_info`.
+Tracebacks go through the logger (`exc_info=True`), never `traceback.print_exc()`, which writes
+to stderr past the record factory. The runner's `ColoredFormatter` appends the record's
+`exc_text` (preset, masked, by the factory) to the message; before, it printed the message only
+and every traceback logged with `exc_info` vanished from the run's logs.
+
+An exception nothing catches is reported through the same logger: importing the module installs
+`sys.excepthook` and `threading.excepthook`, and the eval child process (`cli/eval.py`) imports it
+first, so an exception escaping its `__main__` block is no longer printed raw to stderr.
+
+Failure records stored in the results ops shows (`eval.py` target failures, `runners.py`
+evaluation, metric batch, benchmark, stress, red team and guardrails failures, the stress tester's
+per-request rows, and `TargetResponse.error` in `targets/model.py`) hold `error_text(e)`, which is
+`str(e)` through the same string redaction.
+
+String redaction looks at a value ahead without consuming it when its key is not a secret, so a
+key inside another value (`url: https://h/v1?api_key=...`) is reached, and a quoted secret value is
+masked whole, spaces included. A bare `Bearer x` is masked only when `x` looks like a credential
+(8 or more characters with a digit), so prose such as "the bearer of" survives.
 
 lm-eval: drop `api_key` from `model_args` and hand the key to lm-eval the way it actually reads
 it, `OPENAI_API_KEY`, set only for the duration of `simple_evaluate` and restored afterwards, so a
@@ -87,6 +103,11 @@ relied on the pod variable to authenticate such a target must put the key on the
 
 - A secret shorter than 8 characters is not remembered, so the record factory does not mask it
   in library log lines. Name-based redaction at the runner's own log sites still masks it.
+
+- Metric `reason` strings built from exceptions in the metric modules and benchmark adapters
+  (`metrics/*.py`, `custom_eval_backend.py`, `tool_decathlon.py`, `vita_bench.py`) are stored
+  without `error_text`. They come from judge and model calls whose errors are `TargetResponse`
+  errors (now masked) or library exceptions; routing them through `error_text` is the follow-up.
 
 ## Out of scope
 

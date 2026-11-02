@@ -406,3 +406,43 @@ def test_a_crash_traceback_is_logged_with_the_key_masked(monkeypatch, capfd, sit
     _assert_absent(canary, lines)
     assert any("Traceback" in line and "RuntimeError" in line for line in lines), \
         "the traceback must still be reported"
+
+
+def test_cli_launch_failure_logs_the_error_with_the_key_masked(monkeypatch, capfd):
+    """The launcher process holds the pod's env keys too."""
+    from surogate_eval.cli import main
+    from surogate_eval.utils.redact import register_secrets
+
+    canary = "sk-CANARYcliLaunch0123456789"
+    register_secrets({"api_key": canary})
+
+    def boom(*a, **k):
+        raise RuntimeError(f"launch refused with {canary}")
+
+    monkeypatch.setattr(main.subprocess, "Popen", boom)
+    monkeypatch.setattr(main, "get_system_info", lambda: {})
+    monkeypatch.setattr(main, "print_system_diagnostics", lambda info: None)
+    monkeypatch.setattr(main, "get_torchrun_args", lambda: None)
+    monkeypatch.setattr(main, "torch", None)
+    monkeypatch.setattr("sys.argv", ["surogate-eval", "eval", "--config", "x.yaml"])
+
+    with captured_logs() as lines:
+        assert main.cli_main() == 1
+
+    out = capfd.readouterr()
+    assert canary not in out.out + out.err
+    _assert_absent(canary, lines)
+    assert any("An error occurred: RuntimeError: launch refused with ***" in line
+               for line in lines), "the error itself must be logged"
+
+
+def test_cli_launcher_installs_the_masking_factory():
+    """The suite imports redact elsewhere, so check a fresh launcher process."""
+    import subprocess
+    import sys
+
+    code = ("import logging, surogate_eval.cli.main; "
+            "print(logging.getLogRecordFactory().__name__)")
+    out = subprocess.run([sys.executable, "-c", code], capture_output=True, text=True,
+                         check=True).stdout
+    assert out.strip() == "_scrubbing_factory"

@@ -20,6 +20,8 @@ except ImportError:
     torch = None
 
 from surogate_eval.utils.logger import get_logger
+# Installs the masking record factory: this process has the pod's env keys.
+import surogate_eval.utils.redact  # noqa: F401
 from surogate_eval.utils.system_info import print_system_diagnostics, get_system_info
 
 logger = get_logger()
@@ -118,11 +120,7 @@ def cli_main():
         logger.warning("Process interrupted by user")
         return 0
     except Exception as e:
-        logger.error("An error occurred:")
-        logger.error(f"Error Type: {{type(e).__name__}}")
-        logger.error(f"Error Message: {{e}}")
-        import traceback
-        logger.error(traceback.format_exc())
+        logger.error(f"An error occurred: {type(e).__name__}: {e}", exc_info=True)
         return 1
     finally:
         logger.info("Cleaning up...")

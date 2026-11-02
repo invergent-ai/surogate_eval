@@ -37,22 +37,41 @@ only. So the key in `model_args` was logged and then thrown away: lm-eval sent
 One module, `surogate_eval/utils/redact.py`:
 
 - `redact(obj)`: a copy of a dict / list / string with every value under a secret looking key
-  (`api_key`, `apiKey`, `authorization`, anything containing `token`, `secret`, `password`)
-  replaced by `***`, plus `key=value` pairs and `Bearer ...` inside strings. Used at every
+  (`api_key`, `apiKey`, `authorization`, `*_token`, `secret`, `password`) replaced by `***`.
+  Inside strings the same rule applies to `key=value`, `key: value` and the repr / JSON forms
+  (`'api_key': '...'`, `"api_key": "..."`), an Authorization value is masked whole whatever
+  its scheme (Bearer, Basic, Token, ...), and a bare `Bearer ...` is masked. Used at every
   runner log site above that prints a structure.
+  A `*_token` field is a credential (`access_token`, `hf_token`, `auth_token`, a bare `token`)
+  unless the word before it makes it a vocabulary token or a count (`eos_token`, `pad_token`,
+  `max_token`); `token_budget`, `pad_token_id`, `max_tokens` and `tokenizer` are not secrets.
 - `register_secrets(obj)`: walks a config and remembers the values under those keys.
   Called where keys enter the process: `load_config` and `TargetFactory.create_target`
-  (judges are targets, so both target and judge keys are covered).
+  (judges are targets, so both target and judge keys are covered), and on import for every
+  environment variable whose name is a secret field name (`OPENAI_API_KEY`, `HF_TOKEN`,
+  `GITHUB_TOKEN`, the LakeFS `*_SECRET_ACCESS_KEY`, ...), so a key that only lives in the pod's
+  environment is masked too.
 - A `logging` record factory, installed on import, that replaces every remembered value in a
   record's message and formatted exception text with `***`. It runs when a record is created,
   so it applies to every logger and handler, including evalscope's and lm-eval's own, which the
-  runner cannot otherwise reach. Values shorter than 8 characters and `EMPTY` are not
-  remembered, so ordinary words are never masked.
+  runner cannot otherwise reach. The remembered values are compiled into one pattern,
+  longest first, rebuilt only when a new value is added. Values shorter than 8 characters and
+  `EMPTY` are not remembered, so ordinary words are never masked.
 
-lm-eval local-completions: drop `api_key` from `model_args` and hand the key to lm-eval the way
-it actually reads it, `OPENAI_API_KEY`, set only for the duration of `simple_evaluate` and
-restored afterwards, so a later deepeval / deepteam provider-model judge never picks up a target
-key. Benchmarks run one at a time, so the scoped variable is not shared with a concurrent run.
+Tracebacks go through the logger (`logger.error(traceback.format_exc())`), never
+`traceback.print_exc()`, which writes to stderr past the record factory. The runner's own
+formatter prints only the message, so the traceback is put in the message rather than passed
+as `exc_info`.
+
+lm-eval: drop `api_key` from `model_args` and hand the key to lm-eval the way it actually reads
+it, `OPENAI_API_KEY`, set only for the duration of `simple_evaluate` and restored afterwards, so a
+later deepeval / deepteam provider-model judge never picks up a target key. This applies to both
+branches: `local-completions` and `openai-completions`. For `local-completions` a target with no
+key (or `EMPTY`) runs with the variable unset, so the pod's own `OPENAI_API_KEY` (a judge's key,
+say) is never sent to the user's endpoint. For `openai-completions` with no target key the pod's
+variable is left alone: that request goes to api.openai.com, where the pod's OpenAI key is the
+right one. Benchmarks run one at a time, so the scoped variable is not shared with a concurrent
+run.
 
 ## Behaviour change
 
@@ -60,6 +79,14 @@ lm-eval runs against a key protected endpoint now send the target key instead of
 bearer. That is the intended behaviour; before, those runs authenticated only if the pod's
 environment carried a matching `OPENAI_API_KEY`. Scores of runs that authenticated before are
 unchanged.
+
+A keyless `local-completions` target no longer receives the pod's `OPENAI_API_KEY`. A setup that
+relied on the pod variable to authenticate such a target must put the key on the target.
+
+## Known limits
+
+- A secret shorter than 8 characters is not remembered, so the record factory does not mask it
+  in library log lines. Name-based redaction at the runner's own log sites still masks it.
 
 ## Out of scope
 

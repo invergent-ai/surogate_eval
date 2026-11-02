@@ -475,14 +475,16 @@ def test_cli_launch_failure_logs_the_error_with_the_key_masked(monkeypatch, capf
 
 def test_importing_the_runner_leaves_the_process_hooks_alone():
     """Masking and the crash hooks are installed by the runner's entry
-    points, not as a side effect of importing a module: ops or a notebook
-    importing surogate_eval keeps its own hooks."""
+    points, not as a side effect of importing a library module: ops or a
+    notebook importing surogate_eval keeps its own hooks. The eval entry
+    script, surogate_eval.cli.eval, does install on import; that is what
+    covers its spawn children."""
     import subprocess
     import sys
 
     code = (
         "import logging, sys, threading\n"
-        "import surogate_eval, surogate_eval.cli.main, surogate_eval.cli.eval\n"
+        "import surogate_eval, surogate_eval.cli.main\n"
         "import surogate_eval.eval, surogate_eval.runners, surogate_eval.utils.redact\n"
         "print(sys.excepthook is sys.__excepthook__,\n"
         "      threading.excepthook is threading.__excepthook__,\n"
@@ -817,3 +819,149 @@ def test_a_judge_parse_error_cannot_keep_half_a_key():
     with pytest.raises(JudgeParseError) as err:
         wrapper.generate("p", Schema)
     assert canary[:10] not in str(err.value), str(err.value)
+
+
+# --- last round: linear time, spawn children, names, cuts, one mask per record
+
+
+@pytest.mark.parametrize("text", [
+    "'A' * 200_000",
+    "'QUJDREVGR0hJSktMTU5PUFFSU1RVVldYWVo0NTY3ODkrLz0' * 4_300",
+    "'api_key' * 30_000",
+])
+def test_masking_a_long_line_is_linear(text):
+    """A long unbroken run (a base64 blob, a dumped tensor) once took seconds
+    per 10k characters and never finished at 20k: every start position
+    rescanned the rest of the word. Run in a child so a regression fails on
+    the timeout instead of hanging the suite."""
+    import subprocess
+    import sys
+
+    code = (
+        "import time\n"
+        "from surogate_eval.utils.redact import mask_line, redact_text\n"
+        f"text = {text}\n"
+        "for mask in (mask_line, redact_text):\n"
+        "    start = time.perf_counter(); mask(text)\n"
+        "    print(mask.__name__, time.perf_counter() - start)\n"
+    )
+    try:
+        out = subprocess.run([sys.executable, "-c", code], capture_output=True, text=True,
+                             check=True, timeout=60).stdout
+    except subprocess.TimeoutExpired:
+        pytest.fail("masking a 200k-character line did not finish in 60s")
+    for name, seconds in (line.split() for line in out.splitlines()):
+        assert float(seconds) < 1.0, (name, seconds)
+
+
+def test_a_spawned_child_of_the_runner_masks_its_logs(tmp_path):
+    """evalscope runs code benchmarks in multiprocessing spawn children,
+    which import the entry script as __mp_main__ and so skip its
+    `if __name__ == '__main__'` block."""
+    import subprocess
+    import sys
+
+    env_canary = "sk-CANARYspawnEnvKey0123456789"
+    named_canary = "CANARYspawnNamed0123456789"
+    (tmp_path / "spawn_probe.py").write_text(
+        "import os\n"
+        "def child():\n"
+        "    from surogate_eval.utils.logger import get_logger\n"
+        "    get_logger().warning('child env ' + os.environ['OPENAI_API_KEY'])\n"
+        f"    get_logger().warning('child api_key={named_canary}')\n"
+    )
+    (tmp_path / "sitecustomize.py").write_text(
+        "import multiprocessing, sys\n"
+        "def _patch():\n"
+        "    import surogate_eval.config.loader as loader\n"
+        "    def start_child(*a, **k):\n"
+        "        import spawn_probe\n"
+        "        p = multiprocessing.get_context('spawn').Process(target=spawn_probe.child)\n"
+        "        p.start(); p.join()\n"
+        "        sys.exit(p.exitcode)\n"
+        "    loader.load_config = start_child\n"
+        "if multiprocessing.parent_process() is None:\n"
+        "    _patch()\n"
+    )
+    env = dict(os.environ, OPENAI_API_KEY=env_canary,
+               PYTHONPATH=f"{tmp_path}{os.pathsep}{Path_root()}")
+    proc = subprocess.run(
+        [sys.executable, "-m", "surogate_eval.cli.eval", "--config", "x.yaml"],
+        capture_output=True, text=True, env=env, cwd=tmp_path, timeout=300,
+    )
+    output = proc.stdout + proc.stderr
+    assert proc.returncode == 0, output[-3000:]
+    assert "child env ***" in output and "child api_key=***" in output, output[-3000:]
+    assert env_canary not in output and named_canary not in output
+
+
+@pytest.mark.parametrize("template", [
+    "AWS_SECRET_ACCESS_KEY={}",
+    "aws_secret_access_key: {}",
+    "private_key={}",
+    "{{'client_secret': '{}'}}",
+    "passwd={}",
+    "GITHUB_TOKEN={}",
+    "github_token: {}",
+    "NOTION_TOKEN={}",
+    "HF_TOKEN={}",
+    "hf_token: {}",
+    "CLOUDFLARE_API_TOKEN={}",
+    "MYSERVICE_SECRET_KEY={}",
+    "SLACK_ACCESS_TOKEN={}",
+    "DB_PASSWORD: {}",
+    "db_password: {}",
+    "PASSWORD: {}",
+])
+def test_explicit_credential_names_are_masked(template):
+    canary = "CANARYnamed0123456789"
+    with captured_logs() as lines:
+        logging.getLogger("some_library").warning(template.format(canary))
+    _assert_absent(canary, lines)
+
+
+def test_mcpmark_output_is_masked_before_it_is_cut(monkeypatch, tmp_path):
+    """The adapter logs 500 characters of the tool's stderr and stdout. Cut
+    first, and a registered key straddling the cut survives as a prefix."""
+    import subprocess
+    from surogate_eval.benchmarks.adapters import mcp_mark
+    from surogate_eval.utils.redact import register_secrets
+
+    canary = "sk-CANARYmcpmarkCut0123456789abcdef"
+    register_secrets({"api_key": canary})
+    # 19 characters of the key either side of the 500-character cut.
+    straddle_head = "e" * 480 + f" {canary} tail"
+    straddle_tail = f"head {canary} " + "o" * 480
+
+    def fake_run(cmd, **kwargs):
+        if cmd[0] == "git":
+            (tmp_path / "mcpmark").mkdir(exist_ok=True)
+            return subprocess.CompletedProcess(cmd, 0, "", "")
+        return subprocess.CompletedProcess(cmd, 1, straddle_tail, straddle_head)
+
+    monkeypatch.setattr(mcp_mark.subprocess, "run", fake_run)
+    with captured_logs() as lines:
+        mcp_mark._clone_repo(tmp_path)
+        mcp_mark._run_mcpmark_pipeline(
+            tmp_path / "mcpmark", "m", "http://127.0.0.1:9/v1", "k", ["filesystem"],
+        )
+    assert lines
+    for line in lines:
+        assert canary[:12] not in line and canary[-12:] not in line, line[-300:]
+
+
+def test_a_record_is_masked_once_however_many_handlers_write_it(monkeypatch):
+    import surogate_eval.utils.redact as redact_mod
+
+    calls = []
+    real = redact_mod.mask_line
+    monkeypatch.setattr(redact_mod, "mask_line", lambda text: calls.append(1) or real(text))
+    record = logging.getLogRecordFactory()(
+        "x", logging.INFO, __file__, 1, "api_key=%s", ("s3cr3t-value",), None,
+    )
+    assert record.getMessage() == "api_key=***"
+    assert record.getMessage() == "api_key=***"
+    assert len(calls) == 1
+    # A filter that rewrites the message after the first read is honoured.
+    record.msg, record.args = "plain", None
+    assert record.getMessage() == "plain"

@@ -55,7 +55,7 @@ _NOT_CREDENTIAL_TOKENS = {
 _NAMED_RE = re.compile(
     r"""(?P<auth>(?i:['"]?(?:proxy[_-])?authorization['"]?\s*[=:]\s*['"]?))(?P<aval>[^'"\n,}]+)"""
     r"""|(?P<bearer>(?i:\bbearer\s+))(?P<bval>(?=[^\s,'"}]*\d)[^\s,'"}]{8,})"""
-    r"""|(?P<q>['"]?)(?P<key>[A-Za-z_][\w-]*)(?P=q)(?P<sep>\s*[=:]\s*)"""
+    r"""|(?<![\w-])(?P<q>['"]?)(?P<key>[A-Za-z_][\w-]*)(?P=q)(?P<sep>\s*[=:]\s*)"""
     r"""(?=(?P<vq>['"])(?P<qval>(?:(?!(?P=vq))[^\n])*)(?P=vq)|(?P<val>[^\s,'"}\])&;]+))"""
 )
 
@@ -63,15 +63,19 @@ _NAMED_RE = re.compile(
 # mostly prose and metrics, so it masks only forms that are unmistakably a
 # credential. Generic ``*_token``, a bare ``token`` or ``secret`` are left
 # alone (time_to_first_token, prompt text). Values never take an ESC or "["
-# so the colour reset after a value survives.
+# so the colour reset after a value survives. A key only starts where a word
+# does: without that left edge every position inside a long unbroken run
+# (a base64 blob) rescanned the rest of it, and a 20k-character line never
+# finished.
 _CREDENTIAL_NAMES = (
     r"(?:x[_-])?api[_-]?key|access[_-]token|auth[_-]token|refresh[_-]token"
-    r"|api[_-]token|hf[_-]token|bearer[_-]token|client[_-]secret|secret[_-]key|password"
+    r"|api[_-]token|hf[_-]token|github[_-]token|notion[_-]token|bearer[_-]token"
+    r"|client[_-]secret|secret[_-]key|secret[_-]access[_-]key|private[_-]key|password|passwd"
 )
 _LINE_RE = re.compile(
     r"""(?P<auth>(?i:['"]?(?:proxy[_-])?authorization['"]?\s*[=:]\s*['"]?))(?P<aval>[^'"\n,}\x1b]+)"""
     r"""|(?P<bearer>(?i:\bbearer\s+))(?P<bval>(?=[^\s,'"}\x1b\[]*\d)[^\s,'"}\x1b\[]{8,})"""
-    r"""|(?P<q>['"]?)(?P<key>(?i:[A-Za-z0-9_-]*?(?:""" + _CREDENTIAL_NAMES + r""")))(?P=q)"""
+    r"""|(?<![A-Za-z0-9_-])(?P<q>['"]?)(?P<key>(?i:[A-Za-z0-9_-]*?(?:""" + _CREDENTIAL_NAMES + r""")))(?P=q)"""
     r"""(?P<sep>\s*[=:]\s*)(?:(?P<vq>['"])(?P<qval>(?:(?!(?P=vq))[^\n\x1b])*)(?P=vq)"""
     r"""|(?P<val>[^\s,'"}\])\[&;\x1b]+))"""
 )
@@ -131,8 +135,9 @@ def _mask_line_match(match: re.Match) -> str:
     if match["bearer"] is not None:
         return match["bearer"] + MASK
     # "password: hunter2" is how prompt prose reads; a config or header
-    # writes it as password=..., or quotes the key.
-    if (match["key"].lower().endswith("password") and not match["q"]
+    # writes it as password=..., quotes the key, prefixes it (db_password)
+    # or capitalises it (DB_PASSWORD), and all of those are masked.
+    if (match["key"] == "password" and not match["q"]
             and ":" in match["sep"] and not match["vq"]):
         return match[0]
     quote = match["vq"] or ""
@@ -214,7 +219,14 @@ class _MaskedRecord(logging.LogRecord):
     """
 
     def getMessage(self) -> str:
-        return mask_line(super().getMessage())
+        # Masked once, however many handlers write the record; recomputed
+        # only if a filter has since replaced the message.
+        cached = self.__dict__.get("_masked_message")
+        if cached is not None and cached[0] is self.msg and cached[1] is self.args:
+            return cached[2]
+        masked = mask_line(super().getMessage())
+        self.__dict__["_masked_message"] = (self.msg, self.args, masked)
+        return masked
 
     @property
     def exc_text(self):

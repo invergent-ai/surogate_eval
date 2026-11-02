@@ -12,6 +12,7 @@ from .base import SeverityLevel
 from .risk_assessment import RiskAssessment
 from ..targets import TargetRequest, BaseTarget
 from ..utils.logger import get_logger
+from ..utils.redact import redact
 
 logger = get_logger()
 os.environ["DEEPTEAM_TELEMETRY_OPT_OUT"] = "YES"
@@ -170,9 +171,9 @@ class RedTeamRunner:
 
         logger.info(f"Scanning {len(vulnerabilities)} vulnerabilities with {len(attacks)} attack types")
         logger.info(f"simulator_model type: {type(self.config.simulator_model)}")
-        logger.info(f"simulator_model value: {self.config.simulator_model}")
+        logger.info(f"simulator_model value: {redact(self.config.simulator_model)}")
         logger.info(f"evaluation_model type: {type(self.config.evaluation_model)}")
-        logger.info(f"evaluation_model value: {self.config.evaluation_model}")
+        logger.info(f"evaluation_model value: {redact(self.config.evaluation_model)}")
         # Run red-teaming using DeepTeam's actual API
         try:
             dt_risk_assessment = dt_red_team(

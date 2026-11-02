@@ -3,6 +3,7 @@ from typing import Dict, Any
 from .base import BaseTarget, TargetType
 from .model import APIModelTarget, LocalModelTarget, EmbeddingTarget, RerankerTarget, CLIPTarget, TranslatorTarget
 from ..utils.logger import get_logger
+from ..utils.redact import redact, register_secrets
 
 logger = get_logger()
 
@@ -21,6 +22,9 @@ class TargetFactory:
         Returns:
             Initialized target instance
         """
+        # First, so a key is masked in every later log line, this
+        # target's own failure included. Judges are targets too.
+        register_secrets(config)
         target_type = TargetType(config.get('type'))
 
         logger.info(f"Creating target of type: {target_type.value}")
@@ -68,6 +72,6 @@ class TargetFactory:
                 targets.append(target)
             except Exception as e:
                 logger.error(f"Failed to create target: {e}")
-                logger.error(f"Config: {config}")
+                logger.error(f"Config: {redact(config)}")
 
         return targets

@@ -20,6 +20,7 @@ from typing import Dict, Any, List, Optional
 
 from surogate_eval.targets import BaseTarget
 from surogate_eval.utils.logger import get_logger
+from surogate_eval.utils.redact import redact
 
 # Disable SSL warnings
 import urllib3
@@ -268,6 +269,11 @@ class LMEvalBackend:
         base_url = target.config.get('base_url', '')
         api_key = target.config.get('api_key', '')
         model_name = target.config.get('model')
+        # The key lm-eval authenticates local-completions with. Never put
+        # in model_args: lm-eval logs model_args (and writes them into its
+        # results) but ignores an api_key there, reading OPENAI_API_KEY
+        # instead, so the key there was only ever leaked, never used.
+        lm_eval_key = None
 
         # Detect if this is OpenAI API
         is_openai = 'api.openai.com' in base_url or (
@@ -311,7 +317,7 @@ class LMEvalBackend:
                 model_args_dict['tokenizer'] = tokenizer
 
             if api_key and api_key != 'EMPTY':
-                model_args_dict['api_key'] = api_key
+                lm_eval_key = api_key
 
             num_concurrent = config.get('num_concurrent') or config.get('backend_params', {}).get('num_concurrent', 1)
             if num_concurrent and num_concurrent > 1:
@@ -342,9 +348,15 @@ class LMEvalBackend:
         if gen_kwargs:
             eval_args['gen_kwargs'] = ','.join(f'{k}={v}' for k, v in gen_kwargs.items())
 
-        logger.info(f"lm-eval args: {eval_args}")
+        logger.info(f"lm-eval args: {redact(eval_args)}")
         logger.info(f"Source: {source}")
 
+        # Scoped to the call: a target key left in OPENAI_API_KEY would be
+        # sent to OpenAI by a later deepeval/deepteam provider-model judge.
+        # Benchmarks run one at a time, so no concurrent run shares it.
+        saved_key = os.environ.get('OPENAI_API_KEY')
+        if lm_eval_key:
+            os.environ['OPENAI_API_KEY'] = lm_eval_key
         try:
             results = evaluator.simple_evaluate(**eval_args)
         except Exception as e:
@@ -361,10 +373,15 @@ class LMEvalBackend:
                     'benchmark': benchmark_name,
                     'source': source,
                     'status': 'failed',
-                    'error': str(e),
+                    'error': redact(str(e)),
                 }
             }
         finally:
+            if lm_eval_key:
+                if saved_key is None:
+                    os.environ.pop('OPENAI_API_KEY', None)
+                else:
+                    os.environ['OPENAI_API_KEY'] = saved_key
             self.cleanup()
 
         return self._parse_results(results, benchmark_name, source)

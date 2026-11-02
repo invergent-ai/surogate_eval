@@ -3,6 +3,7 @@ from typing import Dict, Type, List, Any
 
 from .base import BaseMetric, MetricType
 from ..utils.logger import get_logger
+from ..utils.redact import redact
 
 logger = get_logger()
 
@@ -73,7 +74,7 @@ class MetricRegistry:
                 logger.info(f"Created metric: {metric.name} ({metric.metric_type.value})")
             except Exception as e:
                 logger.error(f"Failed to create metric: {e}")
-                logger.debug(f"Config: {config}")
+                logger.debug(f"Config: {redact(config)}")
         return metrics
 
     @classmethod

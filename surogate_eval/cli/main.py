@@ -122,7 +122,7 @@ def cli_main():
         logger.error(f"Error Type: {{type(e).__name__}}")
         logger.error(f"Error Message: {{e}}")
         import traceback
-        traceback.print_exc()
+        logger.error(traceback.format_exc())
         return 1
     finally:
         logger.info("Cleaning up...")

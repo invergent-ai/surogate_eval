@@ -47,27 +47,47 @@ One module, `surogate_eval/utils/redact.py`:
   `max_token`); `token_budget`, `pad_token_id`, `max_tokens` and `tokenizer` are not secrets.
 - `register_secrets(obj)`: walks a config and remembers the values under those keys.
   Called where keys enter the process: `load_config` and `TargetFactory.create_target`
-  (judges are targets, so both target and judge keys are covered), and on import for every
-  environment variable whose name is a secret field name (`OPENAI_API_KEY`, `HF_TOKEN`,
+  (judges are targets, so both target and judge keys are covered), and, when masking is
+  installed, for every environment variable whose name is a secret field name (`OPENAI_API_KEY`, `HF_TOKEN`,
   `GITHUB_TOKEN`, the LakeFS `*_SECRET_ACCESS_KEY`, ...), so a key that only lives in the pod's
   environment is masked too.
-- A `logging` record factory, installed on import, that masks each record's message and
-  formatted exception text twice over: by name (the same secret-field patterns `redact` uses on
-  strings, in one precompiled pass, so a key the runner never registered is masked too) and by
-  value (every remembered value becomes `***`). It runs when a record is created,
-  so it applies to every logger and handler, including evalscope's and lm-eval's own, which the
-  runner cannot otherwise reach. The remembered values are compiled into one pattern,
-  longest first, rebuilt only when a new value is added. Values shorter than 8 characters and
-  `EMPTY` are not remembered, so ordinary words are never masked.
+- `install_log_masking()`, called first by the runner's entry points (`cli/main.py`
+  `cli_main`, the `cli/eval.py` child's `__main__` block) and never as an import side effect, so
+  ops or a notebook importing the package keeps its own hooks. It does three things:
+  - Masks every line when a handler writes it, not when the record is made. It swaps each new
+    record's class (keeping whatever record factory was already set) for one whose
+    `getMessage` and `exc_text` return masked text. Every formatter reads a record through
+    those two, so this covers every handler, including ones a library attaches later to a
+    logger that does not propagate (evalscope's), which a filter on the runner's own handlers
+    would miss; and a record no handler writes is never formatted or scanned.
+  - Installs `sys.excepthook` and `threading.excepthook`, which report an uncaught exception
+    through the masked logger (a thread's as `Exception in thread <name>`).
+  - Remembers the provider keys in the environment.
 
-Tracebacks go through the logger (`exc_info=True`), never `traceback.print_exc()`, which writes
-to stderr past the record factory. The runner's `ColoredFormatter` appends the record's
-`exc_text` (preset, masked, by the factory) to the message; before, it printed the message only
-and every traceback logged with `exc_info` vanished from the run's logs.
+  What a written line loses is narrower than `redact`, because a log line is mostly prose and
+  metrics. Remembered values are masked wherever they appear. By name, only unmistakable
+  credential forms are: an `Authorization: <scheme> <credential>` value, `Bearer <credential>`
+  (8 or more characters with a digit), and `key=value`, `key: value`, repr, JSON or URL query
+  forms whose key is, or ends in, an explicit credential name (`api_key`, `apikey`, `api-key`,
+  `x-api-key`, `access_token`, `auth_token`, `refresh_token`, `api_token`, `hf_token`,
+  `bearer_token`, `client_secret`, `secret_key`, `password`). Generic `*_token`, a bare `token`
+  and a bare `secret` are left alone, so `time_to_first_token: 0.123s` and "What is a token:"
+  survive. `password: value` with an unquoted key and a colon is left alone too: that is how
+  prompt prose reads ("Please enter your password: hunter2"), and a config or header writes it
+  as `password=...` or with a quoted key; a password the runner knows is still masked by value.
+  A name directly after an ANSI colour code still matches, and a value never takes an ESC or
+  `[`, so the colour reset after it survives. The remembered values are compiled into one
+  pattern, longest first, rebuilt only when a new value is added. Values shorter than 8
+  characters and `EMPTY` are not remembered, so ordinary words are never masked.
 
-An exception nothing catches is reported through the same logger: importing the module installs
-`sys.excepthook` and `threading.excepthook`, and the eval child process (`cli/eval.py`) imports it
-first, so an exception escaping its `__main__` block is no longer printed raw to stderr.
+Tracebacks go through the logger by one path, `exc_info`, never `traceback.print_exc()`
+(stderr, past the masking) and never a pre-formatted `traceback.format_exc()` string. The
+runner's `ColoredFormatter` appends the record's `exc_text`, which a masked record masks as it is
+stored; before, it printed the message only and every traceback logged with `exc_info` vanished
+from the run's logs.
+
+The judge wrapper's parse error cuts the underlying error to 200 characters; it masks first and
+cuts after, so a key straddling the cut cannot survive as a prefix no mask recognises.
 
 Failure records stored in the results ops shows (`eval.py` target failures, `runners.py`
 evaluation, metric batch, benchmark, stress, red team and guardrails failures, the stress tester's
@@ -107,8 +127,9 @@ relied on the pod variable to authenticate such a target must put the key on the
 
 ## Known limits
 
-- A secret shorter than 8 characters is not remembered, so the record factory does not mask it
-  in library log lines. Name-based redaction at the runner's own log sites still masks it.
+- A secret shorter than 8 characters is not remembered, so a written line does not mask it by
+  value. Name-based redaction at the runner's own log sites still masks it, and so does the
+  per-line credential-form pass where it appears in one of those forms.
 
 ## Out of scope
 

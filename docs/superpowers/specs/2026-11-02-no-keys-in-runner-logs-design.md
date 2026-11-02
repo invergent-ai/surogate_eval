@@ -72,7 +72,13 @@ first, so an exception escaping its `__main__` block is no longer printed raw to
 Failure records stored in the results ops shows (`eval.py` target failures, `runners.py`
 evaluation, metric batch, benchmark, stress, red team and guardrails failures, the stress tester's
 per-request rows, and `TargetResponse.error` in `targets/model.py`) hold `error_text(e)`, which is
-`str(e)` through the same string redaction.
+`str(e)` through the same string redaction. So do the exception-built reasons and row errors
+stored by the metrics (`base.py`, `safety.py`, `conversation.py`, `embeddings.py`,
+`performance.py`, `adapters/deepeval_adapter.py`), the benchmark backends
+(`custom_eval_backend.py`, the evalscope unreadable-row record), the benchmark adapters
+(`tool_decathlon.py`, `vita_bench.py`) and the dataset validator. Exception text that is only
+raised again (a `JudgeParseError`, a loader `ValueError`) is masked where it is finally caught
+and stored.
 
 String redaction looks at a value ahead without consuming it when its key is not a secret, so a
 key inside another value (`url: https://h/v1?api_key=...`) is reached, and a quoted secret value is
@@ -103,11 +109,6 @@ relied on the pod variable to authenticate such a target must put the key on the
 
 - A secret shorter than 8 characters is not remembered, so the record factory does not mask it
   in library log lines. Name-based redaction at the runner's own log sites still masks it.
-
-- Metric `reason` strings built from exceptions in the metric modules and benchmark adapters
-  (`metrics/*.py`, `custom_eval_backend.py`, `tool_decathlon.py`, `vita_bench.py`) are stored
-  without `error_text`. They come from judge and model calls whose errors are `TargetResponse`
-  errors (now masked) or library exceptions; routing them through `error_text` is the follow-up.
 
 ## Out of scope
 

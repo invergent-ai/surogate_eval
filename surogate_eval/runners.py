@@ -13,6 +13,7 @@ from surogate_eval.errors import ConfigError
 from surogate_eval.targets import BaseTarget
 from surogate_eval.utils.dist import is_master
 from surogate_eval.utils.logger import get_logger
+from surogate_eval.utils.redact import error_text
 from surogate_eval.utils.text import blank_as_none
 
 logger = get_logger()
@@ -260,7 +261,7 @@ def run_evaluation(
                         MetricResult.errored(
                             metric_name=metric.name,
                             metric_type=metric.metric_type,
-                            reason=f"Metric batch failed: {e}",
+                            reason=f"Metric batch failed: {error_text(e)}",
                             metadata={'error_kind': type(e).__name__},
                         )
                         for _ in range(unmeasured)
@@ -269,7 +270,7 @@ def run_evaluation(
                 # ``error`` marks the metric as failed in the report; no
                 # ``status`` alongside it, or the outcome walk would count the
                 # crash once more on top of the per-case counts.
-                metric_results[metric.name] = {**failed_batch.to_dict(), "error": str(e)}
+                metric_results[metric.name] = {**failed_batch.to_dict(), "error": error_text(e)}
 
         detailed_results_list = [detailed_results[i] for i in sorted(detailed_results.keys())]
 
@@ -291,7 +292,7 @@ def run_evaluation(
             "name": eval_name,
             "dataset": dataset_path,
             "status": "failed",
-            "error": str(e),
+            "error": error_text(e),
         }
 
 
@@ -636,7 +637,7 @@ def _run_single_benchmark(
         import traceback
         logger.debug(traceback.format_exc())
 
-        return {"benchmark_name": benchmark_name, "status": "failed", "error": str(e)}
+        return {"benchmark_name": benchmark_name, "status": "failed", "error": error_text(e)}
 
 
 def _stress_failure(reason: str) -> Dict[str, Any]:
@@ -711,7 +712,7 @@ def run_stress_testing(
 
     except Exception as e:
         logger.error(f"Stress testing failed: {e}", exc_info=True)
-        return _stress_failure(str(e))
+        return _stress_failure(error_text(e))
 
 
 def _judge_target(
@@ -871,7 +872,7 @@ async def run_red_teaming_async(
         import traceback
         logger.debug(traceback.format_exc())
 
-        return {"status": "failed", "error": str(e)}
+        return {"status": "failed", "error": error_text(e)}
 
 
 async def run_guardrails_testing_async(
@@ -948,7 +949,7 @@ async def run_guardrails_testing_async(
         import traceback
         logger.debug(traceback.format_exc())
 
-        return {"status": "failed", "error": str(e)}
+        return {"status": "failed", "error": error_text(e)}
 
 
 def _filter_metrics_by_dataset_type(

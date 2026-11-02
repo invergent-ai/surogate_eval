@@ -25,6 +25,7 @@ from surogate_eval.runners import (
 from surogate_eval.targets import BaseTarget, TargetFactory
 from surogate_eval.utils.command import SurogateCommand
 from surogate_eval.utils.logger import get_logger
+from surogate_eval.utils.redact import error_text
 
 logger = get_logger()
 
@@ -132,7 +133,7 @@ class SurogateEval(SurogateCommand):
                 self.consolidated_results["targets"].append({
                     "name": target_name,
                     "status": "failed",
-                    "error": str(e),
+                    "error": error_text(e),
                     "evaluations": [],
                 })
 
@@ -165,7 +166,7 @@ class SurogateEval(SurogateCommand):
                 self._record_target_result({
                     "name": target_name,
                     "status": "failed",
-                    "error": str(e),
+                    "error": error_text(e),
                     "evaluations": [],
                 })
 

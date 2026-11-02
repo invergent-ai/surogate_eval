@@ -36,6 +36,8 @@ import argparse
 import sys
 
 from surogate_eval.utils.logger import get_logger
+# Masks keys in every log record and in an exception nothing catches.
+import surogate_eval.utils.redact  # noqa: F401
 
 logger = get_logger()
 

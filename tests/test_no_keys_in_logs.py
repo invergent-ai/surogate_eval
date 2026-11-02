@@ -19,10 +19,23 @@ from surogate_eval.targets.factory import TargetFactory
 LOGGERS = ("", "surogate_eval", "evalscope", "lm_eval")
 
 
+def _runner_formatter() -> logging.Formatter:
+    """The formatter on the runner's real console handler, the one whose
+    output becomes the run's logs. A plain Formatter would print tracebacks
+    the real one drops, and a test using it would miss exactly that."""
+    from surogate_eval.utils.logger import get_logger
+
+    get_logger()
+    for handler in logging.getLogger("surogate_eval").handlers:
+        if type(handler) is logging.StreamHandler and handler.formatter:
+            return handler.formatter
+    raise AssertionError("the runner's console handler is missing")
+
+
 class _Collect(logging.Handler):
     def __init__(self):
         super().__init__(logging.DEBUG)
-        self.setFormatter(logging.Formatter("%(message)s"))
+        self.setFormatter(_runner_formatter())
         self.lines: list[str] = []
 
     def emit(self, record):
@@ -394,18 +407,21 @@ def test_a_crash_traceback_is_logged_with_the_key_masked(monkeypatch, capfd, sit
 
     with captured_logs() as lines:
         if site == "evaluation":
-            runners.run_evaluation(
+            result = runners.run_evaluation(
                 target, {"name": "e", "dataset": "x.jsonl", "metrics": [{"type": "x"}]},
                 find_target_fn=lambda name: None,
             )
         else:
-            runners.run_stress_testing(target, {"dataset": "x.jsonl"})
+            result = runners.run_stress_testing(target, {"dataset": "x.jsonl"})
 
     out = capfd.readouterr()
     assert canary not in out.out + out.err
     _assert_absent(canary, lines)
     assert any("Traceback" in line and "RuntimeError" in line for line in lines), \
         "the traceback must still be reported"
+    # What ops stores as the run's result carries no key either.
+    assert canary not in str(result)
+    assert "api_key=***" in str(result)
 
 
 def test_cli_launch_failure_logs_the_error_with_the_key_masked(monkeypatch, capfd):
@@ -446,3 +462,112 @@ def test_cli_launcher_installs_the_masking_factory():
     out = subprocess.run([sys.executable, "-c", code], capture_output=True, text=True,
                          check=True).stdout
     assert out.strip() == "_scrubbing_factory"
+
+
+def test_a_logged_traceback_reaches_the_runners_console_output():
+    """The runner's formatter used to print the message only, so a record
+    logged with exc_info lost its traceback on the way to the run's logs."""
+    from surogate_eval.utils.logger import get_logger
+
+    try:
+        raise ValueError("the cause")
+    except ValueError:
+        with captured_logs() as lines:
+            get_logger().error("it failed", exc_info=True)
+
+    [line] = [line for line in lines if "it failed" in line]
+    assert "Traceback" in line and "ValueError: the cause" in line
+
+
+def test_unregistered_keys_in_library_lines_and_tracebacks_are_masked_by_name():
+    """The record factory masks secret fields by name too, so a key the
+    runner never registered (a library's own, say) is still masked."""
+    canary = "sk-CANARYunregisteredLib0123456789"
+    lib = logging.getLogger("some_library")
+    with captured_logs() as lines:
+        lib.warning("retrying with {'api_key': '%s', 'model': 'm'}", canary)
+        lib.warning("headers: Authorization: Basic %s", canary)
+        try:
+            raise RuntimeError(f"401 for url https://h/v1?api_key={canary}&x=1")
+        except RuntimeError:
+            lib.error("request failed", exc_info=True)
+        # Ordinary prompt text is left alone.
+        lib.info("The bearer of the token said: hello, and the password field was empty")
+
+    _assert_absent(canary, lines)
+    assert any("The bearer of the token said: hello" in line for line in lines)
+
+
+@pytest.mark.parametrize("text, secret", [
+    ("url: https://h/v1?api_key=s3cr3t-query-1&x=1", "s3cr3t-query-1"),
+    ("GET https://h/v1?token=s3cr3t-query-2", "s3cr3t-query-2"),
+    ("{'password': 'correct horse s3cr3t-space-3'}", "s3cr3t-space-3"),
+    ('{"api_key": "sk two s3cr3t-space-4"}', "s3cr3t-space-4"),
+])
+def test_redact_reaches_keys_inside_other_values_and_whole_quoted_values(text, secret):
+    from surogate_eval.utils.redact import redact
+
+    masked = redact(text)
+    assert secret not in masked
+    assert "correct horse" not in masked and "sk two" not in masked
+
+
+def test_redact_leaves_non_secret_values_intact():
+    from surogate_eval.utils.redact import redact
+
+    text = "url: https://h/v1?model=m&x=1, 'name': 'two words'"
+    assert redact(text) == text
+
+
+def test_stress_tester_failure_records_carry_no_key(monkeypatch):
+    """The per-request error rows the stress tester stores."""
+    from surogate_eval.metrics.stress.stress_tester import StressTester
+
+    canary = "sk-CANARYstressRow0123456789"
+
+    class Target:
+        name = "t"
+
+        def send_request(self, request):
+            raise RuntimeError(f"rejected Authorization: Bearer {canary}")
+
+    from surogate_eval.datasets.test_case import TestCase
+
+    tester = StressTester.__new__(StressTester)
+    tester.target = Target()
+    row = tester._send_single_request(TestCase(input="hi"), 1)
+    assert row["success"] is False
+    assert canary not in str(row)
+
+
+def test_an_uncaught_exception_in_the_runner_process_is_logged_masked(tmp_path):
+    """The eval child process: nothing catches an exception that escapes its
+    __main__ block, so Python's default hook printed it raw to stderr."""
+    import subprocess
+    import sys
+
+    canary = "sk-CANARYuncaught0123456789"
+    env_canary = "sk-CANARYuncaughtEnvKey0123456789"
+    code = (
+        "import os, runpy, sys\n"
+        "sys.argv = ['eval', '--config', 'x.yaml']\n"
+        "import surogate_eval.config.loader as loader\n"
+        "def boom(*a, **k):\n"
+        f"    raise RuntimeError('upstream api_key={canary} env ' + os.environ['OPENAI_API_KEY'])\n"
+        "loader.load_config = boom\n"
+        "runpy.run_module('surogate_eval.cli.eval', run_name='__main__')\n"
+    )
+    env = dict(os.environ, OPENAI_API_KEY=env_canary, PYTHONPATH=str(Path_root()))
+    proc = subprocess.run([sys.executable, "-c", code], capture_output=True, text=True,
+                          env=env, cwd=tmp_path, timeout=300)
+    output = proc.stdout + proc.stderr
+    assert proc.returncode != 0
+    assert canary not in output and env_canary not in output, output[-2000:]
+    assert "Traceback" in output and "RuntimeError" in output, output[-2000:]
+
+
+def Path_root():
+    import pathlib
+    import surogate_eval
+
+    return pathlib.Path(surogate_eval.__file__).parent.parent

@@ -75,6 +75,12 @@ class ColoredFormatter(logging.Formatter):
 
     def format(self, record):
         message = self.formatMessage(record)
+        if record.exc_info:
+            # The masking record factory presets exc_text; formatting the
+            # traceback again here would bypass that.
+            if not record.exc_text:
+                record.exc_text = self.formatException(record.exc_info)
+            message = f"{message}\n{record.exc_text}"
 
         # Add timestamp if configured
         if hasattr(self, '_show_timestamp') and self._show_timestamp:

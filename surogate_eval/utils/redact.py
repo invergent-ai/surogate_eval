@@ -16,6 +16,9 @@ key in the run's logs. Two layers:
 import logging
 import os
 import re
+import sys
+import threading
+import traceback
 from typing import Any
 
 MASK = "***"
@@ -34,17 +37,22 @@ _NOT_CREDENTIAL_TOKENS = {
     "think", "default",
 }
 
-# Any Authorization header value, whatever its scheme (Bearer, Basic,
-# Token, Digest, ...): the whole value goes, scheme included.
-_AUTH_HEADER_RE = re.compile(
-    r"""(?i)(['"]?(?:proxy[_-])?authorization['"]?\s*[=:]\s*['"]?)[^'"\n,}]+"""
+# One pass over a string finds, leftmost first, any of:
+# - an Authorization value, whatever its scheme (Bearer, Basic, Token,
+#   Digest, ...): the whole value goes, scheme included;
+# - a bare "Bearer <credential>", where the credential looks like one (8 or
+#   more characters with a digit), so "the bearer of" in prose survives;
+# - key=value, key: value, 'key': 'value', "key": "value", or a URL query
+#   parameter. Only the key and separator are consumed; the value is looked
+#   at ahead. Whether it is masked is decided by is_secret_key, so strings and
+#   dicts follow one rule, and a value that is not a secret is scanned on in
+#   turn, which is how "url: https://h/v1?api_key=..." is reached.
+_NAMED_RE = re.compile(
+    r"""(?P<auth>(?i:['"]?(?:proxy[_-])?authorization['"]?\s*[=:]\s*['"]?))(?P<aval>[^'"\n,}]+)"""
+    r"""|(?P<bearer>(?i:\bbearer\s+))(?P<bval>(?=[^\s,'"}]*\d)[^\s,'"}]{8,})"""
+    r"""|(?P<q>['"]?)(?P<key>[A-Za-z_][\w-]*)(?P=q)(?P<sep>\s*[=:]\s*)"""
+    r"""(?=(?P<vq>['"])(?P<qval>(?:(?!(?P=vq))[^\n])*)(?P=vq)|(?P<val>[^\s,'"}\])&;]+))"""
 )
-# key=value, key: value, 'key': 'value', "key": "value". Whether the key is
-# a secret is decided by is_secret_key, so strings and dicts follow one rule.
-_KEY_VALUE_RE = re.compile(
-    r"""(?P<q>['"]?)(?P<key>[A-Za-z_][\w-]*)(?P=q)(?P<sep>\s*[=:]\s*['"]?)(?P<val>[^\s,'"}\])]+)"""
-)
-_BEARER_RE = re.compile(r"(?i)(\bbearer\s+)[^,\s'\"}]+")
 
 _secrets: set[str] = set()
 # One alternation over every remembered value, longest first so a secret
@@ -71,10 +79,33 @@ def scrub(text: str) -> str:
     return pattern.sub(MASK, text) if pattern else text
 
 
-def _mask_key_value(match: re.Match) -> str:
-    if not is_secret_key(match["key"]):
-        return match[0]
-    return f"{match['q']}{match['key']}{match['q']}{match['sep']}{MASK}"
+def _mask_names(text: str) -> str:
+    out, pos = [], 0
+    while match := _NAMED_RE.search(text, pos):
+        if match["auth"] is not None:
+            value = "aval"
+        elif match["bearer"] is not None:
+            value = "bval"
+        elif is_secret_key(match["key"]):
+            value = "qval" if match["vq"] else "val"
+        else:
+            out.append(text[pos:match.end("sep")])
+            pos = match.end("sep")
+            continue
+        out.append(text[pos:match.start(value)] + MASK)
+        pos = match.end(value)
+    out.append(text[pos:])
+    return "".join(out)
+
+
+def redact_text(text: str) -> str:
+    """``text`` with secret fields masked by name and remembered values masked."""
+    return scrub(_mask_names(text))
+
+
+def error_text(exc: BaseException) -> str:
+    """``str(exc)`` fit to store in a result ops shows: keys masked."""
+    return redact_text(str(exc))
 
 
 def redact(obj: Any) -> Any:
@@ -89,10 +120,7 @@ def redact(obj: Any) -> Any:
     if isinstance(obj, (list, tuple)):
         return type(obj)(redact(v) for v in obj)
     if isinstance(obj, str):
-        text = _AUTH_HEADER_RE.sub(rf"\g<1>{MASK}", obj)
-        text = _BEARER_RE.sub(rf"\g<1>{MASK}", text)
-        text = _KEY_VALUE_RE.sub(_mask_key_value, text)
-        return scrub(text)
+        return redact_text(obj)
     return obj
 
 
@@ -140,21 +168,43 @@ _base_factory = logging.getLogRecordFactory()
 
 def _scrubbing_factory(*args, **kwargs) -> logging.LogRecord:
     record = _base_factory(*args, **kwargs)
-    if _secrets_re is None:
-        return record
     try:
         message = record.getMessage()
     except Exception:
         return record  # logging reports the bad format itself
-    clean = scrub(message)
+    clean = redact_text(message)
     if clean != message:
         record.msg, record.args = clean, None
     if record.exc_info:
         # Formatter.format uses a preset exc_text instead of formatting the
         # traceback again, so the masked copy is what every handler prints.
-        record.exc_text = scrub(logging.Formatter().formatException(record.exc_info))
+        record.exc_text = redact_text(logging.Formatter().formatException(record.exc_info))
     return record
 
 
+def _log_uncaught(exc_type, exc, tb) -> None:
+    """Report an exception nothing caught through the masked runner logger.
+
+    Python's default hook prints the traceback raw to stderr, which is the
+    run's log in ops, past the record factory.
+    """
+    if issubclass(exc_type, KeyboardInterrupt):
+        sys.__excepthook__(exc_type, exc, tb)
+        return
+    try:
+        from surogate_eval.utils.logger import get_logger
+
+        get_logger().critical("Uncaught exception", exc_info=(exc_type, exc, tb))
+    except Exception:
+        sys.stderr.write(redact_text("".join(traceback.format_exception(exc_type, exc, tb))))
+
+
+def _log_uncaught_in_thread(args) -> None:
+    if args.exc_type is not SystemExit:  # as threading's own hook does
+        _log_uncaught(args.exc_type, args.exc_value, args.exc_traceback)
+
+
 logging.setLogRecordFactory(_scrubbing_factory)
+sys.excepthook = _log_uncaught
+threading.excepthook = _log_uncaught_in_thread
 register_env_secrets()

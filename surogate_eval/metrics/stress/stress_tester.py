@@ -11,6 +11,7 @@ from .resource_monitor import ResourceMonitor
 from ...datasets import TestCase
 from ...targets import BaseTarget, TargetRequest
 from ...utils.logger import get_logger
+from ...utils.redact import error_text
 
 logger = get_logger()
 
@@ -403,7 +404,7 @@ class StressTester:
                     results.append({
                         'request_id': -1,
                         'success': False,
-                        'error': str(e),
+                        'error': error_text(e),
                         'timing': {'start_time': time.time(), 'end_time': time.time(), 'duration': 0},
                         'tokens': None,
                         'output_length': 0
@@ -453,7 +454,7 @@ class StressTester:
             return {
                 'request_id': request_id,
                 'success': False,
-                'error': str(e),
+                'error': error_text(e),
                 'timing': {
                     'start_time': start_time,
                     'end_time': end_time,

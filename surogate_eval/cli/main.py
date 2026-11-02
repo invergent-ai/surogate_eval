@@ -20,8 +20,7 @@ except ImportError:
     torch = None
 
 from surogate_eval.utils.logger import get_logger
-# Installs the masking record factory: this process has the pod's env keys.
-import surogate_eval.utils.redact  # noqa: F401
+from surogate_eval.utils.redact import install_log_masking
 from surogate_eval.utils.system_info import print_system_diagnostics, get_system_info
 
 logger = get_logger()
@@ -89,6 +88,8 @@ COMMAND_MAPPING: Dict[str, str] = {
 
 def cli_main():
     """Main CLI entry point for installed command."""
+    # First: this process holds the pod's keys, and anything below may log.
+    install_log_masking()
     args = parse_args()
     file_path = importlib.util.find_spec(COMMAND_MAPPING[args.command]).origin
     torchrun_args = get_torchrun_args()

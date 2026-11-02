@@ -2,7 +2,6 @@
 """EvalScope backend for benchmark evaluation."""
 import tempfile
 import time
-import traceback
 from typing import Dict, Any, List, Optional, Tuple
 from pathlib import Path
 
@@ -599,7 +598,7 @@ class EvalScopeBackend:
                 else:
                     # Non-retryable error or max retries reached
                     logger.error(f"EvalScope evaluation failed: {e}")
-                    logger.debug(traceback.format_exc())
+                    logger.debug("Traceback follows", exc_info=True)
                     raise
 
         # If we get here, all retries failed
@@ -668,13 +667,13 @@ class EvalScopeBackend:
                                 f"Review row {review_file.name}:{lineno} "
                                 f"could not be read: {e}"
                             )
-                            logger.debug(traceback.format_exc())
+                            logger.debug("Traceback follows", exc_info=True)
                             detailed_results.append(
                                 _unreadable_row_record(f"{type(e).__name__}: {error_text(e)}", lineno)
                             )
             except Exception as e:
                 logger.warning(f"Failed to read reviews from {review_file}: {e}")
-                logger.debug(traceback.format_exc())
+                logger.debug("Traceback follows", exc_info=True)
 
         logger.info(f"Loaded {len(detailed_results)} detailed predictions")
         return detailed_results

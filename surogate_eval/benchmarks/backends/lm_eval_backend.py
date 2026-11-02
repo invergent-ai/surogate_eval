@@ -369,8 +369,7 @@ class LMEvalBackend:
             results = evaluator.simple_evaluate(**eval_args)
         except Exception as e:
             logger.error(f"lm-eval simple_evaluate failed: {e}")
-            import traceback
-            logger.debug(traceback.format_exc())
+            logger.debug("Traceback follows", exc_info=True)
 
             return {
                 'overall_score': 0.0,

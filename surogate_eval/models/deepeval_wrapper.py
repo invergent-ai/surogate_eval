@@ -6,6 +6,7 @@ from deepeval.models import DeepEvalBaseLLM
 from ..errors import JudgeParseError, JudgeUnavailableError
 from ..targets.base import BaseTarget, TargetRequest
 from ..utils.logger import get_logger
+from ..utils.redact import error_text
 
 logger = get_logger()
 
@@ -152,7 +153,7 @@ class DeepEvalTargetWrapper(DeepEvalBaseLLM):
                     raise JudgeParseError(
                         f"could not parse judge response from "
                         f"{self.target.name!r} into {schema.__name__}: "
-                        f"{str(ex)[:200]}"
+                        f"{error_text(ex)[:200]}"
                     ) from ex
 
         return content

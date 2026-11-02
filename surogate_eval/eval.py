@@ -411,8 +411,7 @@ class SurogateEval(SurogateCommand):
 
         except Exception as e:
             logger.error(f"Failed to save consolidated results: {e}")
-            import traceback
-            logger.debug(traceback.format_exc())
+            logger.debug("Traceback follows", exc_info=True)
 
     def _create_summary_report(self, results: Dict[str, Any], results_dir: Path, timestamp: str):
         """Create human-readable summary reports (MD and PDF)."""
@@ -436,8 +435,7 @@ class SurogateEval(SurogateCommand):
 
         except Exception as e:
             logger.error(f"Failed to create summary report: {e}")
-            import traceback
-            logger.debug(traceback.format_exc())
+            logger.debug("Traceback follows", exc_info=True)
 
     def _cleanup(self):
         """Cleanup all resources."""

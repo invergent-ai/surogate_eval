@@ -199,8 +199,7 @@ class RedTeamRunner:
 
         except Exception as e:
             logger.error(f"Red-teaming failed: {e}")
-            import traceback
-            logger.debug(traceback.format_exc())
+            logger.debug("Traceback follows", exc_info=True)
             raise
 
     def _build_vulnerabilities(self) -> List[Any]:

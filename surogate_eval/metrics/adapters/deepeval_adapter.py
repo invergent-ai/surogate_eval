@@ -399,8 +399,7 @@ class DeepEvalAdapter(LLMJudgeMetric):
             # Our own bug. Still errored, but labelled so it is not
             # mistaken for a judge problem when reading results.
             logger.error(f"DeepEval evaluation failed: {e}")
-            import traceback
-            logger.debug(traceback.format_exc())
+            logger.debug("Traceback follows", exc_info=True)
             return MetricResult.errored(
                 metric_name=self.name,
                 metric_type=self.metric_type,

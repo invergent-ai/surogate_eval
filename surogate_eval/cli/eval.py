@@ -36,8 +36,7 @@ import argparse
 import sys
 
 from surogate_eval.utils.logger import get_logger
-# Masks keys in every log record and in an exception nothing catches.
-import surogate_eval.utils.redact  # noqa: F401
+from surogate_eval.utils.redact import install_log_masking
 
 logger = get_logger()
 
@@ -56,6 +55,8 @@ def prepare_command_parser(parser=None):
 
 
 if __name__ == '__main__':
+    # First: this process holds the pod's keys, and anything below may log.
+    install_log_masking()
     args = prepare_command_parser().parse_args(sys.argv[1:])
 
     if args.list:

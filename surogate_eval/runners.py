@@ -246,8 +246,7 @@ def run_evaluation(
 
             except Exception as e:
                 logger.error(f"Metric {metric.name} failed: {e}")
-                import traceback
-                logger.debug(traceback.format_exc())
+                logger.debug("Traceback follows", exc_info=True)
 
                 # One errored unit per case that went unmeasured. A bare
                 # {"error": ...} dict counted as a single error however many
@@ -634,8 +633,7 @@ def _run_single_benchmark(
 
     except Exception as e:
         logger.error(f"Benchmark '{benchmark_name}' failed: {e}")
-        import traceback
-        logger.debug(traceback.format_exc())
+        logger.debug("Traceback follows", exc_info=True)
 
         return {"benchmark_name": benchmark_name, "status": "failed", "error": error_text(e)}
 
@@ -869,8 +867,7 @@ async def run_red_teaming_async(
 
     except Exception as e:
         logger.error(f"Red-teaming failed: {e}")
-        import traceback
-        logger.debug(traceback.format_exc())
+        logger.debug("Traceback follows", exc_info=True)
 
         return {"status": "failed", "error": error_text(e)}
 
@@ -946,8 +943,7 @@ async def run_guardrails_testing_async(
 
     except Exception as e:
         logger.error(f"Guardrails testing failed: {e}")
-        import traceback
-        logger.debug(traceback.format_exc())
+        logger.debug("Traceback follows", exc_info=True)
 
         return {"status": "failed", "error": error_text(e)}
 

@@ -1,16 +1,21 @@
 """Keep API keys out of the runner's logs.
 
 The pod's stdout becomes the run's logs in ops, so a key in any log line is a
-key in the run's logs. Two layers:
+key in the run's logs. Three parts:
 
-- ``redact(obj)`` masks secret fields by name. Every runner log site that
-  prints a config, a model block or library arguments goes through it.
+- ``redact(obj)`` masks secret fields by name in a copy of a config, a model
+  block or library arguments. The runner's own log sites that print such a
+  structure go through it, and ``error_text`` applies it to exception text
+  stored in results.
 - ``register_secrets(obj)`` remembers the secret values of a config where
   keys enter the process (config load, target creation; judges are
-  targets). A log record factory then masks those values in every record,
-  from any logger, which is the only way to reach lines a library logs
-  itself (evalscope logs its whole TaskConfig, judge key included).
-  Provider keys already in the environment at import are remembered too.
+  targets).
+- ``install_log_masking()``, called by the runner's entry points and never
+  on import, masks every line a handler writes, from any logger, the
+  libraries' included (evalscope logs its whole TaskConfig, judge key in
+  it): remembered values, plus a narrow set of unmistakable credential forms.
+  It also routes uncaught exceptions through that logger and remembers the
+  provider keys in the environment.
 """
 
 import logging
@@ -52,6 +57,23 @@ _NAMED_RE = re.compile(
     r"""|(?P<bearer>(?i:\bbearer\s+))(?P<bval>(?=[^\s,'"}]*\d)[^\s,'"}]{8,})"""
     r"""|(?P<q>['"]?)(?P<key>[A-Za-z_][\w-]*)(?P=q)(?P<sep>\s*[=:]\s*)"""
     r"""(?=(?P<vq>['"])(?P<qval>(?:(?!(?P=vq))[^\n])*)(?P=vq)|(?P<val>[^\s,'"}\])&;]+))"""
+)
+
+# The pass over every written line is narrower than ``redact``: a log line is
+# mostly prose and metrics, so it masks only forms that are unmistakably a
+# credential. Generic ``*_token``, a bare ``token`` or ``secret`` are left
+# alone (time_to_first_token, prompt text). Values never take an ESC or "["
+# so the colour reset after a value survives.
+_CREDENTIAL_NAMES = (
+    r"(?:x[_-])?api[_-]?key|access[_-]token|auth[_-]token|refresh[_-]token"
+    r"|api[_-]token|hf[_-]token|bearer[_-]token|client[_-]secret|secret[_-]key|password"
+)
+_LINE_RE = re.compile(
+    r"""(?P<auth>(?i:['"]?(?:proxy[_-])?authorization['"]?\s*[=:]\s*['"]?))(?P<aval>[^'"\n,}\x1b]+)"""
+    r"""|(?P<bearer>(?i:\bbearer\s+))(?P<bval>(?=[^\s,'"}\x1b\[]*\d)[^\s,'"}\x1b\[]{8,})"""
+    r"""|(?P<q>['"]?)(?P<key>(?i:[A-Za-z0-9_-]*?(?:""" + _CREDENTIAL_NAMES + r""")))(?P=q)"""
+    r"""(?P<sep>\s*[=:]\s*)(?:(?P<vq>['"])(?P<qval>(?:(?!(?P=vq))[^\n\x1b])*)(?P=vq)"""
+    r"""|(?P<val>[^\s,'"}\])\[&;\x1b]+))"""
 )
 
 _secrets: set[str] = set()
@@ -101,6 +123,25 @@ def _mask_names(text: str) -> str:
 def redact_text(text: str) -> str:
     """``text`` with secret fields masked by name and remembered values masked."""
     return scrub(_mask_names(text))
+
+
+def _mask_line_match(match: re.Match) -> str:
+    if match["auth"] is not None:
+        return match["auth"] + MASK
+    if match["bearer"] is not None:
+        return match["bearer"] + MASK
+    # "password: hunter2" is how prompt prose reads; a config or header
+    # writes it as password=..., or quotes the key.
+    if (match["key"].lower().endswith("password") and not match["q"]
+            and ":" in match["sep"] and not match["vq"]):
+        return match[0]
+    quote = match["vq"] or ""
+    return f"{match['q']}{match['key']}{match['q']}{match['sep']}{quote}{MASK}{quote}"
+
+
+def mask_line(text: str) -> str:
+    """A written log line with credential forms and remembered values masked."""
+    return scrub(_LINE_RE.sub(_mask_line_match, text))
 
 
 def error_text(exc: BaseException) -> str:
@@ -163,30 +204,32 @@ def _remember(value: str) -> None:
         ))
 
 
-_base_factory = logging.getLogRecordFactory()
+class _MaskedRecord(logging.LogRecord):
+    """A record masked when it is written, not when it is made.
+
+    Every formatter reads the message through ``getMessage`` and caches the
+    traceback in ``exc_text``, so masking both here covers every handler,
+    including ones a library attaches later to a logger that does not
+    propagate (evalscope's), and a record no handler writes costs nothing.
+    """
+
+    def getMessage(self) -> str:
+        return mask_line(super().getMessage())
+
+    @property
+    def exc_text(self):
+        return self.__dict__.get("_masked_exc_text")
+
+    @exc_text.setter
+    def exc_text(self, value):
+        self.__dict__["_masked_exc_text"] = mask_line(value) if value else value
 
 
-def _scrubbing_factory(*args, **kwargs) -> logging.LogRecord:
-    record = _base_factory(*args, **kwargs)
-    try:
-        message = record.getMessage()
-    except Exception:
-        return record  # logging reports the bad format itself
-    clean = redact_text(message)
-    if clean != message:
-        record.msg, record.args = clean, None
-    if record.exc_info:
-        # Formatter.format uses a preset exc_text instead of formatting the
-        # traceback again, so the masked copy is what every handler prints.
-        record.exc_text = redact_text(logging.Formatter().formatException(record.exc_info))
-    return record
-
-
-def _log_uncaught(exc_type, exc, tb) -> None:
+def _log_uncaught(exc_type, exc, tb, where: str = "Uncaught exception") -> None:
     """Report an exception nothing caught through the masked runner logger.
 
     Python's default hook prints the traceback raw to stderr, which is the
-    run's log in ops, past the record factory.
+    run's log in ops.
     """
     if issubclass(exc_type, KeyboardInterrupt):
         sys.__excepthook__(exc_type, exc, tb)
@@ -194,17 +237,35 @@ def _log_uncaught(exc_type, exc, tb) -> None:
     try:
         from surogate_eval.utils.logger import get_logger
 
-        get_logger().critical("Uncaught exception", exc_info=(exc_type, exc, tb))
+        get_logger().critical(where, exc_info=(exc_type, exc, tb))
     except Exception:
-        sys.stderr.write(redact_text("".join(traceback.format_exception(exc_type, exc, tb))))
+        text = "".join(traceback.format_exception(exc_type, exc, tb))
+        sys.stderr.write(f"{where}\n{mask_line(text)}")
 
 
 def _log_uncaught_in_thread(args) -> None:
-    if args.exc_type is not SystemExit:  # as threading's own hook does
-        _log_uncaught(args.exc_type, args.exc_value, args.exc_traceback)
+    if args.exc_type is SystemExit:  # as threading's own hook does
+        return
+    name = args.thread.name if args.thread is not None else threading.get_ident()
+    _log_uncaught(args.exc_type, args.exc_value, args.exc_traceback,
+                  where=f"Exception in thread {name}")
 
 
-logging.setLogRecordFactory(_scrubbing_factory)
-sys.excepthook = _log_uncaught
-threading.excepthook = _log_uncaught_in_thread
-register_env_secrets()
+def install_log_masking() -> None:
+    """Mask every written log line and report uncaught exceptions masked.
+
+    For the runner's entry points only: it replaces process-wide hooks, which
+    importing a module must not do to whoever imported it.
+    """
+    base = logging.getLogRecordFactory()
+    if not getattr(base, "_masks_records", False):
+        def factory(*args, **kwargs):
+            record = base(*args, **kwargs)
+            record.__class__ = _MaskedRecord
+            return record
+
+        factory._masks_records = True
+        logging.setLogRecordFactory(factory)
+    sys.excepthook = _log_uncaught
+    threading.excepthook = _log_uncaught_in_thread
+    register_env_secrets()

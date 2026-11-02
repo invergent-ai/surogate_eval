@@ -16,6 +16,22 @@ import pytest
 
 from surogate_eval.targets.factory import TargetFactory
 
+
+@pytest.fixture(autouse=True, scope="module")
+def _masking_installed():
+    """What the runner's entry points do first. Importing the package must
+    not do it (see test_importing_the_runner_leaves_the_process_hooks_alone),
+    so these tests do it themselves, and put the process back afterwards."""
+    import sys
+    import threading
+    from surogate_eval.utils.redact import install_log_masking
+
+    saved = (logging.getLogRecordFactory(), sys.excepthook, threading.excepthook)
+    install_log_masking()
+    yield
+    logging.setLogRecordFactory(saved[0])
+    sys.excepthook, threading.excepthook = saved[1], saved[2]
+
 LOGGERS = ("", "surogate_eval", "evalscope", "lm_eval")
 
 
@@ -371,9 +387,10 @@ def test_scrub_masks_overlapping_secrets_longest_first():
 
 
 def test_no_traceback_bypasses_logging():
-    """`traceback.print_exc()` writes straight to stderr, past the masking
-    record factory. Every traceback the runner reports goes through the
-    logger instead."""
+    """`traceback.print_exc()` writes straight to stderr, past the masking.
+    Every traceback the runner reports goes through the logger, and by one
+    path, `exc_info`, which the runner's formatter prints masked, rather
+    than a pre-formatted `format_exc()` string."""
     import pathlib
     import surogate_eval
 
@@ -382,7 +399,7 @@ def test_no_traceback_bypasses_logging():
         f"{path.relative_to(root)}:{n}"
         for path in root.rglob("*.py")
         for n, line in enumerate(path.read_text(encoding="utf-8").splitlines(), 1)
-        if "print_exc(" in line or "print_exception(" in line
+        if any(call in line for call in ("print_exc(", "print_exception(", "format_exc("))
     ]
     assert not offenders, offenders
 
@@ -441,9 +458,13 @@ def test_cli_launch_failure_logs_the_error_with_the_key_masked(monkeypatch, capf
     monkeypatch.setattr(main, "get_torchrun_args", lambda: None)
     monkeypatch.setattr(main, "torch", None)
     monkeypatch.setattr("sys.argv", ["surogate-eval", "eval", "--config", "x.yaml"])
+    installed = []
+    monkeypatch.setattr(main, "install_log_masking", lambda: installed.append(True))
 
     with captured_logs() as lines:
         assert main.cli_main() == 1
+
+    assert installed, "the launcher entry point must install the masking"
 
     out = capfd.readouterr()
     assert canary not in out.out + out.err
@@ -452,16 +473,24 @@ def test_cli_launch_failure_logs_the_error_with_the_key_masked(monkeypatch, capf
                for line in lines), "the error itself must be logged"
 
 
-def test_cli_launcher_installs_the_masking_factory():
-    """The suite imports redact elsewhere, so check a fresh launcher process."""
+def test_importing_the_runner_leaves_the_process_hooks_alone():
+    """Masking and the crash hooks are installed by the runner's entry
+    points, not as a side effect of importing a module: ops or a notebook
+    importing surogate_eval keeps its own hooks."""
     import subprocess
     import sys
 
-    code = ("import logging, surogate_eval.cli.main; "
-            "print(logging.getLogRecordFactory().__name__)")
+    code = (
+        "import logging, sys, threading\n"
+        "import surogate_eval, surogate_eval.cli.main, surogate_eval.cli.eval\n"
+        "import surogate_eval.eval, surogate_eval.runners, surogate_eval.utils.redact\n"
+        "print(sys.excepthook is sys.__excepthook__,\n"
+        "      threading.excepthook is threading.__excepthook__,\n"
+        "      logging.getLogRecordFactory() is logging.LogRecord)\n"
+    )
     out = subprocess.run([sys.executable, "-c", code], capture_output=True, text=True,
-                         check=True).stdout
-    assert out.strip() == "_scrubbing_factory"
+                         check=True, timeout=300).stdout
+    assert out.split()[-3:] == ["True", "True", "True"], out
 
 
 def test_a_logged_traceback_reaches_the_runners_console_output():
@@ -641,3 +670,150 @@ def test_exception_text_stored_in_results_carries_no_key(monkeypatch, tmp_path, 
     value = str(stored(monkeypatch, tmp_path, canary))
     assert "upstream rejected api_key=***" in value, value
     assert canary not in value
+
+
+# --- masking happens when a line is written, and only on credential forms --
+
+
+class _CountingArg:
+    calls = 0
+
+    def __str__(self):
+        type(self).calls += 1
+        return "value"
+
+
+def test_a_record_no_handler_writes_is_never_formatted():
+    """Masking runs when a handler writes the line, so a record every handler
+    drops costs nothing, not a format and a regex pass at creation."""
+    lg = logging.getLogger("surogate_eval_test_dropped")
+    handler = logging.StreamHandler()
+    handler.setLevel(logging.ERROR)
+    lg.addHandler(handler)
+    lg.setLevel(logging.DEBUG)
+    lg.propagate = False
+    try:
+        lg.info("dropped %s", _CountingArg())
+    finally:
+        lg.removeHandler(handler)
+    assert _CountingArg.calls == 0
+
+
+@pytest.mark.parametrize("name", ["evalscope", "lm_eval.evaluator", "some.other.library"])
+def test_library_loggers_are_masked(name):
+    """evalscope's logger has its own handlers and does not propagate;
+    lm-eval's propagates to the root. Both must be masked."""
+    from surogate_eval.utils.redact import register_secrets
+
+    canary = f"sk-CANARYlib{name.replace('.', '')}0123456789"
+    register_secrets({"api_key": canary})
+    with captured_logs() as lines:
+        logging.getLogger(name).warning("config %s", {"key": canary})
+    _assert_absent(canary, lines)
+
+
+@pytest.mark.parametrize("text", [
+    "time_to_first_token: 0.123s",
+    "input_token: 5",
+    "Q: What is a token: a unit?",
+    "secret: the meaning of life",
+    "token=abc123def456",
+    # Prompt prose is output text: masked only if it holds a registered key.
+    "Please enter your password: hunter2",
+    "The bearer of the token said: hello, and the password field was empty",
+])
+def test_ordinary_lines_are_written_unchanged(text):
+    with captured_logs() as lines:
+        logging.getLogger("some_library").warning(text)
+    assert any(line.endswith(text) for line in lines), lines
+
+
+@pytest.mark.parametrize("template", [
+    "api_key={}",
+    "apikey: {}",
+    "x-api-key: {}",
+    "OPENAI_API_KEY={}",
+    "{{'access_token': '{}'}}",
+    '{{"client_secret": "{}"}}',
+    "GET https://h/v1?hf_token={}&x=1",
+    "refresh_token={}",
+    "auth_token: {}",
+    "api_token={}",
+    "bearer_token={}",
+    "aws_secret_key={}",
+    "password={}",
+    "{{'password': '{}'}}",
+    "Authorization: Basic {}",
+    "headers: Authorization: Token {}",
+    "sending Bearer {}",
+])
+def test_credential_forms_are_masked_in_written_lines(template):
+    canary = "CANARYcred0123456789"
+    with captured_logs() as lines:
+        logging.getLogger("some_library").warning(template.format(canary))
+    _assert_absent(canary, lines)
+
+
+def test_a_credential_after_a_colour_code_is_masked_and_the_reset_survives():
+    """The runner's logger wraps every message in ANSI colour codes."""
+    from surogate_eval.utils.logger import get_logger
+
+    canary = "CANARYansi0123456789"
+    with captured_logs() as lines:
+        get_logger().info(f"api_key={canary}")
+        get_logger().info(f"access_token: {canary}")
+    _assert_absent(canary, lines)
+    for line in lines[-2:]:
+        assert line.endswith("***\x1b[0m"), repr(line)
+
+
+def test_a_thread_crash_is_logged_masked_with_its_thread_name():
+    import threading
+    from surogate_eval.utils.redact import register_secrets
+
+    canary = "sk-CANARYthreadCrash0123456789"
+    register_secrets({"api_key": canary})
+
+    def crash():
+        raise RuntimeError(f"worker saw {canary}")
+
+    with captured_logs() as lines:
+        worker = threading.Thread(target=crash, name="progress-watcher")
+        worker.start()
+        worker.join()
+    _assert_absent(canary, lines)
+    assert any("Exception in thread progress-watcher" in line and "RuntimeError" in line
+               for line in lines), lines
+
+
+def test_a_judge_parse_error_cannot_keep_half_a_key():
+    """The judge wrapper cuts the underlying error to 200 characters. Cut
+    first, and a key straddling the cut survives as a prefix no mask
+    recognises."""
+    from surogate_eval.errors import JudgeParseError
+    from surogate_eval.models.deepeval_wrapper import DeepEvalTargetWrapper
+    from surogate_eval.targets.base import TargetResponse
+    from surogate_eval.utils.redact import register_secrets
+
+    canary = "sk-CANARYjudgeCut0123456789abcdef"
+    register_secrets({"api_key": canary})
+
+    class Target:
+        name = "judge"
+        config = {"base_url": "http://127.0.0.1:9/v1", "provider": "vllm"}
+
+        def send_request(self, request):
+            return TargetResponse(content='{"a": 1} trailing', raw_response={})
+
+    class Schema:
+        @classmethod
+        def model_json_schema(cls):
+            return {}
+
+        def __init__(self, **kwargs):
+            raise ValueError("x" * 185 + f" got {canary} back")
+
+    wrapper = DeepEvalTargetWrapper(Target())
+    with pytest.raises(JudgeParseError) as err:
+        wrapper.generate("p", Schema)
+    assert canary[:10] not in str(err.value), str(err.value)

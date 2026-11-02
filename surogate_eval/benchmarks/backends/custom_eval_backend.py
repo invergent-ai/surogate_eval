@@ -13,6 +13,7 @@ from surogate_eval.benchmarks.pass_rule import LEGACY_JUDGE_MIN, row_passed
 from surogate_eval.errors import ConfigError
 from surogate_eval.targets import BaseTarget
 from surogate_eval.utils.logger import get_logger
+from ...utils.redact import error_text
 from surogate_eval.utils.text import blank_as_none
 from surogate_eval import runners
 
@@ -510,7 +511,7 @@ class CustomEvalBackend:
                     score = None
                     success = False
                     output = ''
-                    reason = f'Comparison error: {e}'
+                    reason = f'Comparison error: {error_text(e)}'
 
                 result = {
                     'original_idx': row['_original_idx'],
@@ -588,7 +589,7 @@ class CustomEvalBackend:
                 else:
                     raw_output = response.content or ''
             except Exception as e:
-                request_error = str(e)
+                request_error = error_text(e)
 
             row_error = (
                 f'Inference error: {request_error}' if request_error is not None else None
@@ -614,7 +615,7 @@ class CustomEvalBackend:
                 try:
                     success, normalized_output = matcher.compare(raw_output, expected)
                 except Exception as e:
-                    row_error = f'Comparison error: {e}'
+                    row_error = f'Comparison error: {error_text(e)}'
 
             if row_error is not None:
                 logger.error(f"Row {original_idx} could not be measured: {row_error}")
@@ -786,7 +787,7 @@ class CustomEvalBackend:
                     normalized_output = clean_formatting(raw_output)
                     logger.debug(f"Raw: {raw_output[:100]}... -> Normalized: {normalized_output[:100]}...")
             except Exception as e:
-                request_error = str(e)
+                request_error = error_text(e)
 
             if request_error is not None:
                 logger.error(f"Inference error for row {original_idx}: {request_error}")
@@ -888,7 +889,7 @@ class CustomEvalBackend:
                     'status': 'errored',
                     'score': None,
                     'success': False,
-                    'reason': f'Judge error: {str(e)}',
+                    'reason': f'Judge error: {error_text(e)}',
                     'criteria': row_criteria,
                 })
 
@@ -972,7 +973,7 @@ class CustomEvalBackend:
                 else:
                     output = response.content or ''
             except Exception as e:
-                request_error = str(e)
+                request_error = error_text(e)
 
             errored = False
             is_safe = False
@@ -1000,7 +1001,7 @@ class CustomEvalBackend:
                 except Exception as e:
                     logger.error(f"Toxicity metric failed for row {idx}: {e}")
                     errored = True
-                    reason = f"Metric error: {e}"
+                    reason = f"Metric error: {error_text(e)}"
 
             results.append({
                 'original_idx': idx,

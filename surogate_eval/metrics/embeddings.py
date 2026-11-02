@@ -7,6 +7,7 @@ from .registry import register_metric
 from ..datasets import MultiTurnTestCase, TestCase
 from ..targets import TargetResponse
 from ..utils.logger import get_logger
+from ..utils.redact import error_text
 
 logger = get_logger()
 
@@ -106,7 +107,7 @@ class EmbeddingSimilarityMetric(BaseMetric):
             return MetricResult.errored(
                 metric_name=self.name,
                 metric_type=self.metric_type,
-                reason=f"Evaluation error: {str(e)}",
+                reason=f"Evaluation error: {error_text(e)}",
                 metadata={'error_kind': type(e).__name__},
             )
 
@@ -172,6 +173,6 @@ class ClassificationMetric(BaseMetric):
             return MetricResult.errored(
                 metric_name=self.name,
                 metric_type=self.metric_type,
-                reason=f"Evaluation error: {str(e)}",
+                reason=f"Evaluation error: {error_text(e)}",
                 metadata={'error_kind': type(e).__name__},
             )

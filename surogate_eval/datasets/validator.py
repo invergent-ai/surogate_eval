@@ -2,6 +2,7 @@ from typing import Dict, Any, List, Tuple, Optional
 import polars as pl
 
 from surogate_eval.utils.logger import get_logger
+from ..utils.redact import error_text
 
 logger = get_logger()
 
@@ -154,4 +155,4 @@ class DatasetValidator:
             df = loader.load(filepath)
             return self.validate(df)
         except Exception as e:
-            return False, [f"Failed to load file: {str(e)}"]
+            return False, [f"Failed to load file: {error_text(e)}"]

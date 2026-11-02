@@ -10,6 +10,7 @@ from ..datasets import MultiTurnTestCase, TestCase
 from ..errors import JudgeParseError, JudgeUnavailableError
 from ..targets import TargetResponse
 from ..utils.logger import get_logger
+from ..utils.redact import error_text
 from surogate_eval.benchmarks.pass_rule import LEGACY_JUDGE_MIN, row_passed
 
 logger = get_logger()
@@ -163,7 +164,7 @@ Provide your evaluation in JSON format:
             return MetricResult.errored(
                 metric_name=self.name,
                 metric_type=self.metric_type,
-                reason=f"Evaluation error: {e}",
+                reason=f"Evaluation error: {error_text(e)}",
                 metadata={'error_kind': type(e).__name__},
             )
 
@@ -287,7 +288,7 @@ Provide your evaluation in JSON format:
             return MetricResult.errored(
                 metric_name=self.name,
                 metric_type=self.metric_type,
-                reason=f"Evaluation error: {e}",
+                reason=f"Evaluation error: {error_text(e)}",
                 metadata={'error_kind': type(e).__name__},
             )
 
@@ -414,6 +415,6 @@ Provide your evaluation in JSON format:
             return MetricResult.errored(
                 metric_name=self.name,
                 metric_type=self.metric_type,
-                reason=f"Evaluation error: {e}",
+                reason=f"Evaluation error: {error_text(e)}",
                 metadata={'error_kind': type(e).__name__},
             )

@@ -66,6 +66,7 @@ from surogate_eval.benchmarks.pass_rule import row_passed
 from surogate_eval.errors import BenchmarkSchemaError
 from surogate_eval.targets import BaseTarget
 from surogate_eval.utils.logger import get_logger
+from ...utils.redact import error_text
 
 try:
     from evalscope import run_task, TaskConfig
@@ -669,7 +670,7 @@ class EvalScopeBackend:
                             )
                             logger.debug(traceback.format_exc())
                             detailed_results.append(
-                                _unreadable_row_record(f"{type(e).__name__}: {e}", lineno)
+                                _unreadable_row_record(f"{type(e).__name__}: {error_text(e)}", lineno)
                             )
             except Exception as e:
                 logger.warning(f"Failed to read reviews from {review_file}: {e}")

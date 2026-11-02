@@ -571,3 +571,73 @@ def Path_root():
     import surogate_eval
 
     return pathlib.Path(surogate_eval.__file__).parent.parent
+
+
+# --- exception text stored in results, reasons and rows -------------------
+
+
+def _boom(canary):
+    def raise_it(*a, **k):
+        raise RuntimeError(f"upstream rejected api_key={canary}")
+    return raise_it
+
+
+def _metric_reason(monkeypatch, tmp_path, canary):
+    from surogate_eval.datasets.test_case import TestCase
+    from surogate_eval.metrics.base import BaseMetric
+
+    class Exploding(BaseMetric):
+        def _validate_config(self):
+            pass
+
+        evaluate = staticmethod(_boom(canary))
+
+    batch = Exploding({"name": "boom", "type": "toxicity"}).evaluate_batch(
+        [TestCase(input="a")], ["x"],
+    )
+    return batch.results[0].reason
+
+
+def _evalscope_row(monkeypatch, tmp_path, canary):
+    import json
+    from surogate_eval.benchmarks.backends.evalscope_backend import EvalScopeBackend
+
+    reviews = tmp_path / "reviews" / "m"
+    reviews.mkdir(parents=True)
+    (reviews / "gsm8k_default.jsonl").write_text(json.dumps({"x": 1}) + "\n")
+    backend = EvalScopeBackend.__new__(EvalScopeBackend)
+    monkeypatch.setattr(backend, "_review_row_to_record", _boom(canary))
+    return backend._load_predictions(str(tmp_path), "m", "gsm8k")
+
+
+def _adapter_row(monkeypatch, tmp_path, canary):
+    from surogate_eval.benchmarks import BenchmarkConfig
+    from surogate_eval.benchmarks.adapters import vita_bench
+
+    monkeypatch.setattr(vita_bench, "_download_dataset", lambda: tmp_path)
+    monkeypatch.setattr(vita_bench, "_load_tasks", lambda d, limit=None: [{"id": "t1"}])
+    monkeypatch.setattr(vita_bench, "_format_prompt", lambda task: "p")
+    monkeypatch.setattr(vita_bench, "_format_expected", lambda task: "e")
+    target = type("T", (), {"name": "t", "send_request": staticmethod(_boom(canary))})()
+    result = vita_bench.VitaBenchmark(BenchmarkConfig(name="vita_bench")).evaluate(target)
+    return result.detailed_results
+
+
+def _validator_errors(monkeypatch, tmp_path, canary):
+    from surogate_eval.datasets import loader
+    from surogate_eval.datasets.validator import DatasetValidator
+
+    monkeypatch.setattr(loader.DatasetLoader, "load", _boom(canary))
+    return DatasetValidator().validate_file("x.jsonl")
+
+
+@pytest.mark.parametrize("stored", [
+    _metric_reason, _evalscope_row, _adapter_row, _validator_errors,
+], ids=["metrics", "benchmark-backends", "benchmark-adapters", "datasets"])
+def test_exception_text_stored_in_results_carries_no_key(monkeypatch, tmp_path, stored):
+    """One site per module family: what a failure stores for ops to show
+    is the exception text, and that text can hold a key."""
+    canary = f"sk-CANARYstored{stored.__name__}0123456789"
+    value = str(stored(monkeypatch, tmp_path, canary))
+    assert "upstream rejected api_key=***" in value, value
+    assert canary not in value

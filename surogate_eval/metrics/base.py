@@ -7,6 +7,7 @@ from enum import Enum
 from surogate_eval.datasets import TestCase, MultiTurnTestCase
 from surogate_eval.targets import TargetResponse
 from surogate_eval.utils.logger import get_logger
+from ..utils.redact import error_text
 
 logger = get_logger()
 
@@ -254,7 +255,7 @@ class BaseMetric(ABC):
                 result = MetricResult.errored(
                     metric_name=self.name,
                     metric_type=self.metric_type,
-                    reason=f"Metric raised {type(e).__name__}: {e}",
+                    reason=f"Metric raised {type(e).__name__}: {error_text(e)}",
                     metadata={'error_kind': type(e).__name__},
                 )
             results.append(result)

@@ -42,7 +42,8 @@ One module, `surogate_eval/utils/redact.py`:
   (`'api_key': '...'`, `"api_key": "..."`), an Authorization value is masked whole whatever
   its scheme (Bearer, Basic, Token, ...), and a bare `Bearer <credential>` (8 or more
   characters with a digit) is masked. A key only starts where a word does, so the scan is linear
-  in the text's length. Used at every runner log site above that prints a structure, and by
+  in the text's length; the key itself may start with dashes, digits or any letter (`--api-key`,
+  `2fa_secret`, `é_api_key`), and a colour code in front of it is stepped over. Used at every runner log site above that prints a structure, and by
   `error_text` for exception text stored in results.
   A `*_token` field is a credential (`access_token`, `hf_token`, `auth_token`, a bare `token`)
   unless the word before it makes it a vocabulary token or a count (`eos_token`, `pad_token`,
@@ -65,11 +66,20 @@ One module, `surogate_eval/utils/redact.py`:
     those two, so this covers every handler, including ones a library attaches later to a
     logger that does not propagate (evalscope's), which a filter on the runner's own handlers
     would miss; and a record no handler writes is never formatted or scanned. A record is
-    masked once however many handlers write it; the masked message is cached on the record
-    and recomputed only if a filter replaces the message.
+    masked once however many handlers write it. The cache holds only the masked string and
+    `id()` markers of `msg` and `args`, never the objects, so a pickling handler
+    (`SocketHandler`, `QueueHandler`) copying the record carries no raw key and unpicklable
+    args pickle as before. It is used only when `msg` is a string and `args` are immutable
+    scalars; a mapping, list or other object can be rewritten in place, so such a record is
+    masked again on each read.
   - Installs `sys.excepthook` and `threading.excepthook`, which report an uncaught exception
     through the masked logger (a thread's as `Exception in thread <name>`).
   - Remembers the provider keys in the environment.
+  - Hands every remembered value to child processes through one environment variable
+    (`SUROGATE_EVAL_LOG_MASK_SECRET`, base64 JSON, itself masked as a value), kept current as
+    values are added. A multiprocessing spawn child never loads the parent's config, so a key
+    registered from it (an inline judge key) is masked in the child only because the child's
+    `install_log_masking()` reads that variable once and remembers its values.
 
   What a written line loses is narrower than `redact`, because a log line is mostly prose and
   metrics. Remembered values are masked wherever they appear. By name, only unmistakable
@@ -144,6 +154,10 @@ relied on the pod variable to authenticate such a target must put the key on the
 - A secret shorter than 8 characters is not remembered, so a written line does not mask it by
   value. Name-based redaction at the runner's own log sites still masks it, and so does the
   per-line credential-form pass where it appears in one of those forms.
+
+- The hand-down variable reaches every child process the runner starts, not only spawn
+  children: the MCPMark pipeline subprocess also inherits it, alongside the `OPENAI_API_KEY`
+  it is already given. It holds the same keys the parent process already has.
 
 ## Out of scope
 

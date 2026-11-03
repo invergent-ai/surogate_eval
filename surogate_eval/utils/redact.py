@@ -18,6 +18,8 @@ key in the run's logs. Three parts:
   provider keys in the environment.
 """
 
+import base64
+import json
 import logging
 import os
 import re
@@ -51,11 +53,14 @@ _NOT_CREDENTIAL_TOKENS = {
 #   parameter. Only the key and separator are consumed; the value is looked
 #   at ahead. Whether it is masked is decided by is_secret_key, so strings and
 #   dicts follow one rule, and a value that is not a secret is scanned on in
-#   turn, which is how "url: https://h/v1?api_key=..." is reached.
+#   turn, which is how "url: https://h/v1?api_key=..." is reached. A key
+#   starts only where a word does (linear time on long runs), may itself
+#   start with dashes, digits or any letter (--api-key, 2fa_secret,
+#   é_api_key), and a colour code in front of it is stepped over.
 _NAMED_RE = re.compile(
     r"""(?P<auth>(?i:['"]?(?:proxy[_-])?authorization['"]?\s*[=:]\s*['"]?))(?P<aval>[^'"\n,}]+)"""
     r"""|(?P<bearer>(?i:\bbearer\s+))(?P<bval>(?=[^\s,'"}]*\d)[^\s,'"}]{8,})"""
-    r"""|(?<![\w-])(?P<q>['"]?)(?P<key>[A-Za-z_][\w-]*)(?P=q)(?P<sep>\s*[=:]\s*)"""
+    r"""|(?<![\w-])(?:\x1b\[[0-9;]*m)?(?P<q>['"]?)(?P<key>[\w-]+)(?P=q)(?P<sep>\s*[=:]\s*)"""
     r"""(?=(?P<vq>['"])(?P<qval>(?:(?!(?P=vq))[^\n])*)(?P=vq)|(?P<val>[^\s,'"}\])&;]+))"""
 )
 
@@ -81,6 +86,14 @@ _LINE_RE = re.compile(
 )
 
 _secrets: set[str] = set()
+# The variable a child process reads the parent's remembered values from,
+# once install_log_masking() has run in the parent. The parent's config is
+# never loaded in a multiprocessing spawn child, so a key registered from it
+# (an inline judge key) would otherwise reach the child's logs unmasked. The
+# encoded value is itself masked, in case something logs the environment.
+_SHARED_ENV = "SUROGATE_EVAL_LOG_MASK_SECRET"
+_share_with_children = False
+_shared_blob: str | None = None
 # One alternation over every remembered value, longest first so a secret
 # that contains another is masked whole. Rebuilt only when a value is added.
 _secrets_re: re.Pattern | None = None
@@ -193,20 +206,36 @@ def register_env_secrets() -> None:
     accept). Any variable whose name is a secret field name counts, so a
     provider added later is covered without a list to keep in step.
     """
-    register_secrets(dict(os.environ))
+    register_secrets({k: v for k, v in os.environ.items() if k != _SHARED_ENV})
 
 
 def _remember(value: str) -> None:
-    global _secrets_re
     value = value.strip()
     _scheme, _, credential = value.partition(" ")
     if credential:  # "Bearer x", "Basic x": the credential alone shows up too
         _remember(credential)
     if len(value) >= _MIN_SECRET_LEN and value != "EMPTY" and value not in _secrets:
         _secrets.add(value)
+        _rebuild()
+
+
+def _rebuild() -> None:
+    global _secrets_re, _shared_blob
+    patterns = set(_secrets)
+    if _share_with_children:
+        _shared_blob = base64.b64encode(json.dumps(sorted(_secrets)).encode()).decode()
+        os.environ[_SHARED_ENV] = _shared_blob
+        patterns.add(_shared_blob)
+    if patterns:
         _secrets_re = re.compile("|".join(
-            re.escape(s) for s in sorted(_secrets, key=len, reverse=True)
+            re.escape(s) for s in sorted(patterns, key=len, reverse=True)
         ))
+
+
+def _immutable_args(args) -> bool:
+    return args is None or (isinstance(args, tuple) and all(
+        isinstance(a, (str, bytes, int, float, bool, type(None))) for a in args
+    ))
 
 
 class _MaskedRecord(logging.LogRecord):
@@ -219,13 +248,19 @@ class _MaskedRecord(logging.LogRecord):
     """
 
     def getMessage(self) -> str:
-        # Masked once, however many handlers write the record; recomputed
-        # only if a filter has since replaced the message.
+        # Masked once, however many handlers write the record. The cache
+        # keeps only the masked string and id() markers: a pickling handler
+        # (SocketHandler, QueueHandler) copies __dict__, and the original
+        # args there would put the raw key back, or fail to pickle. A filter
+        # that replaces msg or args changes the markers; args that could be
+        # rewritten in place (a mapping, a list, any object) are not cached.
+        marker = (id(self.msg), id(self.args))
         cached = self.__dict__.get("_masked_message")
-        if cached is not None and cached[0] is self.msg and cached[1] is self.args:
-            return cached[2]
+        if cached is not None and cached[0] == marker:
+            return cached[1]
         masked = mask_line(super().getMessage())
-        self.__dict__["_masked_message"] = (self.msg, self.args, masked)
+        if isinstance(self.msg, str) and _immutable_args(self.args):
+            self.__dict__["_masked_message"] = (marker, masked)
         return masked
 
     @property
@@ -267,8 +302,12 @@ def install_log_masking() -> None:
     """Mask every written log line and report uncaught exceptions masked.
 
     For the runner's entry points only: it replaces process-wide hooks, which
-    importing a module must not do to whoever imported it.
+    importing a module must not do to whoever imported it. It also hands
+    every value it remembers, before or after this call, to multiprocessing
+    spawn children through the environment, and takes over what a parent
+    handed down.
     """
+    global _share_with_children
     base = logging.getLogRecordFactory()
     if not getattr(base, "_masks_records", False):
         def factory(*args, **kwargs):
@@ -280,4 +319,13 @@ def install_log_masking() -> None:
         logging.setLogRecordFactory(factory)
     sys.excepthook = _log_uncaught
     threading.excepthook = _log_uncaught_in_thread
+    _share_with_children = True
+    inherited = os.environ.get(_SHARED_ENV)
+    if inherited:  # a spawn child: take over what its parent remembered
+        try:
+            for value in json.loads(base64.b64decode(inherited)):
+                _remember(value)
+        except ValueError:
+            pass
     register_env_secrets()
+    _rebuild()

@@ -29,8 +29,12 @@ def _masking_installed():
     saved = (logging.getLogRecordFactory(), sys.excepthook, threading.excepthook)
     install_log_masking()
     yield
+    import surogate_eval.utils.redact as redact_mod
+
     logging.setLogRecordFactory(saved[0])
     sys.excepthook, threading.excepthook = saved[1], saved[2]
+    redact_mod._share_with_children = False
+    os.environ.pop(redact_mod._SHARED_ENV, None)
 
 LOGGERS = ("", "surogate_eval", "evalscope", "lm_eval")
 
@@ -863,18 +867,24 @@ def test_a_spawned_child_of_the_runner_masks_its_logs(tmp_path):
 
     env_canary = "sk-CANARYspawnEnvKey0123456789"
     named_canary = "CANARYspawnNamed0123456789"
+    # Registered by the parent from its config (an inline judge key, say):
+    # the child never loads that config, so it has to be handed down.
+    config_canary = "sk-CANARYspawnConfigKey0123456789"
     (tmp_path / "spawn_probe.py").write_text(
         "import os\n"
         "def child():\n"
         "    from surogate_eval.utils.logger import get_logger\n"
         "    get_logger().warning('child env ' + os.environ['OPENAI_API_KEY'])\n"
         f"    get_logger().warning('child api_key={named_canary}')\n"
+        f"    get_logger().warning('child config {config_canary}')\n"
     )
     (tmp_path / "sitecustomize.py").write_text(
         "import multiprocessing, sys\n"
         "def _patch():\n"
         "    import surogate_eval.config.loader as loader\n"
         "    def start_child(*a, **k):\n"
+        "        from surogate_eval.utils.redact import register_secrets\n"
+        f"        register_secrets({{'judge': {{'api_key': '{config_canary}'}}}})\n"
         "        import spawn_probe\n"
         "        p = multiprocessing.get_context('spawn').Process(target=spawn_probe.child)\n"
         "        p.start(); p.join()\n"
@@ -892,7 +902,9 @@ def test_a_spawned_child_of_the_runner_masks_its_logs(tmp_path):
     output = proc.stdout + proc.stderr
     assert proc.returncode == 0, output[-3000:]
     assert "child env ***" in output and "child api_key=***" in output, output[-3000:]
+    assert "child config ***" in output, output[-3000:]
     assert env_canary not in output and named_canary not in output
+    assert config_canary not in output
 
 
 @pytest.mark.parametrize("template", [
@@ -965,3 +977,64 @@ def test_a_record_is_masked_once_however_many_handlers_write_it(monkeypatch):
     # A filter that rewrites the message after the first read is honoured.
     record.msg, record.args = "plain", None
     assert record.getMessage() == "plain"
+
+
+# --- final round: redact's key boundary, the record cache, spawn hand-down
+
+
+@pytest.mark.parametrize("text", [
+    "--api-key=sk-CANARYdash0123456789",
+    "--api_key=sk-CANARYdash0123456789",
+    "--hf-token=sk-CANARYdash0123456789",
+    "--password=sk-CANARYdash0123456789",
+    "\x1b[32mapi_key=sk-CANARYdash0123456789\x1b[0m",
+    "\x1b[32mpassword=sk-CANARYdash0123456789\x1b[0m",
+    "é_api_key=sk-CANARYdash0123456789",
+    "2fa_secret=sk-CANARYdash0123456789",
+])
+def test_redact_masks_a_key_after_a_dash_colour_code_letter_or_digit(text):
+    from surogate_eval.utils.redact import error_text, redact_text
+
+    assert "CANARYdash" not in redact_text(text), redact_text(text)
+    assert "CANARYdash" not in error_text(RuntimeError(text))
+
+
+def _masked_record(msg, args):
+    return logging.getLogRecordFactory()("x", logging.INFO, __file__, 1, msg, args, None)
+
+
+def test_a_pickled_record_carries_no_key_and_unpicklable_args_still_pickle():
+    """SocketHandler and QueueHandler pickle the record's __dict__ after
+    replacing msg and args with the formatted message; a cache holding the
+    original args put the raw key back in, and made unpicklable args fatal."""
+    import logging.handlers
+    import pickle
+    import threading
+    from surogate_eval.utils.redact import register_secrets
+
+    canary = "sk-CANARYpickled0123456789"
+    register_secrets({"api_key": canary})
+    handler = logging.handlers.SocketHandler("127.0.0.1", 9)
+
+    record = _masked_record("upstream said %s", (canary,))
+    record.getMessage()
+    payload = handler.makePickle(record)
+    assert canary.encode() not in payload
+    assert pickle.loads(payload[4:])["msg"] == "upstream said ***"
+
+    lock = threading.Lock()
+    record = _masked_record("holding %s", (lock,))
+    record.getMessage()
+    assert handler.makePickle(record)
+
+
+@pytest.mark.parametrize("args, mutate, before, after", [
+    ({"k": "one"}, lambda a: a.__setitem__("k", "two"), "value one", "value two"),
+    ([["one"]], lambda a: a[0].__setitem__(0, "two"), "value ['one']", "value ['two']"),
+])
+def test_a_message_rewritten_in_place_is_not_served_from_the_cache(args, mutate, before, after):
+    msg = "value %(k)s" if isinstance(args, dict) else "value %s"
+    record = _masked_record(msg, (args,) if isinstance(args, dict) else tuple(args))
+    assert record.getMessage() == before
+    mutate(record.args)
+    assert record.getMessage() == after

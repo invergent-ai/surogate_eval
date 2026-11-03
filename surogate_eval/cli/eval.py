@@ -36,6 +36,12 @@ import argparse
 import sys
 
 from surogate_eval.utils.logger import get_logger
+from surogate_eval.utils.redact import install_log_masking
+
+# At module level, not under __main__: this is the eval process's entry
+# script, it holds the pod's keys, and a multiprocessing spawn child (evalscope
+# runs code benchmarks in them) imports it as __mp_main__, skipping that block.
+install_log_masking()
 
 logger = get_logger()
 

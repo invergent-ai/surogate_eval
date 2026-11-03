@@ -25,6 +25,7 @@ from surogate_eval.runners import (
 from surogate_eval.targets import BaseTarget, TargetFactory
 from surogate_eval.utils.command import SurogateCommand
 from surogate_eval.utils.logger import get_logger
+from surogate_eval.utils.redact import error_text
 
 logger = get_logger()
 
@@ -132,7 +133,7 @@ class SurogateEval(SurogateCommand):
                 self.consolidated_results["targets"].append({
                     "name": target_name,
                     "status": "failed",
-                    "error": str(e),
+                    "error": error_text(e),
                     "evaluations": [],
                 })
 
@@ -156,16 +157,16 @@ class SurogateEval(SurogateCommand):
                     self._record_target_result(target_results)
 
             except Exception as e:
-                logger.error(f"Failed to run evaluations for target '{target_name}': {e}")
-                import traceback
-                traceback.print_exc()
+                logger.error(
+                    f"Failed to run evaluations for target '{target_name}': {e}", exc_info=True
+                )
                 # Record the crash. Without an entry the target is invisible
                 # both in the results file and to the outcome computation, so
                 # a run with another healthy target still reported success.
                 self._record_target_result({
                     "name": target_name,
                     "status": "failed",
-                    "error": str(e),
+                    "error": error_text(e),
                     "evaluations": [],
                 })
 
@@ -410,8 +411,7 @@ class SurogateEval(SurogateCommand):
 
         except Exception as e:
             logger.error(f"Failed to save consolidated results: {e}")
-            import traceback
-            logger.debug(traceback.format_exc())
+            logger.debug("Traceback follows", exc_info=True)
 
     def _create_summary_report(self, results: Dict[str, Any], results_dir: Path, timestamp: str):
         """Create human-readable summary reports (MD and PDF)."""
@@ -435,8 +435,7 @@ class SurogateEval(SurogateCommand):
 
         except Exception as e:
             logger.error(f"Failed to create summary report: {e}")
-            import traceback
-            logger.debug(traceback.format_exc())
+            logger.debug("Traceback follows", exc_info=True)
 
     def _cleanup(self):
         """Cleanup all resources."""

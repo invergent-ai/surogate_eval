@@ -9,6 +9,7 @@ from typing import Dict, Any, Optional, List
 
 from .base import BaseTarget, TargetRequest, TargetResponse, ModelProvider, TargetType
 from ..utils.logger import get_logger
+from ..utils.redact import error_text
 
 logger = get_logger()
 
@@ -165,7 +166,7 @@ class APIModelTarget(BaseTarget):
                 raw_response={},
                 metadata={},
                 timing={'total_time': end_time - start_time},
-                error=str(e)
+                error=error_text(e)
             )
 
     def _build_payload(self, request: TargetRequest) -> Dict[str, Any]:
@@ -503,7 +504,7 @@ class LocalModelTarget(BaseTarget):
                 raw_response={},
                 metadata={},
                 timing={'total_time': end_time - start_time},
-                error=str(e)
+                error=error_text(e)
             )
 
     def _generate_vllm(self, request: TargetRequest) -> TargetResponse:
@@ -553,7 +554,7 @@ class LocalModelTarget(BaseTarget):
                 raw_response={},
                 metadata={},
                 timing={'total_time': end_time - start_time},
-                error=str(e)
+                error=error_text(e)
             )
 
 
@@ -666,7 +667,7 @@ class EmbeddingTarget(BaseTarget):
                 raw_response={},
                 metadata={},
                 timing={'total_time': end_time - start_time},
-                error=str(e)
+                error=error_text(e)
             )
 
     def _embed_local(self, request: TargetRequest) -> TargetResponse:
@@ -699,7 +700,7 @@ class EmbeddingTarget(BaseTarget):
                 raw_response={},
                 metadata={},
                 timing={'total_time': end_time - start_time},
-                error=str(e)
+                error=error_text(e)
             )
 
     def health_check(self) -> bool:
@@ -858,7 +859,7 @@ class RerankerTarget(BaseTarget):
                 raw_response={},
                 metadata={},
                 timing={'total_time': end_time - start_time},
-                error=str(e)
+                error=error_text(e)
             )
 
     def _rerank_openai_compatible(self, request: TargetRequest) -> TargetResponse:
@@ -928,7 +929,7 @@ class RerankerTarget(BaseTarget):
                 raw_response={},
                 metadata={},
                 timing={'total_time': end_time - start_time},
-                error=str(e)
+                error=error_text(e)
             )
 
     def _rerank_local(self, request: TargetRequest) -> TargetResponse:
@@ -984,7 +985,7 @@ class RerankerTarget(BaseTarget):
                 raw_response={},
                 metadata={},
                 timing={'total_time': end_time - start_time},
-                error=str(e)
+                error=error_text(e)
             )
 
     def health_check(self) -> bool:
@@ -1095,7 +1096,7 @@ class CLIPTarget(BaseTarget):
                 raw_response={},
                 metadata={},
                 timing={'total_time': end_time - start_time},
-                error=str(e)
+                error=error_text(e)
             )
 
     def _process_local(self, request: TargetRequest) -> TargetResponse:
@@ -1193,7 +1194,7 @@ class CLIPTarget(BaseTarget):
                 raw_response={},
                 metadata={},
                 timing={'total_time': end_time - start_time},
-                error=str(e)
+                error=error_text(e)
             )
 
     def health_check(self) -> bool:
@@ -1309,7 +1310,7 @@ Text to translate:
                 raw_response={},
                 metadata={},
                 timing={'total_time': end_time - start_time},
-                error=str(e)
+                error=error_text(e)
             )
 
     def health_check(self) -> bool:

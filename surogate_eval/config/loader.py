@@ -8,6 +8,7 @@ from surogate_eval.config.eval_config import EvalConfig
 from surogate_eval.errors import ConfigError
 from surogate_eval.utils.dict import DictDefault
 from surogate_eval.utils.logger import get_logger
+from surogate_eval.utils.redact import redact, register_secrets
 
 logger = get_logger()
 
@@ -30,6 +31,7 @@ def load_config(config_cls: SurogateConfig, path: str) -> SurogateConfig:
                 f"{', '.join(sorted(missing))}. "
                 "Export them, or remove the ${...} reference."
             )
+        register_secrets(cfg_dict)
         cfg: DictDefault = DictDefault(cfg_dict)
 
     config = config_cls(cfg)
@@ -41,7 +43,7 @@ def load_config(config_cls: SurogateConfig, path: str) -> SurogateConfig:
 
     logger.debug(
         "config:\n%s",
-        json.dumps(cfg_to_log, indent=2, default=str, sort_keys=True),
+        json.dumps(redact(cfg_to_log), indent=2, default=str, sort_keys=True),
     )
 
     return config

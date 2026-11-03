@@ -20,6 +20,7 @@ except ImportError:
     torch = None
 
 from surogate_eval.utils.logger import get_logger
+from surogate_eval.utils.redact import install_log_masking
 from surogate_eval.utils.system_info import print_system_diagnostics, get_system_info
 
 logger = get_logger()
@@ -87,6 +88,8 @@ COMMAND_MAPPING: Dict[str, str] = {
 
 def cli_main():
     """Main CLI entry point for installed command."""
+    # First: this process holds the pod's keys, and anything below may log.
+    install_log_masking()
     args = parse_args()
     file_path = importlib.util.find_spec(COMMAND_MAPPING[args.command]).origin
     torchrun_args = get_torchrun_args()
@@ -118,11 +121,7 @@ def cli_main():
         logger.warning("Process interrupted by user")
         return 0
     except Exception as e:
-        logger.error("An error occurred:")
-        logger.error(f"Error Type: {{type(e).__name__}}")
-        logger.error(f"Error Message: {{e}}")
-        import traceback
-        traceback.print_exc()
+        logger.error(f"An error occurred: {type(e).__name__}: {e}", exc_info=True)
         return 1
     finally:
         logger.info("Cleaning up...")

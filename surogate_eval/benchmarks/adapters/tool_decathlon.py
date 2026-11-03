@@ -25,6 +25,7 @@ from surogate_eval.benchmarks.registry import BenchmarkRegistry
 from surogate_eval.targets import BaseTarget
 from surogate_eval.targets.base import TargetRequest
 from surogate_eval.utils.logger import get_logger
+from ...utils.redact import error_text
 from surogate_eval.benchmarks.pass_rule import LEGACY_JUDGE_MIN, row_passed
 
 logger = get_logger()
@@ -304,7 +305,7 @@ class ToolDecathlonBenchmark(BaseBenchmark):
                     "raw_output": "",
                     "score": 0.0,
                     "success": False,
-                    "reason": f"Inference error: {e}",
+                    "reason": f"Inference error: {error_text(e)}",
                     "metadata": meta,
                 })
                 continue
@@ -327,7 +328,7 @@ class ToolDecathlonBenchmark(BaseBenchmark):
                     score, reason = _parse_judge_response(judge_response.content)
                 except Exception as e:
                     logger.error(f"Judge error for {task_name}: {e}")
-                    reason = f"Judge error: {e}"
+                    reason = f"Judge error: {error_text(e)}"
             else:
                 # No judge — basic heuristic based on tool name overlap
                 ref_tools = set()

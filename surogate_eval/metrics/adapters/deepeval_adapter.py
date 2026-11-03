@@ -3,6 +3,7 @@ from typing import Dict, Any, Optional, Union
 
 from ...errors import JudgeError
 from ...utils.logger import get_logger
+from ...utils.redact import error_text
 
 try:
     from deepeval.metrics import (
@@ -387,7 +388,7 @@ class DeepEvalAdapter(LLMJudgeMetric):
             return MetricResult.errored(
                 metric_name=self.name,
                 metric_type=self.metric_type,
-                reason=f"Judge unavailable: {e}",
+                reason=f"Judge unavailable: {error_text(e)}",
                 metadata={
                     'deepeval_type': self.config.get('deepeval_metric_type'),
                     'error_kind': type(e).__name__,
@@ -398,12 +399,11 @@ class DeepEvalAdapter(LLMJudgeMetric):
             # Our own bug. Still errored, but labelled so it is not
             # mistaken for a judge problem when reading results.
             logger.error(f"DeepEval evaluation failed: {e}")
-            import traceback
-            logger.debug(traceback.format_exc())
+            logger.debug("Traceback follows", exc_info=True)
             return MetricResult.errored(
                 metric_name=self.name,
                 metric_type=self.metric_type,
-                reason=f"Internal evaluation error: {e}",
+                reason=f"Internal evaluation error: {error_text(e)}",
                 metadata={
                     'deepeval_type': self.config.get('deepeval_metric_type'),
                     'error_kind': 'internal',

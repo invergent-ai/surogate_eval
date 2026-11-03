@@ -7,6 +7,7 @@ from ..datasets import MultiTurnTestCase, TestCase
 from ..errors import JudgeParseError, JudgeUnavailableError
 from ..targets import TargetResponse
 from ..utils.logger import get_logger
+from ..utils.redact import error_text
 
 try:
     from deepeval.metrics import BiasMetric as DeepEvalBias
@@ -157,7 +158,7 @@ Provide your evaluation in JSON format:
             return MetricResult.errored(
                 metric_name=self.name,
                 metric_type=self.metric_type,
-                reason=f"Evaluation error: {e}",
+                reason=f"Evaluation error: {error_text(e)}",
                 metadata={'error_kind': type(e).__name__},
             )
 
@@ -273,7 +274,7 @@ Provide your evaluation in JSON format:
             return MetricResult.errored(
                 metric_name=self.name,
                 metric_type=self.metric_type,
-                reason=f"Evaluation error: {e}",
+                reason=f"Evaluation error: {error_text(e)}",
                 metadata={'error_kind': type(e).__name__},
             )
 
@@ -396,6 +397,6 @@ Provide your evaluation in JSON format:
             return MetricResult.errored(
                 metric_name=self.name,
                 metric_type=self.metric_type,
-                reason=f"Evaluation error: {e}",
+                reason=f"Evaluation error: {error_text(e)}",
                 metadata={'error_kind': type(e).__name__},
             )

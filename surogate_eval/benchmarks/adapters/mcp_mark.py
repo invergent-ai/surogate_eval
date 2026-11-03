@@ -31,6 +31,7 @@ from surogate_eval.benchmarks.base import BaseBenchmark, BenchmarkConfig, Benchm
 from surogate_eval.benchmarks.registry import BenchmarkRegistry
 from surogate_eval.targets import BaseTarget
 from surogate_eval.utils.logger import get_logger
+from surogate_eval.utils.redact import mask_line
 
 logger = get_logger()
 
@@ -101,7 +102,8 @@ def _clone_repo(target_dir: Path) -> Path:
         install_cmd, capture_output=True, text=True, timeout=300,
     )
     if result.returncode != 0:
-        logger.warning(f"MCPMark install warning: {result.stderr[:500]}")
+        # Masked before the cut: a key cut in half is no longer one a mask finds.
+        logger.warning(f"MCPMark install warning: {mask_line(result.stderr)[:500]}")
 
     return repo_dir
 
@@ -168,12 +170,12 @@ def _run_mcpmark_pipeline(
             if result.returncode != 0:
                 logger.error(
                     f"MCPMark pipeline failed for {service}: "
-                    f"{result.stderr[:500]}"
+                    f"{mask_line(result.stderr)[:500]}"
                 )
                 # Still try to parse partial results
                 logger.info("Attempting to parse partial results despite pipeline failure")
 
-            logger.info(f"MCPMark {service} stdout (tail): {result.stdout[-500:]}")
+            logger.info(f"MCPMark {service} stdout (tail): {mask_line(result.stdout)[-500:]}")
 
         except subprocess.TimeoutExpired:
             logger.error(f"MCPMark {service} timed out after {timeout * 2}s")
